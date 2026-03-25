@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap');
+
+@layer utilities {
+  .glass-nav {
+    background: rgba(252, 249, 244, 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .primary-gradient {
+    background: linear-gradient(135deg, #a03f28 0%, #c0573e 100%);
+  }
+
+  .shadow-warm {
+    box-shadow: 0 20px 40px rgba(86, 66, 61, 0.06);
+  }
+}
