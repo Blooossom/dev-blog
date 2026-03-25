@@ -51,7 +51,7 @@ export default function Footer() {
           </ul>
         </div>
       </div>
-      <div className="border-t border-outline-variant/20">
+      <div className="bg-surface-container-high">
         <p className="max-w-7xl mx-auto px-6 lg:px-8 py-6 font-label text-xs text-on-surface-variant">
           © {new Date().getFullYear()} Architect&#39;s Library
         </p>

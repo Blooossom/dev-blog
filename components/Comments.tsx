@@ -4,7 +4,7 @@ import Giscus from '@giscus/react'
 
 export default function Comments() {
   return (
-    <div className="mt-16 pt-12 border-t border-outline-variant/20">
+    <div className="mt-16 bg-surface-container-low rounded-xl p-12">
       <h2 className="font-headline font-bold text-lg text-on-surface mb-8">Comments</h2>
       <Giscus
         repo={process.env.NEXT_PUBLIC_GISCUS_REPO as `${string}/${string}`}

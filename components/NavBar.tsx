@@ -52,6 +52,12 @@ export default function NavBar() {
               />
             </svg>
           </Link>
+          <Link
+            href="/subscribe/success"
+            className="primary-gradient text-on-primary font-headline font-bold text-sm px-5 py-2 rounded-lg hover:opacity-90 transition-opacity"
+          >
+            Subscribe
+          </Link>
         </div>
 
         {/* Mobile hamburger */}
