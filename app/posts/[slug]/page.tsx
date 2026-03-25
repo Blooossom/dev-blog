@@ -4,7 +4,7 @@ import matter from 'gray-matter'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { MDXRemote } from 'next-mdx-remote/rsc'
-import { getAllPosts, getPostBySlug } from '@/lib/posts'
+import { getAllPosts } from '@/lib/posts'
 import Comments from '@/components/Comments'
 
 interface Props {
@@ -17,28 +17,38 @@ export async function generateStaticParams() {
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const post = await getPostBySlug(params.slug)
-  if (!post) return {}
+  const filePath = path.join(process.cwd(), 'content/posts', `${params.slug}.mdx`)
+  if (!fs.existsSync(filePath)) return {}
+  const raw = fs.readFileSync(filePath, 'utf-8')
+  const { data } = matter(raw)
   return {
-    title: post.title,
-    description: post.summary,
+    title: data.title ?? '',
+    description: data.summary ?? '',
     openGraph: {
-      title: post.title,
-      description: post.summary,
-      images: post.thumbnail ? [post.thumbnail] : ['/og-default.png'],
+      title: data.title ?? '',
+      description: data.summary ?? '',
+      images: data.thumbnail ? [data.thumbnail] : ['/og-default.png'],
     },
   }
 }
 
 export default async function PostPage({ params }: Props) {
-  const post = await getPostBySlug(params.slug)
-  if (!post) notFound()
+  const filePath = path.join(process.cwd(), 'content/posts', `${params.slug}.mdx`)
+  if (!fs.existsSync(filePath)) notFound()
 
-  const raw = fs.readFileSync(
-    path.join(process.cwd(), 'content/posts', `${params.slug}.mdx`),
-    'utf-8'
-  )
-  const { content } = matter(raw)
+  const raw = fs.readFileSync(filePath, 'utf-8')
+  const { data, content } = matter(raw)
+
+  const post = {
+    slug: params.slug,
+    title: data.title ?? '',
+    date: data.date ?? '',
+    category: data.category ?? '',
+    tags: (data.tags ?? []) as string[],
+    summary: data.summary ?? '',
+    thumbnail: data.thumbnail as string | undefined,
+    readingTime: Math.max(1, Math.ceil(content.trim().split(/\s+/).length / 200)),
+  }
 
   return (
     <article className="max-w-3xl mx-auto px-6 lg:px-8 py-12">

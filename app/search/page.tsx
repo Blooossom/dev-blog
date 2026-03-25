@@ -90,7 +90,7 @@ export default function SearchPage() {
   return (
     <div className="max-w-4xl mx-auto px-6 lg:px-8 py-12">
       <h1 className="font-headline text-5xl font-extrabold tracking-tighter text-on-surface mb-12">Search</h1>
-      <Suspense>
+      <Suspense fallback={null}>
         <SearchResults />
       </Suspense>
     </div>

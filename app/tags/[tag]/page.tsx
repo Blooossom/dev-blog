@@ -7,15 +7,15 @@ interface Props { params: { tag: string } }
 
 export async function generateStaticParams() {
   const tags = await getAllTags()
-  return tags.map((tag) => ({ tag: encodeURIComponent(tag.toLowerCase()) }))
+  return tags.map((tag) => ({ tag: tag.toLowerCase() }))
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  return { title: `#${decodeURIComponent(params.tag)}` }
+  return { title: `#${params.tag}` }
 }
 
 export default async function TagPage({ params }: Props) {
-  const tag = decodeURIComponent(params.tag)
+  const tag = params.tag
   const posts = await getAllPosts()
   const filtered = posts.filter((p) =>
     p.tags.some((t) => t.toLowerCase() === tag.toLowerCase())
