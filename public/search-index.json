@@ -1,5 +1,32 @@
 [
   {
+    "slug": "building-with-nextjs",
+    "title": "Next.js App Router로 블로그 만들기",
+    "category": "Frontend",
+    "tags": [
+      "Next.js",
+      "React",
+      "TypeScript"
+    ],
+    "summary": "App Router의 Server Component를 활용해 MDX 기반 블로그를 구축하는 방법을 정리합니다.",
+    "body": "시작하기\n\nNext.js 14의 App Router는 기존 Pages Router와 근본적으로 다른 방식으로 동작합니다.\nServer Component가 기본값이며, 클라이언트 상태가 필요할 때만  'use client' 를 선언합니다.\n\n   MDX 연동\n\n next-mdx-remote 를 사용하면 동적 경로에서 런타임에 MDX 파일을 로드할 수 있습니다.\n\n   배포\n\nVercel에 연결하면  git push 만으로 자동 배포됩니다.",
+    "date": "2026-03-20"
+  },
+  {
+    "slug": "claude-skills-superpowers",
+    "title": "Claude의 Skills — AI에게 역할을 부여하는 방법",
+    "category": "AI",
+    "tags": [
+      "Claude",
+      "AI",
+      "Productivity",
+      "Workflow"
+    ],
+    "summary": "Claude Code의 Skills(Superpowers) 시스템이 어떻게 동작하는지, 그리고 AI와 협업하는 방식을 어떻게 바꾸는지 정리합니다.",
+    "body": "이 블로그는 Claude의 Skills 시스템을 활용해서 만들었다. 브레인스토밍부터 설계 문서 작성, 구현 계획, 코드 작성, 리뷰까지 — 모든 과정에 Skills가 개입했다. 그래서 첫 글의 주제로 Skills만큼 적합한 것이 없다고 생각했다.\n\n   Skills란 무엇인가\n\nClaude Code의 Skills는 Claude에게 특정 역할과 절차를 부여하는 마크다운 파일이다. 일반적인 프롬프트와 다른 점은, Skills는   워크플로우 전체를 정의  한다는 것이다.\n\n예를 들어  superpowers:brainstorming  스킬을 호출하면 Claude는 단순히 아이디어를 던지는 게 아니라 다음 절차를 따른다:\n\n1. 현재 프로젝트 컨텍스트 탐색\n2. 질문을 하나씩 던지며 요구사항 파악\n3. 2~3가지 접근법을 트레이드오프와 함께 제안\n4. 설계를 섹션별로 제시하고 승인 받기\n5. 설계 문서 작성 및 리뷰\n6. 구현 계획 작성으로 전환\n\n이 절차를 매번 프롬프트로 지시하는 대신, 스킬 하나를 호출하면 된다.\n\n   핵심 Skills\n\n실제로 이 블로그를 만들면서 사용한 Skills들을 소개한다.\n\n    brainstorming\n\n아이디어를 설계로 발전시키는 스킬이다. Claude가 질문을 하나씩 던지며 요구사항을 구체화하고, 최종적으로 스펙 문서를 작성한다.\n\n중요한 원칙이 있다 —   설계가 승인되기 전까지는 코드를 한 줄도 작성하지 않는다.   아무리 간단해 보이는 작업이라도 이 단계를 건너뛰지 않는다. 실제로 단순해 보였던 요구사항에서 검토하지 않은 가정들이 발견된 경험이 있다.\n\n    writing-plans\n\n스펙 문서를 받아 구현 계획 플랜 을 작성하는 스킬이다. 단순한 TODO 목록이 아니라, 각 태스크마다 정확한 파일 경로, 완성된 코드, 실행할 명령어, 예상 출력까지 담긴 문서를 만들어낸다.\n\n플랜의 목표는   컨텍스트가 없는 엔지니어도 막히지 않고 실행할 수 있을 것  이다. 이 기준으로 작성하면 Claude 서브에이전트가 플랜을 보고 독립적으로 구현할 수 있다.\n\n    subagent-driven-development\n\n플랜을 태스크 단위로 서브에이전트에게 위임하여 실행하는 스킬이다. 각 태스크마다:\n\n1. 구현 서브에이전트 디스패치\n2. 스펙 컴플라이언스 리뷰\n3. 코드 퀄리티 리뷰\n\n의 3단계를 거친다. 컨트롤러 메인 Claude 는 조율에 집중하고, 구현과 리뷰는 독립된 서브에이전트가 담당한다. 각 서브에이전트는 신선한 컨텍스트로 시작하기 때문에 이전 작업의 편향 없이 판단할 수 있다.\n\n    test-driven-development\n\nTDD를 강제하는 스킬이다. 테스트 먼저, 구현은 나중. 이 스킬이 있으면 \"일단 구현하고 나중에 테스트\"의 유혹을 차단할 수 있다.\n\n   Skills가 바꾸는 것\n\nSkills 없이 AI와 작업할 때는 결과물의 품질이 프롬프트 품질에 크게 의존했다. 어떻게 물어보느냐에 따라 결과가 달라졌고, 같은 작업을 반복할 때마다 다시 맥락을 설명해야 했다.\n\nSkills를 쓰면 달라지는 것들이 있다.\n\n  절차가 코드화된다.   브레인스토밍 → 스펙 → 플랜 → 구현 → 리뷰의 흐름이 Skills에 명시되어 있어서, Claude가 단계를 건너뛰거나 임의로 순서를 바꾸지 않는다.\n\n  리뷰가 자동화된다.   구현 후 스펙 컴플라이언스 리뷰와 코드 퀄리티 리뷰가 자동으로 이어진다. 이 블로그 작업에서도 리뷰 단계에서 No-Line Rule 위반 border-t 사용 과 NavBar의 Subscribe 버튼 누락이 발견됐다. 리뷰가 없었다면 그냥 넘어갔을 것들이다.\n\n  실패가 명시적이 된다.   서브에이전트는 작업 완료 후 DONE / DONE WITH CONCERNS / BLOCKED / NEEDS CONTEXT 중 하나의 상태로 보고한다. \"잘 모르겠지만 일단 해봤습니다\" 같은 애매한 결과물이 없다.\n\n   한계\n\n물론 한계도 있다. Skills는 절차를 정의하지만, 절차가 맞는지는 여전히 사람이 판단해야 한다. 스펙이 잘못되면 아무리 훌륭한 Skills로 구현해도 잘못된 것을 정확하게 만들 뿐이다.\n\n또한 서브에이전트를 여러 번 호출하다 보면 토큰 비용이 상당히 올라간다. 단순한 작업에 모든 Skills를 동원하는 것은 과잉이다.\n\n그래도, 복잡한 프로젝트를 혼자 진행할 때 Skills는 꽤 강력한 도구다. 이 블로그를 만들면서 직접 느꼈다.\n\n---\n\n다음 글에서는 이 블로그의 설계 결정들 — MDX vs DB, Giscus 선택, Tailwind 디자인 토큰 구성 — 을 정리해볼 예정이다.",
+    "date": "2026-03-26"
+  },
+  {
     "slug": "hello-world",
     "title": "Hello, World",
     "category": "General",
