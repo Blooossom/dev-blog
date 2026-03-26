@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#042712"/>
+      <stop offset="100%" stop-color="#155235"/>
+    </linearGradient>
+    <linearGradient id="lf" x1="100%" y1="0%" x2="20%" y2="0%">
+      <stop offset="0%"   stop-color="#042712" stop-opacity="0"/>
+      <stop offset="55%"  stop-color="#042712" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#042712" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="bf" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#155235" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#042712" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Pattern -->
+  <polyline points="570,185.0 588,190.2 606,195.2 624,199.5 642,203.0 660,205.5 678,206.8 696,206.9 714,205.7 732,203.3 750,199.9 768,195.6 786,190.7 804,185.5 822,180.2 840,175.3 858,170.9 876,167.3 894,164.7 912,163.3 930,163.1 948,164.2 966,166.4 984,169.8 1002,174.0 1020,178.9 1038,184.1 1056,189.3 1074,194.3 1092,198.8 1110,202.5 1128,205.1"
+      fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+      stroke-opacity="0.12"/>
+<polyline points="570,259.1 588,261.1 606,262.0 624,261.6 642,259.9 660,257.2 678,253.4 696,248.9 714,243.8 732,238.6 750,233.4 768,228.6 786,224.4 804,221.2 822,219.0 840,218.0 858,218.3 876,219.9 894,222.6 912,226.2 930,230.7 948,235.7 966,241.0 984,246.2 1002,251.0 1020,255.2 1038,258.6 1056,260.8 1074,261.9 1092,261.7 1110,260.3 1128,257.7"
+      fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+      stroke-opacity="0.19"/>
+<polyline points="570,314.1 588,310.9 606,306.8 624,302.1 642,296.9 660,291.7 678,286.6 696,282.0 714,278.1 732,275.3 750,273.5 768,273.0 786,273.8 804,275.7 822,278.8 840,282.8 858,287.5 876,292.6 894,297.9 912,303.0 930,307.6 948,311.5 966,314.5 984,316.4 1002,317.0 1020,316.4 1038,314.5 1056,311.5 1074,307.6 1092,303.0 1110,297.9 1128,292.6"
+      fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+      stroke-opacity="0.26"/>
+<polyline points="570,350.0 588,344.8 606,339.8 624,335.5 642,332.0 660,329.5 678,328.2 696,328.1 714,329.3 732,331.7 750,335.1 768,339.4 786,344.3 804,349.5 822,354.8 840,359.7 858,364.1 876,367.7 894,370.3 912,371.7 930,371.9 948,370.8 966,368.6 984,365.2 1002,361.0 1020,356.1 1038,350.9 1056,345.7 1074,340.7 1092,336.2 1110,332.5 1128,329.9"
+      fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+      stroke-opacity="0.33"/>
+<polyline points="570,385.9 588,383.9 606,383.0 624,383.4 642,385.1 660,387.8 678,391.6 696,396.1 714,401.2 732,406.4 750,411.6 768,416.4 786,420.6 804,423.8 822,426.0 840,427.0 858,426.7 876,425.1 894,422.4 912,418.8 930,414.3 948,409.3 966,404.0 984,398.8 1002,394.0 1020,389.8 1038,386.4 1056,384.2 1074,383.1 1092,383.3 1110,384.7 1128,387.3"
+      fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+      stroke-opacity="0.4"/>
+<polyline points="570,440.9 588,444.1 606,448.2 624,452.9 642,458.1 660,463.3 678,468.4 696,473.0 714,476.9 732,479.7 750,481.5 768,482.0 786,481.2 804,479.3 822,476.2 840,472.2 858,467.5 876,462.4 894,457.1 912,452.0 930,447.4 948,443.5 966,440.5 984,438.6 1002,438.0 1020,438.6 1038,440.5 1056,443.5 1074,447.4 1092,452.0 1110,457.1 1128,462.4"
+      fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+      stroke-opacity="0.47000000000000003"/>
+
+  <!-- Left & bottom fade overlays -->
+  <rect width="1200" height="630" fill="url(#lf)"/>
+  <rect width="1200" height="630" fill="url(#bf)"/>
+
+  <!-- Category badge -->
+  <rect x="60" y="52" width="98" height="32" rx="16"
+    fill="#6ee7b7" fill-opacity="0.15"
+    stroke="#6ee7b7" stroke-width="1" stroke-opacity="0.5"/>
+  <text x="74" y="73"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="13" font-weight="700" letter-spacing="2.5"
+    fill="#6ee7b7" fill-opacity="0.95">BACKEND</text>
+
+  <!-- Title -->
+  
+  <text x="60" y="516"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="40" font-weight="800"
+    fill="white" fill-opacity="0.95">Java Object의 wait()과</text>
+  <text x="60" y="562"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="40" font-weight="800"
+    fill="white" fill-opacity="0.95">notify() — 스레드 협력의 원시 메커니즘</text>
+</svg>

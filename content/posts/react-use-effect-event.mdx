@@ -1,10 +1,18 @@
 ---
-title: "React의 useEffectEvent — Effect와 이벤트 로직의 분리"
-date: "2026-03-26"
-category: "Frontend"
-tags: ["React", "Hooks", "useEffectEvent", "useEffect"]
-summary: "React 실험적 훅 useEffectEvent가 해결하는 문제 — Effect에서 반응하지 않아야 하는 값을 어떻게 읽을 수 있는지 정리합니다."
+title: React의 useEffectEvent — Effect와 이벤트 로직의 분리
+date: '2026-03-26'
+category: Frontend
+tags:
+  - React
+  - Hooks
+  - useEffectEvent
+  - useEffect
+summary: >-
+  React 실험적 훅 useEffectEvent가 해결하는 문제 — Effect에서 반응하지 않아야 하는 값을 어떻게 읽을 수 있는지
+  정리합니다.
+thumbnail: /thumbnails/react-use-effect-event.svg
 ---
+
 
 `useEffect`를 작성하다 보면 의존성 배열 때문에 난처한 상황이 생긴다. Effect가 어떤 값을 읽어야 하는데, 그 값이 바뀔 때마다 Effect를 재실행하고 싶지는 않은 경우다. `useEffectEvent`는 이 문제를 해결하기 위해 제안된 실험적 훅이다.
 

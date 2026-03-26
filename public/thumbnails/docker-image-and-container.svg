@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1b2e"/>
+      <stop offset="100%" stop-color="#1a3d6b"/>
+    </linearGradient>
+    <linearGradient id="lf" x1="100%" y1="0%" x2="20%" y2="0%">
+      <stop offset="0%"   stop-color="#0d1b2e" stop-opacity="0"/>
+      <stop offset="55%"  stop-color="#0d1b2e" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#0d1b2e" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="bf" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#1a3d6b" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#0d1b2e" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Pattern -->
+  
+    <rect x="620" y="192" width="88" height="72" rx="8"
+      fill="#60a5fa" fill-opacity="0.07"
+      stroke="#60a5fa" stroke-width="1.5" stroke-opacity="0.22"/>
+    <rect x="632" y="206" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.2"/>
+    <rect x="658" y="206" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.2"/>
+    <rect x="632" y="228" width="64" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.12"/>
+    <rect x="632" y="238" width="44" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.1"/>
+  
+    <rect x="716" y="192" width="88" height="72" rx="8"
+      fill="#60a5fa" fill-opacity="0.095"
+      stroke="#60a5fa" stroke-width="1.5" stroke-opacity="0.27"/>
+    <rect x="728" y="206" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.24000000000000002"/>
+    <rect x="754" y="206" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.24000000000000002"/>
+    <rect x="728" y="228" width="64" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.13999999999999999"/>
+    <rect x="728" y="238" width="44" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.1"/>
+  
+    <rect x="812" y="192" width="88" height="72" rx="8"
+      fill="#60a5fa" fill-opacity="0.12000000000000001"
+      stroke="#60a5fa" stroke-width="1.5" stroke-opacity="0.32"/>
+    <rect x="824" y="206" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.28"/>
+    <rect x="850" y="206" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.28"/>
+    <rect x="824" y="228" width="64" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.16"/>
+    <rect x="824" y="238" width="44" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.1"/>
+  
+    <rect x="668" y="272" width="88" height="72" rx="8"
+      fill="#60a5fa" fill-opacity="0.14500000000000002"
+      stroke="#60a5fa" stroke-width="1.5" stroke-opacity="0.37"/>
+    <rect x="680" y="286" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.32"/>
+    <rect x="706" y="286" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.32"/>
+    <rect x="680" y="308" width="64" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.18"/>
+    <rect x="680" y="318" width="44" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.1"/>
+  
+    <rect x="764" y="272" width="88" height="72" rx="8"
+      fill="#60a5fa" fill-opacity="0.17"
+      stroke="#60a5fa" stroke-width="1.5" stroke-opacity="0.42000000000000004"/>
+    <rect x="776" y="286" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.36"/>
+    <rect x="802" y="286" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.36"/>
+    <rect x="776" y="308" width="64" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.2"/>
+    <rect x="776" y="318" width="44" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.1"/>
+  
+    <rect x="716" y="352" width="88" height="72" rx="8"
+      fill="#60a5fa" fill-opacity="0.195"
+      stroke="#60a5fa" stroke-width="1.5" stroke-opacity="0.47"/>
+    <rect x="728" y="366" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.4"/>
+    <rect x="754" y="366" width="18" height="14" rx="3"
+      fill="#60a5fa" fill-opacity="0.4"/>
+    <rect x="728" y="388" width="64" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.22"/>
+    <rect x="728" y="398" width="44" height="4" rx="2"
+      fill="#60a5fa" fill-opacity="0.1"/>
+  
+
+  <!-- Left & bottom fade overlays -->
+  <rect width="1200" height="630" fill="url(#lf)"/>
+  <rect width="1200" height="630" fill="url(#bf)"/>
+
+  <!-- Category badge -->
+  <rect x="60" y="52" width="88" height="32" rx="16"
+    fill="#60a5fa" fill-opacity="0.15"
+    stroke="#60a5fa" stroke-width="1" stroke-opacity="0.5"/>
+  <text x="74" y="73"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="13" font-weight="700" letter-spacing="2.5"
+    fill="#60a5fa" fill-opacity="0.95">DEVOPS</text>
+
+  <!-- Title -->
+  
+  <text x="60" y="516"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="46" font-weight="800"
+    fill="white" fill-opacity="0.95">도커 이미지와 컨테이너</text>
+  <text x="60" y="568"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="46" font-weight="800"
+    fill="white" fill-opacity="0.95">불변 청사진과 실행 인스턴스</text>
+</svg>

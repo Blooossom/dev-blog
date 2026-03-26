@@ -1,10 +1,18 @@
 ---
-title: "Java Object의 wait()과 notify() — 스레드 협력의 원시 메커니즘"
-date: "2026-03-26"
-category: "Backend"
-tags: ["Java", "Concurrency", "Thread", "Monitor"]
-summary: "Java의 모든 객체가 가진 wait()과 notify() 메커니즘이 어떻게 작동하는지, 모니터 락과의 관계, 실제 사용 패턴과 주의사항을 정리합니다."
+title: Java Object의 wait()과 notify() — 스레드 협력의 원시 메커니즘
+date: '2026-03-26'
+category: Backend
+tags:
+  - Java
+  - Concurrency
+  - Thread
+  - Monitor
+summary: >-
+  Java의 모든 객체가 가진 wait()과 notify() 메커니즘이 어떻게 작동하는지, 모니터 락과의 관계, 실제 사용 패턴과 주의사항을
+  정리합니다.
+thumbnail: /thumbnails/java-wait-notify.svg
 ---
+
 
 Java의 모든 객체는 `Object` 클래스를 상속받는다. `Object`에는 `equals()`, `hashCode()`, `toString()` 외에도 `wait()`, `notify()`, `notifyAll()`이 있다. 이 세 메서드는 스레드 간 협력을 위한 원시 메커니즘으로, 모니터(Monitor) 개념과 깊게 연결되어 있다.
 

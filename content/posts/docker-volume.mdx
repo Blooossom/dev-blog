@@ -1,10 +1,16 @@
 ---
-title: "도커 볼륨 — 컨테이너 데이터를 영속적으로 관리하는 법"
-date: "2026-03-26"
-category: "DevOps"
-tags: ["Docker", "Volume", "Storage", "DevOps"]
-summary: "도커 컨테이너의 데이터 소멸 문제를 해결하는 볼륨의 종류와 동작 원리, 실제 사용 패턴을 정리합니다."
+title: 도커 볼륨 — 컨테이너 데이터를 영속적으로 관리하는 법
+date: '2026-03-26'
+category: DevOps
+tags:
+  - Docker
+  - Volume
+  - Storage
+  - DevOps
+summary: '도커 컨테이너의 데이터 소멸 문제를 해결하는 볼륨의 종류와 동작 원리, 실제 사용 패턴을 정리합니다.'
+thumbnail: /thumbnails/docker-volume.svg
 ---
+
 
 컨테이너를 삭제하면 내부에서 만들어진 파일도 함께 사라진다. 데이터베이스 파일, 업로드된 파일, 로그 등 유지해야 하는 데이터는 어떻게 할까? 도커 볼륨이 이 문제를 해결한다.
 

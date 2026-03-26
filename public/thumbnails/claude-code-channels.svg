@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a0730"/>
+      <stop offset="100%" stop-color="#4a1070"/>
+    </linearGradient>
+    <linearGradient id="lf" x1="100%" y1="0%" x2="20%" y2="0%">
+      <stop offset="0%"   stop-color="#1a0730" stop-opacity="0"/>
+      <stop offset="55%"  stop-color="#1a0730" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#1a0730" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="bf" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#4a1070" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1a0730" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Pattern -->
+  <line x1="840" y1="190" x2="990" y2="270"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.2"/>
+<line x1="840" y1="190" x2="700" y2="310"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.2"/>
+<line x1="990" y1="270" x2="1060" y2="400"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.2"/>
+<line x1="990" y1="270" x2="830" y2="420"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.2"/>
+<line x1="700" y1="310" x2="830" y2="420"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.2"/>
+<line x1="1060" y1="400" x2="830" y2="420"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.2"/>
+<line x1="830" y1="420" x2="660" y2="470"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.2"/>
+<line x1="830" y1="420" x2="960" y2="490"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.2"/>
+<line x1="700" y1="310" x2="660" y2="470"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.2"/>
+    <circle cx="840" cy="190" r="34" fill="#c4b5fd" fill-opacity="0.1"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.5"/>
+    <circle cx="840" cy="190" r="26" fill="#c4b5fd" fill-opacity="0.35"/>
+  
+    <circle cx="990" cy="270" r="26" fill="#c4b5fd" fill-opacity="0.07"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.3"/>
+    <circle cx="990" cy="270" r="18" fill="#c4b5fd" fill-opacity="0.2"/>
+  
+    <circle cx="700" cy="310" r="26" fill="#c4b5fd" fill-opacity="0.07"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.3"/>
+    <circle cx="700" cy="310" r="18" fill="#c4b5fd" fill-opacity="0.2"/>
+  
+    <circle cx="1060" cy="400" r="24" fill="#c4b5fd" fill-opacity="0.07"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.3"/>
+    <circle cx="1060" cy="400" r="16" fill="#c4b5fd" fill-opacity="0.2"/>
+  
+    <circle cx="830" cy="420" r="30" fill="#c4b5fd" fill-opacity="0.07"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.3"/>
+    <circle cx="830" cy="420" r="22" fill="#c4b5fd" fill-opacity="0.2"/>
+  
+    <circle cx="660" cy="470" r="24" fill="#c4b5fd" fill-opacity="0.07"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.3"/>
+    <circle cx="660" cy="470" r="16" fill="#c4b5fd" fill-opacity="0.2"/>
+  
+    <circle cx="960" cy="490" r="22" fill="#c4b5fd" fill-opacity="0.07"
+      stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.3"/>
+    <circle cx="960" cy="490" r="14" fill="#c4b5fd" fill-opacity="0.2"/>
+  
+
+  <!-- Left & bottom fade overlays -->
+  <rect width="1200" height="630" fill="url(#lf)"/>
+  <rect width="1200" height="630" fill="url(#bf)"/>
+
+  <!-- Category badge -->
+  <rect x="60" y="52" width="48" height="32" rx="16"
+    fill="#c4b5fd" fill-opacity="0.15"
+    stroke="#c4b5fd" stroke-width="1" stroke-opacity="0.5"/>
+  <text x="74" y="73"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="13" font-weight="700" letter-spacing="2.5"
+    fill="#c4b5fd" fill-opacity="0.95">AI</text>
+
+  <!-- Title -->
+  
+  <text x="60" y="516"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">Claude Code Channels —</text>
+  <text x="60" y="556"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">Telegram·Discord에서 AI 코딩 에이전트 제어하기</text>
+</svg>

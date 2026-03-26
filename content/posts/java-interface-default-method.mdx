@@ -1,10 +1,16 @@
 ---
-title: "Java 인터페이스의 default 메서드는 어떻게 작동하는가"
-date: "2026-03-26"
-category: "Backend"
-tags: ["Java", "Interface", "Default Method", "Java 8"]
-summary: "Java 8에서 도입된 인터페이스 default 메서드의 동작 원리, 상속 충돌 해결 규칙, 실제 활용 사례와 주의사항을 정리합니다."
+title: Java 인터페이스의 default 메서드는 어떻게 작동하는가
+date: '2026-03-26'
+category: Backend
+tags:
+  - Java
+  - Interface
+  - Default Method
+  - Java 8
+summary: 'Java 8에서 도입된 인터페이스 default 메서드의 동작 원리, 상속 충돌 해결 규칙, 실제 활용 사례와 주의사항을 정리합니다.'
+thumbnail: /thumbnails/java-interface-default-method.svg
 ---
+
 
 Java 8 이전의 인터페이스는 추상 메서드와 상수만 가질 수 있었다. Java 8에서 `default` 메서드가 도입되면서 인터페이스에 구현 코드를 직접 넣을 수 있게 됐다. 왜 만들어졌고, 어떻게 동작하며, 어떤 문제를 일으킬 수 있는지 살펴보자.
 

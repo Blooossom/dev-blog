@@ -1,10 +1,16 @@
 ---
-title: "도커 컴포즈 — 멀티 컨테이너 앱을 하나의 파일로"
-date: "2026-03-26"
-category: "DevOps"
-tags: ["Docker", "Docker Compose", "Container", "DevOps"]
-summary: "여러 컨테이너로 구성된 애플리케이션을 docker-compose.yml 하나로 정의하고 관리하는 방법을 정리합니다."
+title: 도커 컴포즈 — 멀티 컨테이너 앱을 하나의 파일로
+date: '2026-03-26'
+category: DevOps
+tags:
+  - Docker
+  - Docker Compose
+  - Container
+  - DevOps
+summary: 여러 컨테이너로 구성된 애플리케이션을 docker-compose.yml 하나로 정의하고 관리하는 방법을 정리합니다.
+thumbnail: /thumbnails/docker-compose.svg
 ---
+
 
 실제 애플리케이션은 보통 여러 컨테이너로 구성된다. 웹 서버, API 서버, 데이터베이스, 캐시, 메시지 큐. 이걸 docker run 명령어로 하나씩 실행하면 관리하기 어렵다. 도커 컴포즈는 멀티 컨테이너 구성을 하나의 YAML 파일로 정의하고 한 번에 실행한다.
 

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a0730"/>
+      <stop offset="100%" stop-color="#4a1070"/>
+    </linearGradient>
+    <linearGradient id="lf" x1="100%" y1="0%" x2="20%" y2="0%">
+      <stop offset="0%"   stop-color="#1a0730" stop-opacity="0"/>
+      <stop offset="55%"  stop-color="#1a0730" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#1a0730" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="bf" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#4a1070" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1a0730" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Pattern -->
+  
+    <path d="M 840 152 L 1050 218 L 1050 370 Q 1050 478 840 534 Q 630 478 630 370 L 630 218 Z"
+      fill="#f0abfc" fill-opacity="0.07" stroke="#f0abfc" stroke-width="2" stroke-opacity="0.28"/>
+    <path d="M 840 196 L 1010 252 L 1010 372 Q 1010 462 840 508 Q 670 462 670 372 L 670 252 Z"
+      fill="#f0abfc" fill-opacity="0.05" stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.18"/>
+    <path d="M 756 362 L 810 418 L 930 290"
+      fill="none" stroke="#f0abfc" stroke-width="9" stroke-linecap="round"
+      stroke-linejoin="round" stroke-opacity="0.48"/>
+  
+
+  <!-- Left & bottom fade overlays -->
+  <rect width="1200" height="630" fill="url(#lf)"/>
+  <rect width="1200" height="630" fill="url(#bf)"/>
+
+  <!-- Category badge -->
+  <rect x="60" y="52" width="48" height="32" rx="16"
+    fill="#f0abfc" fill-opacity="0.15"
+    stroke="#f0abfc" stroke-width="1" stroke-opacity="0.5"/>
+  <text x="74" y="73"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="13" font-weight="700" letter-spacing="2.5"
+    fill="#f0abfc" fill-opacity="0.95">AI</text>
+
+  <!-- Title -->
+  
+  <text x="60" y="516"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">Claude Superpowers 플러그인</text>
+  <text x="60" y="556"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">Claude Code를 확장하는 스킬 시스템</text>
+</svg>

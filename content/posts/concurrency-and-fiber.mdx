@@ -1,10 +1,20 @@
 ---
-title: "동시성과 Fiber — 스레드 모델의 진화"
-date: "2026-03-26"
-category: "Backend"
-tags: ["Concurrency", "Fiber", "Virtual Threads", "Coroutine", "Java", "Go"]
-summary: "OS 스레드부터 경량 스레드, 코루틴, Fiber, Java Virtual Threads까지 — 동시성 모델이 어떻게 진화해왔는지, Fiber가 무엇인지 정리합니다."
+title: 동시성과 Fiber — 스레드 모델의 진화
+date: '2026-03-26'
+category: Backend
+tags:
+  - Concurrency
+  - Fiber
+  - Virtual Threads
+  - Coroutine
+  - Java
+  - Go
+summary: >-
+  OS 스레드부터 경량 스레드, 코루틴, Fiber, Java Virtual Threads까지 — 동시성 모델이 어떻게 진화해왔는지,
+  Fiber가 무엇인지 정리합니다.
+thumbnail: /thumbnails/concurrency-and-fiber.svg
 ---
+
 
 서버가 동시에 10만 개의 연결을 처리해야 한다고 가정해보자. OS 스레드를 10만 개 만들면 어떻게 될까? 스레드 하나에 1MB 스택이면 100GB 메모리가 필요하다. 불가능하다. 이 문제를 해결하기 위해 동시성 모델은 계속 진화해왔고, Fiber는 그 흐름의 현재 지점에 있다.
 

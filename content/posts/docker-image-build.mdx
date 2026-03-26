@@ -1,10 +1,16 @@
 ---
-title: "도커 이미지 빌드 — 레이어, 캐시, 빌드컨텍스트"
-date: "2026-03-26"
-category: "DevOps"
-tags: ["Docker", "Dockerfile", "Image Build", "DevOps"]
-summary: "도커 이미지가 레이어로 구성되는 원리, Dockerfile 명령어, 빌드 캐시, 빌드 컨텍스트의 역할과 최적화 방법을 정리합니다."
+title: '도커 이미지 빌드 — 레이어, 캐시, 빌드컨텍스트'
+date: '2026-03-26'
+category: DevOps
+tags:
+  - Docker
+  - Dockerfile
+  - Image Build
+  - DevOps
+summary: '도커 이미지가 레이어로 구성되는 원리, Dockerfile 명령어, 빌드 캐시, 빌드 컨텍스트의 역할과 최적화 방법을 정리합니다.'
+thumbnail: /thumbnails/docker-image-build.svg
 ---
+
 
 도커 이미지는 단순한 파일 묶음이 아니다. 레이어(layer)라는 단위로 쌓인 구조다. 이 구조를 이해하면 빌드 속도를 높이고 이미지 크기를 줄이는 방법이 보인다.
 

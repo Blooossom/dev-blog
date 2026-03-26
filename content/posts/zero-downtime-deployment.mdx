@@ -1,10 +1,21 @@
 ---
-title: "무중단 배포 — Blue-Green, Canary, Rolling Update"
-date: "2026-03-26"
-category: "DevOps"
-tags: ["DevOps", "Deployment", "Blue-Green", "Canary", "Rolling Update", "Kubernetes", "Nginx"]
-summary: "서비스 중단 없이 배포하는 세 가지 전략 — Blue-Green, Canary, Rolling Update의 작동 원리, 장단점, Nginx·Kubernetes 구현 예시를 정리합니다."
+title: '무중단 배포 — Blue-Green, Canary, Rolling Update'
+date: '2026-03-26'
+category: DevOps
+tags:
+  - DevOps
+  - Deployment
+  - Blue-Green
+  - Canary
+  - Rolling Update
+  - Kubernetes
+  - Nginx
+summary: >-
+  서비스 중단 없이 배포하는 세 가지 전략 — Blue-Green, Canary, Rolling Update의 작동 원리, 장단점,
+  Nginx·Kubernetes 구현 예시를 정리합니다.
+thumbnail: /thumbnails/zero-downtime-deployment.svg
 ---
+
 
 배포는 언제나 위험하다. 새 버전을 올리는 순간 에러율이 치솟거나, 서버가 재시작되면서 진행 중인 요청이 끊긴다. 무중단 배포(Zero-Downtime Deployment)는 이 위험을 관리하는 전략이다.
 

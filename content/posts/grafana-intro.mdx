@@ -1,10 +1,16 @@
 ---
-title: "Grafana — 메트릭 시각화와 대시보드의 모든 것"
-date: "2026-03-26"
-category: "DevOps"
-tags: ["Grafana", "Monitoring", "Dashboard", "DevOps"]
-summary: "Grafana가 무엇인지, 어떻게 데이터를 시각화하는지, Prometheus와 왜 함께 쓰는지 — 개념부터 실제 사용법까지 정리합니다."
+title: Grafana — 메트릭 시각화와 대시보드의 모든 것
+date: '2026-03-26'
+category: DevOps
+tags:
+  - Grafana
+  - Monitoring
+  - Dashboard
+  - DevOps
+summary: 'Grafana가 무엇인지, 어떻게 데이터를 시각화하는지, Prometheus와 왜 함께 쓰는지 — 개념부터 실제 사용법까지 정리합니다.'
+thumbnail: /thumbnails/grafana-intro.svg
 ---
+
 
 숫자로 이루어진 메트릭 데이터는 그 자체로는 파악하기 어렵다. `http_requests_total{status="500"} 127`이라는 숫자가 지금 심각한 상황인지 아닌지는 추세를 봐야 알 수 있다. Grafana는 이 데이터를 그래프, 게이지, 히트맵 등으로 시각화하고, 누구나 한눈에 시스템 상태를 파악할 수 있는 대시보드를 만들어준다.
 

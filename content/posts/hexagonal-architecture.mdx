@@ -1,10 +1,19 @@
 ---
-title: "헥사고날 아키텍처 — 포트와 어댑터로 의존성을 다스리는 법"
-date: "2026-03-26"
-category: "Backend"
-tags: ["Architecture", "Hexagonal", "DDD", "Clean Architecture", "Spring"]
-summary: "Alistair Cockburn이 제안한 헥사고날 아키텍처(포트 & 어댑터 패턴)가 무엇인지, 왜 필요한지, Spring Boot에서 어떻게 구현하는지 정리합니다."
+title: 헥사고날 아키텍처 — 포트와 어댑터로 의존성을 다스리는 법
+date: '2026-03-26'
+category: Backend
+tags:
+  - Architecture
+  - Hexagonal
+  - DDD
+  - Clean Architecture
+  - Spring
+summary: >-
+  Alistair Cockburn이 제안한 헥사고날 아키텍처(포트 & 어댑터 패턴)가 무엇인지, 왜 필요한지, Spring Boot에서 어떻게
+  구현하는지 정리합니다.
+thumbnail: /thumbnails/hexagonal-architecture.svg
 ---
+
 
 레이어드 아키텍처(Controller → Service → Repository)는 직관적이지만 시간이 지나면서 문제가 생긴다. 비즈니스 로직이 프레임워크, DB, 외부 API에 점점 의존하게 되고, 어느 순간 테스트가 어렵고 기술 변경이 두려운 코드가 된다. 헥사고날 아키텍처는 이 문제를 **의존성의 방향을 명시적으로 통제**함으로써 해결한다.
 
