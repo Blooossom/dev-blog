@@ -1,0 +1,219 @@
+---
+title: "CQRS — 읽기와 쓰기를 분리하면 무엇이 달라지는가"
+date: "2026-03-26"
+category: "Backend"
+tags: ["CQRS", "Architecture", "DDD", "Event Sourcing"]
+summary: "Command Query Responsibility Segregation의 개념부터 실제 구현, Event Sourcing과의 관계, 그리고 언제 도입하면 안 되는지까지 정리합니다."
+---
+
+CQRS(Command Query Responsibility Segregation)는 이름 그대로 명령(Command)과 조회(Query)의 책임을 분리하는 패턴이다. 단순해 보이지만 제대로 이해하고 적용하면 복잡한 도메인 문제를 푸는 강력한 도구가 된다. 그러나 잘못 적용하면 불필요한 복잡성만 더한다.
+
+## 왜 분리하는가
+
+전통적인 CRUD 애플리케이션은 읽기와 쓰기에 같은 모델을 쓴다.
+
+```java
+// 같은 Order 모델로 저장도 하고 조회도 한다
+public class OrderService {
+    public Order createOrder(CreateOrderCommand cmd) { ... }
+    public Order getOrder(long orderId) { ... }
+    public List<Order> getOrdersByUser(long userId) { ... }
+    public OrderSummaryDto getOrderDashboard() { ... } // 여러 테이블 join
+}
+```
+
+문제는 읽기와 쓰기의 요구사항이 다르다는 것이다.
+
+**쓰기(Command)** 는 도메인 규칙 검증, 불변식 보장, 트랜잭션이 중요하다. 복잡한 비즈니스 로직을 정확하게 처리해야 한다.
+
+**읽기(Query)** 는 성능이 중요하다. 여러 테이블을 조인하고, 집계하고, 페이지네이션하는 것이 주 역할이다. 도메인 규칙보다는 뷰(View)에 최적화된 데이터 형태가 필요하다.
+
+하나의 모델로 두 요구사항을 동시에 만족시키려고 하면 어느 쪽도 잘 할 수 없게 된다.
+
+## 기본 구조
+
+CQRS의 핵심은 Command 모델과 Query 모델을 분리하는 것이다.
+
+```java
+// Command 쪽 — 도메인 모델 중심, 비즈니스 규칙 검증
+public class OrderCommandService {
+
+    public OrderId placeOrder(PlaceOrderCommand cmd) {
+        Customer customer = customerRepository.findById(cmd.customerId())
+            .orElseThrow(CustomerNotFoundException::new);
+
+        // 도메인 규칙 검증
+        customer.validateCanOrder();
+
+        Order order = Order.place(
+            customer.id(),
+            cmd.items(),
+            cmd.shippingAddress()
+        );
+
+        orderRepository.save(order);
+        return order.id();
+    }
+
+    public void cancelOrder(CancelOrderCommand cmd) {
+        Order order = orderRepository.findById(cmd.orderId())
+            .orElseThrow(OrderNotFoundException::new);
+
+        // 도메인 모델에서 취소 정책 검증
+        order.cancel(cmd.reason());
+        orderRepository.save(order);
+    }
+}
+
+// Query 쪽 — 읽기에 최적화, 도메인 모델 불필요
+public class OrderQueryService {
+
+    private final JdbcTemplate jdbcTemplate; // 또는 QueryDSL, JOOQ
+
+    public OrderDetailView getOrderDetail(long orderId) {
+        // 복잡한 JOIN도 직접 쿼리로 — 도메인 모델 거칠 필요 없음
+        return jdbcTemplate.queryForObject("""
+            SELECT o.id, o.status, o.created_at,
+                   c.name as customer_name,
+                   SUM(oi.price * oi.quantity) as total_amount
+            FROM orders o
+            JOIN customers c ON o.customer_id = c.id
+            JOIN order_items oi ON oi.order_id = o.id
+            WHERE o.id = ?
+            GROUP BY o.id, o.status, o.created_at, c.name
+            """,
+            OrderDetailView.class, orderId
+        );
+    }
+
+    public Page<OrderListView> getOrdersByUser(long userId, Pageable pageable) {
+        // 목록 조회에 최적화된 쿼리
+        ...
+    }
+}
+```
+
+Command 쪽은 도메인 모델(Aggregate)과 Repository를 거쳐 검증하고 저장한다. Query 쪽은 도메인 모델을 거치지 않고 데이터베이스에서 직접 읽기 전용 DTO를 만들어 반환한다.
+
+## 읽기 모델 분리
+
+더 나아가면 읽기 전용 저장소를 별도로 둘 수 있다.
+
+```
+[Command 처리] → [쓰기 DB] → [이벤트 발행]
+                                   ↓
+                             [이벤트 핸들러]
+                                   ↓
+                             [읽기 DB 갱신] ← [Query 처리]
+```
+
+쓰기는 관계형 DB(정규화된 구조), 읽기는 Elasticsearch(검색)나 Redis(캐시)나 MongoDB(비정규화된 뷰)를 따로 두는 식이다. 읽기 DB는 쓰기 DB의 이벤트를 구독해 최신 상태를 유지한다.
+
+이 구조에서 읽기 성능을 높이고 싶으면 읽기 DB만 스케일 아웃하면 된다. 쓰기 로직에 영향을 주지 않는다.
+
+단점은 쓰기 후 읽기까지 약간의 지연(eventual consistency)이 생긴다는 것이다. 결제 완료 직후 주문 목록을 조회했을 때 결제 전 상태가 보일 수 있다. 이 트레이드오프를 수용할 수 있는 도메인인지 먼저 판단해야 한다.
+
+## Event Sourcing과의 관계
+
+CQRS와 Event Sourcing은 자주 함께 언급되지만 독립적인 패턴이다. 함께 쓰면 잘 맞을 뿐이다.
+
+Event Sourcing은 도메인 객체의 현재 상태 대신 상태 변화 이력(이벤트)을 저장한다.
+
+```java
+// 일반적인 방식 — 현재 상태 저장
+// orders 테이블: { id, status: "CONFIRMED", total: 50000 }
+
+// Event Sourcing — 이벤트 이력 저장
+// order_events 테이블:
+// { orderId, type: "OrderPlaced",    data: {...}, at: "09:00" }
+// { orderId, type: "ItemAdded",      data: {...}, at: "09:01" }
+// { orderId, type: "OrderConfirmed", data: {...}, at: "09:05" }
+```
+
+현재 상태가 필요하면 이벤트를 처음부터 재생(replay)해서 계산한다.
+
+```java
+public class Order {
+    private OrderStatus status;
+    private List<OrderItem> items;
+
+    // 이벤트를 순서대로 적용해 상태를 재구성
+    public static Order reconstitute(List<DomainEvent> events) {
+        Order order = new Order();
+        events.forEach(order::apply);
+        return order;
+    }
+
+    private void apply(DomainEvent event) {
+        switch (event) {
+            case OrderPlaced e -> this.status = OrderStatus.PLACED;
+            case ItemAdded e -> this.items.add(e.item());
+            case OrderConfirmed e -> this.status = OrderStatus.CONFIRMED;
+            default -> throw new UnknownEventException(event);
+        }
+    }
+}
+```
+
+Event Sourcing의 장점은 완전한 감사 로그, 과거 시점 상태 재현, 이벤트 기반 통합이다. 단점은 복잡성이 크게 증가하고, 이벤트 스키마 변경이 까다롭다는 것이다.
+
+CQRS는 Event Sourcing 없이도 충분히 가치가 있다. Event Sourcing이 필요한 도메인(금융, 회계 등)에서 둘을 함께 쓰면 시너지가 크다.
+
+## Spring에서의 구현
+
+Axon Framework는 CQRS와 Event Sourcing을 지원하는 Java 프레임워크다. 직접 구현하는 것보다 편리하지만 학습 곡선이 있다.
+
+직접 구현하는 경우 간단한 구조는 다음과 같다.
+
+```java
+// Command — 불변 레코드로 정의
+public record PlaceOrderCommand(
+    CustomerId customerId,
+    List<OrderItem> items,
+    Address shippingAddress
+) {}
+
+// Command Handler
+@Service
+@Transactional
+public class OrderCommandHandler {
+
+    @CommandHandler
+    public OrderId handle(PlaceOrderCommand cmd) {
+        // ...
+    }
+}
+
+// Query — 읽기 전용 DTO
+public record OrderSummary(
+    long orderId,
+    String customerName,
+    String status,
+    BigDecimal totalAmount,
+    LocalDateTime orderedAt
+) {}
+
+// Query Handler — @Transactional(readOnly = true)
+@Service
+@Transactional(readOnly = true)
+public class OrderQueryHandler {
+
+    public OrderSummary getOrderSummary(long orderId) {
+        // ...
+    }
+}
+```
+
+## 언제 도입하면 안 되는가
+
+CQRS를 모든 서비스에 적용하는 것은 과잉이다. 다음 경우에는 단순한 CRUD가 낫다.
+
+**도메인이 단순할 때.** CRUD 수준의 비즈니스 로직이라면 CQRS의 복잡성이 이점을 압도한다.
+
+**팀이 작을 때.** Command/Query를 별도로 유지하고 이벤트 기반 동기화를 관리하려면 운영 부담이 상당하다.
+
+**Eventual Consistency를 수용 못 할 때.** 쓰기 후 즉시 일관된 읽기가 필요한 요구사항이라면 CQRS의 이점을 온전히 누릴 수 없다.
+
+---
+
+CQRS의 진짜 가치는 읽기와 쓰기의 서로 다른 최적화 방향을 명시적으로 인정하는 데 있다. 하나의 모델로 두 가지 요구사항을 억지로 맞추지 말고, 각각에 맞는 모델을 따로 두자는 것이다. 복잡한 도메인에서는 이 분리가 코드를 훨씬 명확하게 만든다.

@@ -1,0 +1,268 @@
+---
+title: "Spring HTTP 클라이언트 완전 비교 — RestTemplate부터 HttpInterface까지"
+date: "2026-03-26"
+category: "Backend"
+tags: ["Spring", "Java", "HTTP", "RestClient", "WebClient"]
+summary: "RestTemplate, WebClient, RestClient, HttpInterface, Java 21 HttpClient — Spring 생태계의 HTTP 클라이언트 5종을 실제 코드와 함께 비교하고, 언제 무엇을 선택할지 정리합니다."
+---
+
+Spring으로 외부 API를 호출하는 방법이 이렇게 많아진 줄 몰랐다는 사람이 많다. `RestTemplate`으로 시작했다가 `WebClient`로 갔다가, 어느새 `RestClient`와 `HttpInterface`가 등장했고, JDK 11부터는 `HttpClient`도 있다. 각자 언제 쓰는지 한 번 정리해보자.
+
+## 한눈에 비교
+
+| | RestTemplate | WebClient | RestClient | HttpInterface | HttpClient |
+|---|---|---|---|---|---|
+| 출시 | Spring 3 | Spring 5 | Spring 6.1 | Spring 6 | Java 11 |
+| 방식 | 동기 블로킹 | 비동기 논블로킹 | 동기 블로킹 | 선언적 | 동기/비동기 |
+| 가상 스레드 친화 | △ | △ | ✅ | ✅ | ✅ |
+| 리액티브 | ❌ | ✅ | ❌ | 선택 가능 | ❌ |
+| 현재 상태 | 유지보수 모드 | 현역 | 현역 (권장) | 현역 (권장) | 현역 |
+
+---
+
+## RestTemplate
+
+Spring 3.0부터 있던 전통의 HTTP 클라이언트다. 지금은 공식적으로 유지보수 모드(maintenance mode)로 전환됐다. 새 기능은 추가되지 않지만 버그 수정과 보안 패치는 계속된다.
+
+```java
+RestTemplate restTemplate = new RestTemplate();
+
+// GET
+User user = restTemplate.getForObject(
+    "https://api.example.com/users/{id}",
+    User.class,
+    userId
+);
+
+// POST
+HttpHeaders headers = new HttpHeaders();
+headers.setContentType(MediaType.APPLICATION_JSON);
+HttpEntity<CreateUserRequest> request = new HttpEntity<>(body, headers);
+
+ResponseEntity<User> response = restTemplate.exchange(
+    "https://api.example.com/users",
+    HttpMethod.POST,
+    request,
+    User.class
+);
+```
+
+**장점:** 오래된 프로젝트에서 그냥 쓰면 된다. 레퍼런스가 가장 많다.
+
+**단점:** 에러 처리가 불편하고, 체이닝이 안 되며, 새 기능이 없다.
+
+**결론:** 기존 코드 유지 외에는 쓸 이유가 없다.
+
+---
+
+## WebClient
+
+Spring 5와 함께 등장한 리액티브 HTTP 클라이언트다. Project Reactor 기반으로 논블로킹 처리를 지원한다.
+
+```java
+WebClient client = WebClient.builder()
+    .baseUrl("https://api.example.com")
+    .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+    .build();
+
+// 리액티브 방식
+Mono<User> userMono = client.get()
+    .uri("/users/{id}", userId)
+    .retrieve()
+    .onStatus(HttpStatusCode::is4xxClientError, response ->
+        Mono.error(new UserNotFoundException(userId))
+    )
+    .bodyToMono(User.class);
+
+// 블로킹이 필요하다면
+User user = userMono.block();
+
+// Flux — 여러 건
+Flux<User> users = client.get()
+    .uri("/users")
+    .retrieve()
+    .bodyToFlux(User.class);
+```
+
+**장점:** 리액티브 파이프라인과 완벽하게 통합된다. 스트리밍 응답 처리, 백프레셔 지원.
+
+**단점:** WebFlux를 쓰지 않는 프로젝트에서 `Mono`/`Flux`를 다루는 것은 불필요한 복잡성이다. `.block()` 남발은 리액티브의 이점을 날린다.
+
+**결론:** WebFlux 기반 리액티브 프로젝트에서 사용. MVC 프로젝트에서는 RestClient가 낫다.
+
+---
+
+## RestClient
+
+Spring 6.1(Spring Boot 3.2)에서 등장한 새로운 동기 HTTP 클라이언트다. `WebClient`의 유창한(fluent) API를 동기 방식으로 가져왔고, `RestTemplate`의 후계자로 포지셔닝됐다.
+
+```java
+RestClient restClient = RestClient.builder()
+    .baseUrl("https://api.example.com")
+    .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+    .build();
+
+// GET
+User user = restClient.get()
+    .uri("/users/{id}", userId)
+    .retrieve()
+    .onStatus(HttpStatusCode::is4xxClientError, (request, response) -> {
+        throw new UserNotFoundException(userId);
+    })
+    .body(User.class);
+
+// POST
+User created = restClient.post()
+    .uri("/users")
+    .contentType(MediaType.APPLICATION_JSON)
+    .body(new CreateUserRequest("Alice", "alice@example.com"))
+    .retrieve()
+    .body(User.class);
+
+// ResponseEntity로 받기 (상태코드 + 헤더 필요할 때)
+ResponseEntity<User> response = restClient.get()
+    .uri("/users/{id}", userId)
+    .retrieve()
+    .toEntity(User.class);
+```
+
+가상 스레드와 궁합이 좋다. 블로킹 코드이지만 가상 스레드 위에서 실행되면 I/O 대기 중 캐리어 스레드를 반납하므로 높은 처리량을 유지할 수 있다.
+
+**장점:** 직관적인 API, `RestTemplate` 대비 훨씬 나은 에러 처리, 가상 스레드 친화적.
+
+**단점:** Spring 6.1 미만에서는 사용 불가.
+
+**결론:** 신규 MVC/동기 프로젝트의 기본 선택지.
+
+---
+
+## HttpInterface
+
+Spring 6에서 도입된 선언적 HTTP 클라이언트다. Feign Client에 익숙하다면 바로 이해할 수 있다. 인터페이스를 정의하면 Spring이 구현체를 자동으로 만들어준다.
+
+```java
+// 1. 인터페이스 선언
+@HttpExchange("https://api.example.com")
+public interface UserClient {
+
+    @GetExchange("/users/{id}")
+    User getUser(@PathVariable long id);
+
+    @PostExchange("/users")
+    User createUser(@RequestBody CreateUserRequest request);
+
+    @GetExchange("/users")
+    List<User> getUsers(@RequestParam String role);
+
+    @DeleteExchange("/users/{id}")
+    void deleteUser(@PathVariable long id);
+}
+
+// 2. 빈 등록
+@Configuration
+public class HttpClientConfig {
+
+    @Bean
+    public UserClient userClient() {
+        RestClient restClient = RestClient.builder()
+            .baseUrl("https://api.example.com")
+            .build();
+
+        RestClientAdapter adapter = RestClientAdapter.create(restClient);
+        HttpServiceProxyFactory factory = HttpServiceProxyFactory
+            .builderFor(adapter)
+            .build();
+
+        return factory.createClient(UserClient.class);
+    }
+}
+
+// 3. 사용 — 그냥 인터페이스 메서드 호출
+@Service
+public class UserService {
+
+    private final UserClient userClient;
+
+    public UserService(UserClient userClient) {
+        this.userClient = userClient;
+    }
+
+    public User getUser(long id) {
+        return userClient.getUser(id); // HTTP 호출이지만 로컬 메서드처럼 보인다
+    }
+}
+```
+
+WebClient를 어댑터로 사용하면 리액티브 반환 타입도 지원한다.
+
+```java
+@HttpExchange("/users/{id}")
+Mono<User> getUserReactive(@PathVariable long id);
+```
+
+**장점:** 보일러플레이트 최소화. 인터페이스만 보면 어떤 API를 호출하는지 한눈에 파악된다. 테스트할 때 목(mock)으로 교체하기 쉽다.
+
+**단점:** 동적 URL, 조건부 헤더 등 복잡한 케이스는 직접 `RestClient`를 쓰는 게 낫다.
+
+**결론:** 외부 API 연동이 명확히 정의되어 있다면 최우선 선택지.
+
+---
+
+## Java HttpClient
+
+JDK 11에서 표준 라이브러리로 추가된 HTTP 클라이언트다. Spring 의존성 없이 순수 Java로 HTTP 호출이 가능하다.
+
+```java
+HttpClient client = HttpClient.newBuilder()
+    .connectTimeout(Duration.ofSeconds(5))
+    .build();
+
+// 동기
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create("https://api.example.com/users/1"))
+    .header("Authorization", "Bearer " + token)
+    .GET()
+    .build();
+
+HttpResponse<String> response = client.send(
+    request,
+    HttpResponse.BodyHandlers.ofString()
+);
+
+String body = response.body();
+int statusCode = response.statusCode();
+
+// 비동기
+CompletableFuture<HttpResponse<String>> future = client.sendAsync(
+    request,
+    HttpResponse.BodyHandlers.ofString()
+);
+```
+
+JSON 역직렬화는 직접 처리해야 한다. Jackson 등을 수동으로 연결해야 하므로 Spring 없이 쓸 때는 번거롭다.
+
+**장점:** 외부 의존성 없음. Spring을 쓰지 않는 프로젝트에서 유용.
+
+**단점:** Spring 프로젝트에서는 RestClient나 HttpInterface가 훨씬 편리하다. 직렬화/역직렬화를 손수 처리해야 한다.
+
+**결론:** Spring 없는 순수 Java 프로젝트, 또는 Spring RestClient의 기반 구현체로 활용.
+
+---
+
+## 무엇을 선택할까
+
+상황별로 정리하면 다음과 같다.
+
+**신규 Spring MVC 프로젝트** → `RestClient` + `HttpInterface`를 같이 쓴다. 단순 API 호출은 HttpInterface로 선언하고, 동적 로직이 필요한 곳만 RestClient를 직접 쓴다.
+
+**Spring WebFlux(리액티브) 프로젝트** → `WebClient`. 리액티브 파이프라인과 통합이 자연스럽다.
+
+**레거시 코드 유지** → `RestTemplate` 그대로 둔다. 마이그레이션 비용이 이점보다 크다.
+
+**Spring 없는 Java 프로젝트** → `HttpClient`.
+
+가상 스레드(Spring Boot 3.2 + `spring.threads.virtual.enabled: true`)를 쓴다면 `RestClient`와 `HttpInterface`의 선택이 더 확실해진다. 블로킹 코드이지만 가상 스레드 위에서 실행되면 리액티브에 준하는 처리량을 얻을 수 있기 때문이다. WebFlux와 RestClient 사이의 선택 기준이 예전보다 훨씬 명확해졌다.
+
+---
+
+`RestTemplate` 시절에는 선택지가 없었다. `WebClient`가 나왔을 때는 MVC 프로젝트에서도 억지로 리액티브를 도입해야 하나 고민했다. `RestClient`와 `HttpInterface`가 등장하면서 동기 코드를 유지하면서도 현대적인 API를 쓸 수 있게 됐다. 선택지가 많아진 만큼, 각 도구의 맥락을 이해하고 쓰는 게 중요하다.
