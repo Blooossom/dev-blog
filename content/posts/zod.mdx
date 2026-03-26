@@ -1,0 +1,329 @@
+---
+title: "Zod — TypeScript 우선 스키마 검증 라이브러리"
+date: "2026-03-26"
+category: "Frontend"
+tags: ["Zod", "TypeScript", "Validation", "Schema"]
+summary: "Zod로 런타임 데이터 검증과 TypeScript 타입을 동시에 관리하는 방법, 실전 사용 패턴을 정리합니다."
+---
+
+TypeScript는 컴파일 타임에 타입을 검사한다. 하지만 런타임에 들어오는 외부 데이터 — API 응답, 폼 입력, 환경변수 — 는 TypeScript가 보장해주지 않는다. Zod는 런타임 검증과 TypeScript 타입 추론을 하나로 묶는다.
+
+## 왜 Zod인가
+
+```typescript
+// TypeScript만 쓰는 경우
+interface User {
+  id: number
+  name: string
+  email: string
+}
+
+// API 응답을 타입 단언으로 처리
+const user = response.data as User  // 실제로 맞는지 보장 없음
+console.log(user.email.toLowerCase())  // 런타임 에러 가능
+```
+
+```typescript
+// Zod 사용
+import { z } from 'zod'
+
+const UserSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  email: z.string().email(),
+})
+
+type User = z.infer<typeof UserSchema>  // TypeScript 타입 자동 생성
+
+const result = UserSchema.safeParse(response.data)
+if (result.success) {
+  console.log(result.data.email.toLowerCase())  // 안전
+} else {
+  console.error(result.error)  // 어떤 필드가 잘못됐는지 상세 오류
+}
+```
+
+스키마를 한 번 정의하면 런타임 검증과 타입 정의가 함께 따라온다. 타입과 검증 로직이 어긋날 수 없다.
+
+## 기본 타입
+
+```typescript
+import { z } from 'zod'
+
+// 원시 타입
+z.string()
+z.number()
+z.boolean()
+z.date()
+z.bigint()
+z.symbol()
+z.undefined()
+z.null()
+z.void()
+z.any()
+z.unknown()
+z.never()
+
+// 문자열 검증
+z.string().min(1)
+z.string().max(100)
+z.string().length(10)
+z.string().email()
+z.string().url()
+z.string().uuid()
+z.string().startsWith('prefix')
+z.string().regex(/^[a-z]+$/)
+
+// 숫자 검증
+z.number().min(0)
+z.number().max(100)
+z.number().positive()
+z.number().negative()
+z.number().int()
+z.number().finite()
+
+// 날짜
+z.date().min(new Date('2020-01-01'))
+z.date().max(new Date())
+```
+
+## 객체 스키마
+
+```typescript
+const ProductSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(200),
+  price: z.number().positive(),
+  category: z.enum(['electronics', 'clothing', 'food']),
+  description: z.string().optional(),  // undefined 허용
+  tags: z.array(z.string()).default([]),  // 없으면 빈 배열
+  createdAt: z.date(),
+})
+
+type Product = z.infer<typeof ProductSchema>
+// {
+//   id: string
+//   name: string
+//   price: number
+//   category: 'electronics' | 'clothing' | 'food'
+//   description?: string | undefined
+//   tags: string[]
+//   createdAt: Date
+// }
+```
+
+### 객체 변형
+
+```typescript
+// 특정 필드 선택
+const ProductSummarySchema = ProductSchema.pick({ id: true, name: true, price: true })
+
+// 특정 필드 제외
+const ProductWithoutIdSchema = ProductSchema.omit({ id: true })
+
+// 모든 필드 optional로
+const PartialProductSchema = ProductSchema.partial()
+
+// 특정 필드만 optional로
+const UpdateProductSchema = ProductSchema.partial({ description: true, tags: true })
+
+// 필드 추가/재정의
+const ExtendedProductSchema = ProductSchema.extend({
+  discountPrice: z.number().positive().optional(),
+})
+```
+
+## 중첩 스키마와 배열
+
+```typescript
+const AddressSchema = z.object({
+  street: z.string(),
+  city: z.string(),
+  country: z.string().length(2),
+})
+
+const OrderSchema = z.object({
+  id: z.string().uuid(),
+  items: z.array(
+    z.object({
+      productId: z.string().uuid(),
+      quantity: z.number().int().positive(),
+      price: z.number().positive(),
+    })
+  ).min(1),  // 최소 1개 아이템
+  shippingAddress: AddressSchema,
+  status: z.enum(['pending', 'confirmed', 'shipped', 'delivered', 'cancelled']),
+  total: z.number().positive(),
+})
+
+type Order = z.infer<typeof OrderSchema>
+```
+
+## Union과 Discriminated Union
+
+```typescript
+// Union
+const StringOrNumber = z.union([z.string(), z.number()])
+
+// Discriminated Union (식별 가능한 유니온) — 성능과 오류 메시지 개선
+const NotificationSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('email'),
+    to: z.string().email(),
+    subject: z.string(),
+    body: z.string(),
+  }),
+  z.object({
+    type: z.literal('sms'),
+    phone: z.string(),
+    message: z.string().max(160),
+  }),
+  z.object({
+    type: z.literal('push'),
+    deviceToken: z.string(),
+    title: z.string(),
+    body: z.string(),
+  }),
+])
+
+type Notification = z.infer<typeof NotificationSchema>
+```
+
+## 변환 (transform)
+
+파싱과 동시에 데이터를 변환한다.
+
+```typescript
+const DateStringSchema = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .transform(str => new Date(str))
+
+// input: "2026-03-26" (string)
+// output: Date 객체
+
+const TrimmedEmailSchema = z.string()
+  .email()
+  .transform(email => email.toLowerCase().trim())
+
+// input: "  USER@EXAMPLE.COM  "
+// output: "user@example.com"
+```
+
+## safeParse vs parse
+
+```typescript
+const schema = z.object({ name: z.string() })
+
+// parse: 실패 시 에러 throw
+try {
+  const data = schema.parse({ name: 123 })
+} catch (err) {
+  if (err instanceof z.ZodError) {
+    console.log(err.issues)
+    // [{ code: 'invalid_type', expected: 'string', received: 'number', path: ['name'], message: 'Expected string, received number' }]
+  }
+}
+
+// safeParse: 결과 객체 반환
+const result = schema.safeParse({ name: 123 })
+if (!result.success) {
+  console.log(result.error.issues)
+} else {
+  console.log(result.data)  // { name: string }
+}
+
+// safeParseAsync: 비동기 검증
+const asyncResult = await schema.safeParseAsync(data)
+```
+
+## 실전 패턴
+
+### API 응답 검증
+
+```typescript
+const ApiResponseSchema = <T extends z.ZodTypeAny>(dataSchema: T) =>
+  z.object({
+    success: z.boolean(),
+    data: dataSchema,
+    message: z.string().optional(),
+  })
+
+const UserListResponseSchema = ApiResponseSchema(z.array(UserSchema))
+
+async function fetchUsers(): Promise<User[]> {
+  const response = await fetch('/api/users')
+  const json = await response.json()
+
+  const result = UserListResponseSchema.safeParse(json)
+  if (!result.success) {
+    throw new Error(`Invalid API response: ${result.error.message}`)
+  }
+  return result.data.data
+}
+```
+
+### 폼 검증 (React Hook Form)
+
+```typescript
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+
+const SignUpSchema = z.object({
+  email: z.string().email('유효한 이메일을 입력하세요'),
+  password: z.string()
+    .min(8, '비밀번호는 8자 이상이어야 합니다')
+    .regex(/[A-Z]/, '대문자가 포함되어야 합니다')
+    .regex(/[0-9]/, '숫자가 포함되어야 합니다'),
+  confirmPassword: z.string(),
+}).refine(
+  data => data.password === data.confirmPassword,
+  { message: '비밀번호가 일치하지 않습니다', path: ['confirmPassword'] }
+)
+
+type SignUpForm = z.infer<typeof SignUpSchema>
+
+function SignUpPage() {
+  const { register, handleSubmit, formState: { errors } } = useForm<SignUpForm>({
+    resolver: zodResolver(SignUpSchema),
+  })
+
+  const onSubmit = (data: SignUpForm) => {
+    // data는 검증 통과한 SignUpForm 타입
+    createAccount(data)
+  }
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <input {...register('email')} />
+      {errors.email && <p>{errors.email.message}</p>}
+      {/* ... */}
+    </form>
+  )
+}
+```
+
+### 환경변수 검증
+
+```typescript
+// env.ts
+const EnvSchema = z.object({
+  DATABASE_URL: z.string().url(),
+  API_KEY: z.string().min(1),
+  PORT: z.string().transform(Number).default('3000'),
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+})
+
+const parsed = EnvSchema.safeParse(process.env)
+if (!parsed.success) {
+  console.error('Invalid environment variables:', parsed.error.format())
+  process.exit(1)
+}
+
+export const env = parsed.data
+// env.PORT는 number 타입
+// env.NODE_ENV는 'development' | 'production' | 'test' 타입
+```
+
+---
+
+Zod의 핵심 가치는 **단일 진실 공급원(Single Source of Truth)**이다. 스키마 하나가 런타임 검증 로직이 되고, TypeScript 타입도 된다. API 응답, 폼 입력, 환경변수처럼 외부에서 들어오는 데이터는 신뢰할 수 없다. Zod로 경계에서 검증하면 그 이후 코드에서는 타입을 믿을 수 있다.

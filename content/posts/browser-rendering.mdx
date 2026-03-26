@@ -1,0 +1,233 @@
+---
+title: "브라우저 렌더링 — URL 입력부터 화면 표시까지"
+date: "2026-03-26"
+category: "Frontend"
+tags: ["Browser", "Rendering", "Performance", "Web"]
+summary: "브라우저가 URL을 입력받아 화면을 그리는 전 과정 — DNS 조회, HTML 파싱, DOM/CSSOM 생성, 레이아웃, 페인팅, 합성까지 단계별로 정리합니다."
+---
+
+주소창에 URL을 입력하고 Enter를 누르면 어떤 일이 일어날까? 이 과정을 이해하면 웹 성능 최적화가 어디서 왜 중요한지 보인다.
+
+## 1. 네트워크 요청
+
+### DNS 조회
+
+`https://example.com` 입력 → 브라우저가 IP 주소를 찾아야 한다.
+
+```
+브라우저 캐시 → OS 캐시 → 라우터 캐시 → ISP DNS 서버 → 루트 DNS → TLD DNS → 권위 DNS
+```
+
+캐시에 있으면 바로 반환. 없으면 DNS 계층을 거슬러 올라가며 조회한다.
+
+### TCP 연결 + TLS 핸드셰이크
+
+IP 확인 후 TCP 연결(3-way handshake). HTTPS라면 추가로 TLS 핸드셰이크.
+
+```
+Client → SYN → Server
+Client ← SYN-ACK ← Server
+Client → ACK → Server
+(TCP 연결 완료)
+
+TLS: Client Hello → Server Hello → Certificate → Key Exchange → ...
+```
+
+이 과정이 최초 연결의 지연(latency)을 만든다. HTTP/2는 하나의 TCP 연결을 재사용하고, HTTP/3는 UDP 기반 QUIC으로 핸드셰이크를 줄인다.
+
+### HTTP 요청/응답
+
+서버에서 HTML을 응답받는다. 이때부터 브라우저의 렌더링 파이프라인이 시작된다.
+
+## 2. HTML 파싱 → DOM 생성
+
+브라우저는 HTML을 한 줄씩 읽으며 **DOM(Document Object Model)** 트리를 만든다.
+
+```html
+<html>
+  <head><title>Hello</title></head>
+  <body>
+    <div id="app">
+      <p>Hello</p>
+    </div>
+  </body>
+</html>
+```
+
+```
+Document
+└── html
+    ├── head
+    │   └── title "Hello"
+    └── body
+        └── div#app
+            └── p "Hello"
+```
+
+HTML 파싱 중 `<script>` 태그를 만나면 **파싱이 중단**된다. JS가 DOM을 수정할 수 있기 때문에 먼저 실행해야 한다. 이것이 `<script>` 태그를 `</body>` 앞에 두거나 `defer`/`async`를 쓰는 이유다.
+
+```html
+<!-- 파싱 블로킹 -->
+<script src="app.js"></script>
+
+<!-- defer: HTML 파싱 완료 후 실행, 순서 보장 -->
+<script defer src="app.js"></script>
+
+<!-- async: 다운로드 완료 즉시 실행, 순서 보장 없음 -->
+<script async src="analytics.js"></script>
+```
+
+## 3. CSS 파싱 → CSSOM 생성
+
+CSS를 파싱해 **CSSOM(CSS Object Model)** 트리를 만든다.
+
+```css
+body { font-size: 16px; }
+div { color: blue; }
+p { margin: 10px; }
+```
+
+```
+CSSOM
+└── body (font-size: 16px)
+    └── div (color: blue)
+        └── p (margin: 10px; font-size: 16px 상속)
+```
+
+CSSOM은 **렌더링 블로킹 리소스**다. CSSOM이 완성되기 전에는 렌더링이 시작되지 않는다. CSS를 `<head>`에 두는 이유가 여기 있다.
+
+## 4. 렌더 트리 생성
+
+DOM + CSSOM을 합쳐 **렌더 트리(Render Tree)**를 만든다. 실제로 화면에 그려질 요소만 포함한다.
+
+```
+DOM 노드 중 화면에 표시되는 것만 포함
+- display: none → 렌더 트리에서 제외
+- visibility: hidden → 포함됨 (공간은 차지)
+- <head>, <script> → 제외
+```
+
+```
+Render Tree
+└── body
+    └── div#app (color: blue)
+        └── p (margin: 10px)
+            └── "Hello"
+```
+
+## 5. 레이아웃 (Layout / Reflow)
+
+렌더 트리의 각 노드가 **화면의 어디에, 얼마나 크게** 표시될지 계산한다.
+
+```
+뷰포트 크기: 1280 × 800
+div#app: x=0, y=0, width=1280, height=auto
+p: x=0, y=10px, width=1280, height=24px
+```
+
+레이아웃은 비용이 크다. 특히 **리플로우(reflow)**라고도 부르는 레이아웃 재계산이 자주 발생하면 성능 문제가 생긴다.
+
+리플로우를 유발하는 속성:
+- `width`, `height`, `margin`, `padding`, `border`
+- `font-size`, `line-height`
+- `position`, `display`
+- `offsetWidth`, `scrollTop` 등 레이아웃 정보 읽기
+
+## 6. 페인팅 (Painting)
+
+레이아웃이 끝나면 각 요소를 **픽셀로 그린다**. 색상, 텍스트, 이미지, 테두리, 그림자 등.
+
+페인팅은 레이어 단위로 이루어진다. 특정 조건의 요소는 별도 레이어로 분리된다.
+- `position: fixed`
+- `transform`, `opacity`가 있는 요소
+- `will-change: transform`
+
+## 7. 합성 (Compositing)
+
+여러 레이어를 합쳐서 최종 화면을 만든다. GPU가 담당한다.
+
+```
+레이어 1: 배경
+레이어 2: 네비게이션 (position: fixed)
+레이어 3: 메인 콘텐츠
+레이어 4: 모달 (z-index 높음)
+
+→ GPU 합성 → 화면 출력
+```
+
+**`transform`과 `opacity`는 합성만 트리거한다.** 레이아웃과 페인팅을 건너뛰어서 애니메이션이 부드럽다.
+
+```css
+/* 성능 좋음 — 합성만 트리거 */
+.animated {
+  transform: translateX(100px);
+  opacity: 0.5;
+}
+
+/* 성능 나쁨 — 레이아웃부터 다시 */
+.animated {
+  left: 100px;
+}
+```
+
+## 크리티컬 렌더링 패스
+
+HTML 수신 후 첫 화면이 그려지기까지의 과정을 **크리티컬 렌더링 패스(Critical Rendering Path)**라고 한다.
+
+```
+HTML 다운로드 → DOM 생성 → CSSOM 생성 → 렌더 트리 → 레이아웃 → 페인팅 → 화면
+                              ↑
+                    CSS 다운로드 (렌더링 블로킹)
+```
+
+최적화 핵심:
+1. **크리티컬 CSS 인라인화** — 첫 화면에 필요한 CSS만 `<style>`로 직접 삽입
+2. **JS 비동기화** — `defer` / `async` 사용
+3. **리소스 힌트** — `<link rel="preload">`, `<link rel="preconnect">`
+
+```html
+<head>
+  <!-- 폰트 서버에 미리 연결 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+
+  <!-- 중요 리소스 미리 로드 -->
+  <link rel="preload" href="hero.jpg" as="image">
+
+  <!-- 크리티컬 CSS 인라인 -->
+  <style>
+    /* 첫 화면에만 필요한 최소 CSS */
+    body { margin: 0; font-family: sans-serif; }
+    .hero { height: 100vh; background: #000; }
+  </style>
+
+  <!-- 나머지 CSS는 비동기 로드 -->
+  <link rel="stylesheet" href="styles.css" media="print" onload="this.media='all'">
+</head>
+```
+
+## 리플로우 vs 리페인트
+
+| 트리거 | 단계 | 비용 |
+|--------|------|------|
+| 크기/위치 변경 | 레이아웃 → 페인팅 → 합성 | 높음 |
+| 색상/배경 변경 | 페인팅 → 합성 | 중간 |
+| transform/opacity | 합성만 | 낮음 |
+
+```javascript
+// 레이아웃 트래싱 최소화 — 일괄 읽기 후 일괄 쓰기
+// ❌ 레이아웃 스래싱
+for (const el of elements) {
+  const width = el.offsetWidth;   // 읽기 (레이아웃 강제)
+  el.style.width = width * 2 + 'px';  // 쓰기
+}
+
+// ✅ 읽기 모아서, 쓰기 모아서
+const widths = elements.map(el => el.offsetWidth);
+elements.forEach((el, i) => {
+  el.style.width = widths[i] * 2 + 'px';
+});
+```
+
+---
+
+브라우저 렌더링 파이프라인을 이해하면 "왜 이 CSS 속성이 성능에 나쁜가", "왜 JS는 `</body>` 전에 두는가", "왜 `transform`을 써야 하는가"에 대한 근본 이유가 보인다. 최적화는 이 파이프라인의 어느 단계를 줄이거나 건너뛸 수 있느냐의 문제다.

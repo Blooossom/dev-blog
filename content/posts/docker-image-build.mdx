@@ -1,0 +1,288 @@
+---
+title: "도커 이미지 빌드 — 레이어, 캐시, 빌드컨텍스트"
+date: "2026-03-26"
+category: "DevOps"
+tags: ["Docker", "Dockerfile", "Image Build", "DevOps"]
+summary: "도커 이미지가 레이어로 구성되는 원리, Dockerfile 명령어, 빌드 캐시, 빌드 컨텍스트의 역할과 최적화 방법을 정리합니다."
+---
+
+도커 이미지는 단순한 파일 묶음이 아니다. 레이어(layer)라는 단위로 쌓인 구조다. 이 구조를 이해하면 빌드 속도를 높이고 이미지 크기를 줄이는 방법이 보인다.
+
+## 이미지 레이어
+
+이미지는 여러 개의 읽기 전용 레이어가 쌓인 구조다. 각 Dockerfile 명령어(`RUN`, `COPY`, `ADD`)가 새 레이어를 만든다.
+
+```dockerfile
+FROM ubuntu:22.04          # 레이어 1 (베이스 이미지)
+RUN apt-get update         # 레이어 2
+RUN apt-get install -y curl # 레이어 3
+COPY app.py /app/          # 레이어 4
+RUN pip install -r requirements.txt # 레이어 5
+```
+
+```
+최종 이미지
+├── 레이어 5: pip install 결과
+├── 레이어 4: app.py 복사
+├── 레이어 3: curl 설치
+├── 레이어 2: apt-get update 결과
+└── 레이어 1: ubuntu:22.04 기본 파일시스템
+```
+
+레이어는 콘텐츠 기반 해시로 식별된다. 같은 내용의 레이어는 여러 이미지가 공유할 수 있다. `ubuntu:22.04`를 베이스로 하는 이미지 10개를 가지고 있어도 ubuntu 레이어는 디스크에 한 번만 저장된다.
+
+## 레이어 캐시
+
+도커 빌드에서 가장 중요한 성능 요소는 **레이어 캐시**다. 이미 빌드한 레이어는 재사용한다.
+
+```
+빌드 시도 1: FROM → RUN → COPY → RUN (모두 새로 실행)
+빌드 시도 2: FROM → RUN (캐시) → COPY (변경됨!) → RUN (캐시 무효화)
+```
+
+특정 레이어의 내용이 바뀌면, 그 이후의 모든 레이어는 캐시가 무효화되어 다시 실행된다. `COPY` 명령으로 파일을 복사할 때 파일 내용이 바뀌면 그 시점부터 이후 모든 레이어가 새로 빌드된다.
+
+**캐시를 활용하는 Dockerfile 작성법:**
+
+자주 바뀌는 파일은 뒤에, 잘 안 바뀌는 것은 앞에 배치한다.
+
+```dockerfile
+# ❌ 비효율적 — app 코드가 바뀔 때마다 의존성 재설치
+FROM node:20-alpine
+COPY . /app
+WORKDIR /app
+RUN npm install
+CMD ["node", "index.js"]
+
+# ✅ 효율적 — package.json이 안 바뀌면 npm install 캐시 재사용
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./   # 의존성 정의 파일만 먼저 복사
+RUN npm install         # 이 레이어는 package.json이 바뀔 때만 재실행
+COPY . .                # 앱 코드 복사 (자주 바뀜)
+CMD ["node", "index.js"]
+```
+
+## Dockerfile 주요 명령어
+
+**`FROM`** — 베이스 이미지 지정. 모든 Dockerfile의 시작점.
+
+```dockerfile
+FROM node:20-alpine
+FROM ubuntu:22.04
+FROM scratch  # 아무것도 없는 빈 베이스 (Go 바이너리 등에 사용)
+```
+
+**`RUN`** — 빌드 시점에 명령어 실행. 새 레이어 생성.
+
+```dockerfile
+# 레이어를 줄이기 위해 && 로 연결
+RUN apt-get update \
+    && apt-get install -y curl git \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+**`COPY`** — 빌드 컨텍스트에서 파일을 이미지로 복사.
+
+```dockerfile
+COPY src/ /app/src/
+COPY package*.json ./
+```
+
+**`ADD`** — COPY와 유사하지만 URL 다운로드, tar 자동 압축 해제 기능 추가. 일반적으로 COPY 사용을 권장한다.
+
+**`WORKDIR`** — 이후 명령어의 작업 디렉토리 설정.
+
+```dockerfile
+WORKDIR /app  # 없으면 자동 생성
+```
+
+**`ENV`** — 환경변수 설정. 빌드 시점과 런타임 모두 적용.
+
+```dockerfile
+ENV NODE_ENV=production
+ENV PORT=3000
+```
+
+**`ARG`** — 빌드 시점에만 사용하는 변수. `--build-arg`로 전달.
+
+```dockerfile
+ARG VERSION=1.0
+ARG BUILD_DATE
+
+LABEL version=$VERSION
+LABEL build-date=$BUILD_DATE
+```
+
+```bash
+docker build --build-arg VERSION=2.0 --build-arg BUILD_DATE=$(date) .
+```
+
+**`EXPOSE`** — 컨테이너가 사용하는 포트 문서화 (실제 개방과 무관).
+
+```dockerfile
+EXPOSE 3000
+EXPOSE 8080/udp
+```
+
+**`CMD`** — 컨테이너 시작 시 기본 명령어. `docker run` 시 인수로 덮어쓸 수 있다.
+
+```dockerfile
+CMD ["node", "index.js"]
+```
+
+**`ENTRYPOINT`** — 컨테이너의 실행 파일 지정. CMD와 결합해서 사용.
+
+```dockerfile
+ENTRYPOINT ["java", "-jar"]
+CMD ["app.jar"]  # docker run image 다른파일.jar 로 변경 가능
+```
+
+**`USER`** — 이후 명령어를 실행할 사용자 지정. 보안을 위해 root 대신 지정.
+
+```dockerfile
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+```
+
+**`LABEL`** — 이미지 메타데이터 추가.
+
+```dockerfile
+LABEL maintainer="dev@example.com"
+LABEL org.opencontainers.image.version="1.0.0"
+```
+
+## 빌드 컨텍스트
+
+`docker build` 명령어를 실행할 때 도커 데몬에 전송되는 디렉토리가 **빌드 컨텍스트**다.
+
+```bash
+docker build -t myapp:1.0 .
+#                          ^ 빌드 컨텍스트 (현재 디렉토리)
+```
+
+Dockerfile의 `COPY` 명령어는 빌드 컨텍스트 안에 있는 파일만 참조할 수 있다. 컨텍스트 바깥 파일은 접근 불가다.
+
+```
+빌드 컨텍스트 (.) = 현재 디렉토리 전체
+├── Dockerfile
+├── src/
+├── package.json
+├── node_modules/    ← 수백 MB, 필요 없음
+└── .git/            ← 수백 MB, 필요 없음
+```
+
+빌드 컨텍스트는 빌드 전에 도커 데몬으로 전송된다. 큰 디렉토리가 포함되면 전송 시간이 늘어난다.
+
+## .dockerignore
+
+불필요한 파일을 빌드 컨텍스트에서 제외한다. `.gitignore`와 동일한 문법이다.
+
+```
+# .dockerignore
+node_modules/
+.git/
+.env
+*.log
+dist/
+coverage/
+README.md
+docker-compose*.yml
+```
+
+```
+.dockerignore 적용 전: 빌드 컨텍스트 500MB
+.dockerignore 적용 후: 빌드 컨텍스트 2MB
+```
+
+`.dockerignore`는 빌드 속도와 캐시 효율 모두에 영향을 준다. `COPY . .` 명령 실행 시 불필요한 파일이 포함되면 매번 레이어 캐시가 무효화될 수 있다.
+
+## 멀티 스테이지 빌드
+
+빌드 도구와 최종 실행 파일을 분리해 이미지 크기를 대폭 줄인다.
+
+```dockerfile
+# Stage 1: 빌드 환경 (큰 이미지)
+FROM node:20 AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build   # dist/ 생성
+
+# Stage 2: 실행 환경 (작은 이미지)
+FROM node:20-alpine AS runner
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --production
+COPY --from=builder /app/dist ./dist  # 빌드 결과물만 복사
+CMD ["node", "dist/index.js"]
+```
+
+빌드 단계에서 필요한 TypeScript 컴파일러, webpack, 테스트 도구 등이 최종 이미지에 포함되지 않는다.
+
+```
+단일 스테이지: 1.2GB
+멀티 스테이지: 180MB
+```
+
+Java 예시:
+
+```dockerfile
+# Stage 1: Maven 빌드
+FROM maven:3.9-eclipse-temurin-21 AS builder
+WORKDIR /app
+COPY pom.xml .
+RUN mvn dependency:go-offline  # 의존성 캐시
+COPY src ./src
+RUN mvn package -DskipTests
+
+# Stage 2: JRE만 있는 경량 이미지
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY --from=builder /app/target/app.jar .
+EXPOSE 8080
+CMD ["java", "-jar", "app.jar"]
+```
+
+## 이미지 크기 최적화
+
+**Alpine Linux 사용** — 기본 이미지 대비 훨씬 작다.
+
+```
+node:20        → ~1GB
+node:20-alpine → ~170MB
+```
+
+**레이어 합치기** — `RUN` 명령어를 `&&`로 연결해 레이어 수 줄이기.
+
+```dockerfile
+# ❌ 레이어 3개
+RUN apt-get update
+RUN apt-get install -y curl
+RUN rm -rf /var/lib/apt/lists/*
+
+# ✅ 레이어 1개
+RUN apt-get update \
+    && apt-get install -y curl \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+**불필요한 파일 제거** — 설치 후 캐시 파일 삭제.
+
+```dockerfile
+# apt 캐시 제거
+RUN apt-get install -y curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# pip 캐시 미저장
+RUN pip install --no-cache-dir -r requirements.txt
+
+# npm 캐시 정리
+RUN npm install \
+    && npm cache clean --force
+```
+
+---
+
+이미지 레이어를 이해하면 Dockerfile 작성 방식이 달라진다. 캐시를 의식해서 명령어 순서를 배치하고, `.dockerignore`로 컨텍스트를 최소화하고, 멀티 스테이지로 최종 이미지를 가볍게 만든다. 이 세 가지가 실무에서 가장 효과가 큰 최적화다.

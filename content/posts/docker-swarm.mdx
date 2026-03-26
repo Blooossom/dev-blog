@@ -1,0 +1,255 @@
+---
+title: "도커 스웜 — 컨테이너 오케스트레이션의 기초"
+date: "2026-03-26"
+category: "DevOps"
+tags: ["Docker", "Swarm", "Orchestration", "DevOps"]
+summary: "도커 스웜이 무엇인지, 클러스터 구성과 서비스 배포, 스케일링, Kubernetes와의 차이를 정리합니다."
+---
+
+단일 서버에서 컨테이너를 실행하면 한계가 있다. 서버가 다운되면 서비스가 멈추고, 트래픽이 늘면 한 서버로 감당이 안 된다. 도커 스웜은 여러 서버를 하나의 클러스터로 묶어 컨테이너를 관리하는 도커 기본 오케스트레이션 도구다.
+
+## 스웜이 해결하는 문제
+
+- **고가용성** — 노드가 죽으면 다른 노드에서 자동으로 컨테이너 재시작
+- **스케일링** — 명령 하나로 컨테이너 인스턴스 수 조정
+- **로드 밸런싱** — 여러 컨테이너에 트래픽 자동 분산
+- **무중단 배포** — 롤링 업데이트로 서비스 중단 없이 배포
+
+## 핵심 개념
+
+**노드(Node)** — 스웜에 참여하는 서버.
+- Manager 노드: 클러스터 상태 관리, 작업 스케줄링
+- Worker 노드: 실제 컨테이너 실행
+
+**서비스(Service)** — 스웜에서 실행할 컨테이너 정의. 몇 개의 복제본을 어떻게 실행할지 선언한다.
+
+**태스크(Task)** — 서비스의 각 컨테이너 인스턴스. 서비스 복제본 = 태스크들.
+
+**스택(Stack)** — 여러 서비스로 구성된 애플리케이션. `docker-compose.yml` 형식으로 정의.
+
+## 클러스터 구성
+
+```bash
+# Manager 노드 초기화
+docker swarm init --advertise-addr 192.168.1.10
+
+# 출력:
+# Swarm initialized: current node (xxx) is now a manager.
+# To add a worker to this swarm, run the following command:
+#   docker swarm join --token SWMTKN-1-xxx 192.168.1.10:2377
+
+# Worker 노드에서 (위에서 받은 명령어 실행)
+docker swarm join --token SWMTKN-1-xxx 192.168.1.10:2377
+
+# Manager에서 노드 확인
+docker node ls
+# ID      HOSTNAME   STATUS  AVAILABILITY  MANAGER STATUS
+# xxx *   server1    Ready   Active        Leader
+# yyy     server2    Ready   Active
+# zzz     server3    Ready   Active
+```
+
+## 서비스 배포
+
+```bash
+# 서비스 생성 (nginx 3개 복제본)
+docker service create \
+  --name web \
+  --replicas 3 \
+  --publish published=80,target=80 \
+  nginx:alpine
+
+# 서비스 목록
+docker service ls
+
+# 서비스 상세 (각 태스크가 어느 노드에 있는지)
+docker service ps web
+
+# 스케일 조정
+docker service scale web=5
+
+# 서비스 업데이트 (이미지 변경)
+docker service update --image nginx:1.25 web
+
+# 서비스 삭제
+docker service rm web
+```
+
+## 롤링 업데이트
+
+스웜의 서비스 업데이트는 기본적으로 롤링 방식이다.
+
+```bash
+docker service update \
+  --image myapp:2.0 \
+  --update-parallelism 2 \     # 동시에 2개씩 업데이트
+  --update-delay 10s \         # 각 배치 사이 대기 시간
+  --update-failure-action rollback \  # 실패 시 롤백
+  myapp
+
+# 업데이트 진행 상황 확인
+docker service ps myapp
+
+# 수동 롤백
+docker service rollback myapp
+```
+
+## 스택으로 멀티 서비스 배포
+
+`docker-compose.yml` 형식으로 스택을 정의한다. `deploy` 섹션이 추가된다.
+
+```yaml
+# docker-stack.yml
+version: "3.9"
+
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+      placement:
+        constraints:
+          - node.role == worker  # worker 노드에만 배포
+    networks:
+      - frontend
+
+  api:
+    image: myapi:latest
+    environment:
+      DATABASE_URL: postgresql://postgres:secret@db:5432/myapp
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    networks:
+      - frontend
+      - backend
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.db == true  # db 레이블이 있는 노드에만
+    secrets:
+      - db_password
+    networks:
+      - backend
+
+networks:
+  frontend:
+  backend:
+
+volumes:
+  pgdata:
+
+secrets:
+  db_password:
+    external: true  # 사전에 생성된 secret 참조
+```
+
+```bash
+# 스택 배포
+docker stack deploy -c docker-stack.yml myapp
+
+# 스택 서비스 확인
+docker stack services myapp
+docker stack ps myapp
+
+# 스택 삭제
+docker stack rm myapp
+```
+
+## 시크릿 관리
+
+스웜은 민감한 데이터를 안전하게 관리하는 시크릿 기능을 제공한다.
+
+```bash
+# 시크릿 생성
+echo "mysecretpassword" | docker secret create db_password -
+
+# 파일에서 시크릿 생성
+docker secret create ssl_cert ./cert.pem
+
+# 시크릿 목록
+docker secret ls
+
+# 시크릿 삭제
+docker secret rm db_password
+```
+
+시크릿은 컨테이너 안에서 `/run/secrets/<이름>` 경로의 파일로 접근한다.
+
+```bash
+# 컨테이너 안에서
+cat /run/secrets/db_password
+# mysecretpassword
+```
+
+## 노드 관리
+
+```bash
+# 노드 레이블 추가 (배치 제약에 활용)
+docker node update --label-add db=true server1
+docker node update --label-add region=us-east server2
+
+# 노드 비활성화 (점검 등)
+docker node update --availability drain server2
+# 해당 노드의 컨테이너가 다른 노드로 이동됨
+
+# 노드 재활성화
+docker node update --availability active server2
+
+# 노드 제거
+docker swarm leave           # worker에서 실행
+docker node rm server2       # manager에서 제거
+```
+
+## 인그레스 네트워크와 라우팅 메시
+
+스웜은 **라우팅 메시(Routing Mesh)** 기능을 제공한다. 어느 노드로 요청이 들어와도 서비스 컨테이너로 자동 라우팅된다.
+
+```
+클라이언트 → server1:80 (web 서비스 없어도 됨)
+               ↓ 라우팅 메시
+            web 서비스 컨테이너 (server2 또는 server3)
+```
+
+포트 80이 열린 어떤 노드의 IP로 접근해도 서비스에 도달한다.
+
+## 스웜 vs Kubernetes
+
+| | 도커 스웜 | Kubernetes |
+|---|---|---|
+| 학습 곡선 | 낮음 | 높음 |
+| 설치/운영 | 단순 | 복잡 |
+| 기능 | 기본적 | 풍부 |
+| 스케일링 | 수동/단순 | 자동/정교 |
+| 생태계 | 작음 | 매우 큼 |
+| 자원 효율 | 가벼움 | 무거움 |
+| 적합한 규모 | 소~중규모 | 중~대규모 |
+
+스웜은 Docker가 내장하고 있어 추가 설치가 필요 없다. 팀이 작고 인프라가 단순하다면 스웜이 현실적인 선택이다. 복잡한 배포 요구사항, 대규모 클러스터, 풍부한 생태계가 필요하다면 Kubernetes를 선택한다.
+
+---
+
+도커 스웜은 "도커 그대로 클러스터"를 가능하게 한다. docker-compose.yml 형식을 그대로 쓰면서 여러 서버에 배포할 수 있다. Kubernetes 도입 전 단계로 스웜을 경험하는 것도 오케스트레이션 개념을 익히는 좋은 방법이다.

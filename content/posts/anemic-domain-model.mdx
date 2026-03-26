@@ -1,0 +1,315 @@
+---
+title: "빈약한 도메인 모델 — 왜 문제이고 어떻게 고치는가"
+date: "2026-03-26"
+category: "Backend"
+tags: ["DDD", "Architecture", "Domain Model", "OOP"]
+summary: "Martin Fowler가 안티패턴으로 지목한 빈약한 도메인 모델(Anemic Domain Model)이 왜 문제인지, 풍부한 도메인 모델(Rich Domain Model)로 어떻게 전환하는지 정리합니다."
+---
+
+Spring으로 서비스를 개발하다 보면 자연스럽게 만들어지는 패턴이 있다. Entity는 getter/setter만 가득하고, 모든 비즈니스 로직은 Service에 몰려 있는 구조다. Martin Fowler는 이것을 **빈약한 도메인 모델(Anemic Domain Model)** 이라 부르며 안티패턴으로 지목했다. 왜 문제이고, 어떻게 바꿀 수 있는지 살펴보자.
+
+## 빈약한 도메인 모델이란
+
+도메인 객체(Entity)가 데이터만 담고, 행위(메서드)가 없는 모델이다.
+
+```java
+// 전형적인 빈약한 도메인 모델
+@Entity
+public class Order {
+    private Long id;
+    private Long customerId;
+    private OrderStatus status;
+    private List<OrderItem> items;
+    private BigDecimal totalAmount;
+    private LocalDateTime orderedAt;
+    private String cancelReason;
+
+    // getter, setter만 존재
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public OrderStatus getStatus() { return status; }
+    public void setStatus(OrderStatus status) { this.status = status; }
+    public List<OrderItem> getItems() { return items; }
+    public void setItems(List<OrderItem> items) { this.items = items; }
+    // ... 수십 개의 getter/setter
+}
+```
+
+비즈니스 로직은 Service에 모두 몰린다.
+
+```java
+@Service
+@Transactional
+public class OrderService {
+
+    public void cancelOrder(Long orderId, String reason) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new OrderNotFoundException(orderId));
+
+        // 취소 가능 여부 검증 — Service에 비즈니스 규칙이 있다
+        if (order.getStatus() == OrderStatus.DELIVERED) {
+            throw new OrderAlreadyDeliveredException();
+        }
+        if (order.getStatus() == OrderStatus.CANCELLED) {
+            throw new OrderAlreadyCancelledException();
+        }
+
+        // 상태 변경 — 외부에서 setter로 직접 변경
+        order.setStatus(OrderStatus.CANCELLED);
+        order.setCancelReason(reason);
+        order.setCancelledAt(LocalDateTime.now());
+
+        orderRepository.save(order);
+    }
+
+    public void addItem(Long orderId, Long productId, int quantity) {
+        Order order = orderRepository.findById(orderId).orElseThrow(...);
+
+        // 주문 확정 전에만 아이템 추가 가능 — Service에 규칙이 있다
+        if (order.getStatus() != OrderStatus.PENDING) {
+            throw new OrderNotModifiableException();
+        }
+
+        OrderItem item = new OrderItem();
+        item.setOrderId(orderId);
+        item.setProductId(productId);
+        item.setQuantity(quantity);
+
+        List<OrderItem> items = order.getItems();
+        items.add(item);
+        order.setItems(items);
+
+        // 총액 재계산 — 역시 Service에서
+        BigDecimal total = items.stream()
+            .map(i -> i.getPrice().multiply(BigDecimal.valueOf(i.getQuantity())))
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        order.setTotalAmount(total);
+
+        orderRepository.save(order);
+    }
+}
+```
+
+## 왜 문제인가
+
+### 1. 비즈니스 규칙이 흩어진다
+
+"주문 취소는 배송 완료 전에만 가능하다"는 규칙이 `OrderService.cancelOrder()`에 있다. 그런데 `OrderAdminService`, `RefundService`, 배치 작업에서도 같은 검증이 필요하다면? 같은 규칙이 여러 곳에 복사된다. 하나가 바뀌면 나머지도 바꿔야 하는데 놓치기 쉽다.
+
+```java
+// OrderService에서
+if (order.getStatus() == OrderStatus.DELIVERED) { ... }
+
+// OrderAdminService에서도
+if (order.getStatus() == OrderStatus.DELIVERED) { ... }
+
+// RefundService에서도
+if (order.getStatus() == OrderStatus.DELIVERED) { ... }
+```
+
+### 2. 도메인 객체가 유효하지 않은 상태가 될 수 있다
+
+setter가 public이면 외부 어디서나 상태를 바꿀 수 있다.
+
+```java
+// 이게 가능하다 — 비즈니스 규칙을 전혀 거치지 않음
+order.setStatus(OrderStatus.CANCELLED);
+// cancelReason은 설정하지 않음 → 불완전한 상태
+```
+
+취소 사유 없이 취소 상태가 되거나, 총액이 아이템 합계와 맞지 않는 등 불일치한 상태가 될 수 있다.
+
+### 3. 객체지향이 아닌 절차지향
+
+"데이터 + 그 데이터에 대한 행위"가 함께 있어야 객체지향이다. 빈약한 도메인 모델은 데이터를 담는 구조체(struct)와 다름이 없다. Service가 데이터를 꺼내서 조작하고 다시 넣는 절차지향 코드가 된다.
+
+### 4. 테스트가 복잡해진다
+
+비즈니스 규칙이 Service에 있으면, 규칙 하나를 테스트하려고 Spring Context나 DB Mock이 필요한 경우가 생긴다.
+
+---
+
+## 풍부한 도메인 모델(Rich Domain Model)
+
+도메인 객체가 자신의 상태를 스스로 관리하고, 비즈니스 행위를 메서드로 제공한다.
+
+```java
+public class Order {
+    private final OrderId id;
+    private final CustomerId customerId;
+    private OrderStatus status;
+    private final List<OrderItem> items;
+    private BigDecimal totalAmount;
+    private LocalDateTime orderedAt;
+    private String cancelReason;
+
+    // private 생성자 — 팩토리 메서드를 통해서만 생성
+    private Order(OrderId id, CustomerId customerId, List<OrderItem> items) {
+        this.id = id;
+        this.customerId = customerId;
+        this.status = OrderStatus.PENDING;
+        this.items = new ArrayList<>(items);
+        this.totalAmount = calculateTotal(items);
+        this.orderedAt = LocalDateTime.now();
+    }
+
+    // 팩토리 메서드 — 생성 시점의 비즈니스 규칙 적용
+    public static Order create(CustomerId customerId, List<OrderItem> items) {
+        if (items.isEmpty()) {
+            throw new EmptyOrderException();
+        }
+        return new Order(OrderId.generate(), customerId, items);
+    }
+
+    // 행위 메서드 — 비즈니스 규칙이 객체 안에 있다
+    public void cancel(String reason) {
+        if (this.status == OrderStatus.DELIVERED) {
+            throw new OrderAlreadyDeliveredException(this.id);
+        }
+        if (this.status == OrderStatus.CANCELLED) {
+            throw new OrderAlreadyCancelledException(this.id);
+        }
+        this.status = OrderStatus.CANCELLED;
+        this.cancelReason = reason;
+    }
+
+    public void addItem(OrderItem item) {
+        if (this.status != OrderStatus.PENDING) {
+            throw new OrderNotModifiableException(this.id);
+        }
+        this.items.add(item);
+        this.totalAmount = calculateTotal(this.items);
+    }
+
+    public void removeItem(ProductId productId) {
+        if (this.status != OrderStatus.PENDING) {
+            throw new OrderNotModifiableException(this.id);
+        }
+        this.items.removeIf(item -> item.productId().equals(productId));
+        this.totalAmount = calculateTotal(this.items);
+    }
+
+    public void confirm() {
+        if (this.status != OrderStatus.PENDING) {
+            throw new InvalidOrderStatusException(this.id, this.status);
+        }
+        this.status = OrderStatus.CONFIRMED;
+    }
+
+    // 총액은 항상 아이템 기반으로 계산 — 불일치 불가
+    private BigDecimal calculateTotal(List<OrderItem> items) {
+        return items.stream()
+            .map(OrderItem::subtotal)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    // 읽기 전용 접근자 — setter 없음
+    public OrderId id() { return id; }
+    public OrderStatus status() { return status; }
+    public BigDecimal totalAmount() { return totalAmount; }
+    public List<OrderItem> items() { return Collections.unmodifiableList(items); }
+}
+```
+
+Service는 훨씬 단순해진다.
+
+```java
+@Service
+@Transactional
+public class OrderService {
+
+    public void cancelOrder(OrderId orderId, String reason) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new OrderNotFoundException(orderId));
+
+        // 비즈니스 규칙은 Order 객체가 안다
+        order.cancel(reason);
+
+        orderRepository.save(order);
+    }
+
+    public void addItem(OrderId orderId, OrderItem item) {
+        Order order = orderRepository.findById(orderId).orElseThrow(...);
+        order.addItem(item);
+        orderRepository.save(order);
+    }
+}
+```
+
+## 테스트가 간단해진다
+
+비즈니스 규칙이 도메인 객체 안에 있으면 Spring이나 DB 없이 순수 Java로 테스트할 수 있다.
+
+```java
+class OrderTest {
+
+    @Test
+    void 배송_완료된_주문은_취소할_수_없다() {
+        Order order = Order.create(customerId, items);
+        order.confirm();
+        order.deliver(); // 배송 완료 상태로 전환
+
+        assertThatThrownBy(() -> order.cancel("변심"))
+            .isInstanceOf(OrderAlreadyDeliveredException.class);
+    }
+
+    @Test
+    void 아이템_추가_시_총액이_재계산된다() {
+        Order order = Order.create(customerId, List.of(
+            new OrderItem(productA, 1, Money.of(10_000))
+        ));
+
+        order.addItem(new OrderItem(productB, 2, Money.of(5_000)));
+
+        assertThat(order.totalAmount()).isEqualTo(Money.of(20_000));
+    }
+
+    @Test
+    void 확정된_주문에는_아이템을_추가할_수_없다() {
+        Order order = Order.create(customerId, items);
+        order.confirm();
+
+        assertThatThrownBy(() -> order.addItem(newItem))
+            .isInstanceOf(OrderNotModifiableException.class);
+    }
+}
+```
+
+DB도, Spring도, Mock도 없다. 빠르고 안정적이다.
+
+## JPA와의 타협
+
+풍부한 도메인 모델을 JPA Entity로 쓰면 몇 가지 마찰이 생긴다.
+
+JPA는 기본 생성자가 필요하다. `protected` 접근제어자로 최소화할 수 있다.
+
+```java
+@Entity
+public class Order {
+
+    @Id
+    private Long id;
+
+    // JPA를 위한 기본 생성자 — protected로 외부 사용 차단
+    protected Order() {}
+
+    // 실제 생성은 팩토리 메서드로만
+    public static Order create(...) { ... }
+}
+```
+
+컬렉션 필드는 JPA 관리를 위해 직접 교체보다 `add`/`remove`를 쓰는 것이 좋다.
+
+```java
+// ❌ JPA 문제 유발 — 새 리스트로 교체
+this.items = new ArrayList<>(updatedItems);
+
+// ✅ 기존 컬렉션에 추가
+this.items.add(item);
+```
+
+JPA Entity와 도메인 모델을 완전히 분리하고 싶다면 헥사고날 아키텍처의 어댑터 패턴처럼 JPA Entity ↔ 도메인 객체 변환 레이어를 두는 방법도 있다. 복잡도가 올라가지만 도메인이 JPA에 완전히 독립할 수 있다.
+
+---
+
+빈약한 도메인 모델은 처음에는 빠르게 만들 수 있다. 그러나 비즈니스가 복잡해지면서 Service가 비대해지고, 같은 규칙이 여러 곳에 흩어지며, 도메인 객체의 상태를 신뢰하기 어려워진다. 풍부한 도메인 모델은 "객체가 자신의 상태를 책임진다"는 원칙으로 돌아가는 것이다. 비즈니스 규칙을 도메인 객체 안에 두면, 그 규칙이 어디서 호출되든 항상 일관되게 적용된다.

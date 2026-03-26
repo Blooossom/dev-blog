@@ -1,0 +1,188 @@
+---
+title: "동시성과 Fiber — 스레드 모델의 진화"
+date: "2026-03-26"
+category: "Backend"
+tags: ["Concurrency", "Fiber", "Virtual Threads", "Coroutine", "Java", "Go"]
+summary: "OS 스레드부터 경량 스레드, 코루틴, Fiber, Java Virtual Threads까지 — 동시성 모델이 어떻게 진화해왔는지, Fiber가 무엇인지 정리합니다."
+---
+
+서버가 동시에 10만 개의 연결을 처리해야 한다고 가정해보자. OS 스레드를 10만 개 만들면 어떻게 될까? 스레드 하나에 1MB 스택이면 100GB 메모리가 필요하다. 불가능하다. 이 문제를 해결하기 위해 동시성 모델은 계속 진화해왔고, Fiber는 그 흐름의 현재 지점에 있다.
+
+## OS 스레드의 한계
+
+전통적인 스레드는 OS가 관리한다. 각 스레드는 독립적인 스택 메모리를 가지고, OS 스케줄러가 CPU 코어에 배정한다.
+
+문제는 **I/O 대기**다. 네트워크 응답을 기다리는 동안 스레드는 블로킹되어 아무것도 못 하면서 메모리와 컨텍스트 스위칭 비용을 차지한다.
+
+```
+Thread 1: [DB 요청]────────────[50ms 대기]────────────[처리]
+Thread 2: [API 요청]─────────────────[100ms 대기]─────[처리]
+Thread 3: [파일 읽기]────[20ms 대기]────[처리]
+
+→ 대기 시간 동안 스레드는 CPU를 쓰지 않지만 자원은 계속 점유
+```
+
+스레드 풀로 일부 해결하지만, 동시 요청이 풀 크기를 초과하면 큐에서 대기하게 된다.
+
+## 논블로킹 I/O + 이벤트 루프
+
+Node.js와 Nginx가 선택한 방식이다. 단일 스레드에서 이벤트 루프를 돌리며, I/O를 논블로킹으로 처리한다.
+
+```
+이벤트 루프 (단일 스레드)
+  ├─ 요청 A 시작 → I/O 위임 (논블로킹) → 다음으로
+  ├─ 요청 B 시작 → I/O 위임 (논블로킹) → 다음으로
+  ├─ 요청 C 시작 → I/O 위임 (논블로킹) → 다음으로
+  └─ I/O 완료 이벤트 → 콜백 실행
+```
+
+스레드 수에 관계없이 수많은 동시 연결을 처리할 수 있다. 그러나 코드가 콜백 지옥이 되거나 Promise/async-await의 비동기 사고방식을 강요한다.
+
+```javascript
+// 콜백 지옥
+db.query(sql, function(err, result) {
+    api.call(result.id, function(err, data) {
+        sendEmail(data.email, function(err) {
+            // 점점 깊어지는 중첩
+        });
+    });
+});
+
+// async/await으로 개선됐지만 여전히 비동기 모델 강제
+async function process() {
+    const result = await db.query(sql);
+    const data = await api.call(result.id);
+    await sendEmail(data.email);
+}
+```
+
+## Fiber란
+
+Fiber는 **애플리케이션 수준에서 관리하는 경량 실행 단위**다. OS 스레드처럼 독립적인 실행 흐름을 가지지만, OS가 아닌 언어 런타임이나 라이브러리가 스케줄링한다.
+
+핵심 특징은 두 가지다.
+
+**협력적 스케줄링(Cooperative Scheduling)** — OS 스레드는 선점형(preemptive)이다. 언제든 OS가 스레드를 중단하고 다른 스레드로 전환할 수 있다. Fiber는 협력적이다. Fiber 스스로 "여기서 중단하겠다"고 선언(`yield`)해야 전환이 일어난다.
+
+**저렴한 생성 비용** — OS 스레드는 1MB 내외의 스택을 미리 할당한다. Fiber는 수 KB에서 시작해 필요에 따라 늘어나는 작은 스택을 가진다. 수십만 개를 만들어도 메모리가 감당된다.
+
+```
+OS 스레드 100개 × 1MB = 100MB
+Fiber 100,000개 × 4KB = 400MB (그래도 10만 개)
+```
+
+## Fiber vs 코루틴 vs Green Thread
+
+용어가 혼용되어 헷갈리기 쉽다.
+
+**코루틴(Coroutine)** — Fiber와 거의 같은 개념이다. 실행을 일시 중단하고 재개할 수 있는 실행 단위. Kotlin의 `suspend` 함수가 대표적이다. 스택리스(stackless) 코루틴(Python의 `async/await`처럼 각 `await` 지점에서만 중단 가능)과 스택풀(stackful) 코루틴(어느 지점에서나 중단 가능)으로 나뉜다.
+
+**Green Thread** — JVM 초기(Java 1.1~1.2 시절)에 쓰였던 사용자 공간 스레드. 멀티코어를 활용하지 못해 폐기됐다.
+
+**Fiber** — 스택풀 코루틴의 다른 이름으로 주로 쓰인다. 협력적 스케줄링, 명시적 yield, 사용자 공간 관리가 특징이다.
+
+실질적으로 Fiber = 스택풀 코루틴 = Green Thread의 현대적 구현으로 봐도 무방하다.
+
+## 각 언어/플랫폼의 구현
+
+### Go — Goroutine
+
+Go에서는 처음부터 Goroutine을 언어 차원에서 지원한다. `go` 키워드 하나로 새로운 Goroutine을 만든다.
+
+```go
+func handleRequest(conn net.Conn) {
+    // 이 함수 전체가 독립적인 Goroutine에서 실행
+    data, _ := io.ReadAll(conn) // 블로킹처럼 보이지만 내부적으로 논블로킹
+    process(data)
+}
+
+func main() {
+    listener, _ := net.Listen("tcp", ":8080")
+    for {
+        conn, _ := listener.Accept()
+        go handleRequest(conn) // 새 Goroutine 생성 — 비용이 매우 낮다
+    }
+}
+```
+
+Go 런타임의 M:N 스케줄러가 수백만 개의 Goroutine을 소수의 OS 스레드에 배분한다. I/O 블로킹이 발생하면 런타임이 해당 Goroutine을 자동으로 다른 OS 스레드로 이동시킨다.
+
+### Kotlin — Coroutines
+
+Kotlin 코루틴은 컴파일러가 `suspend` 함수를 상태 머신으로 변환하는 방식(스택리스)이다.
+
+```kotlin
+suspend fun fetchUserData(userId: Long): User {
+    val profile = async { fetchProfile(userId) }  // 비동기 시작
+    val orders = async { fetchOrders(userId) }     // 비동기 시작
+    return User(profile.await(), orders.await())  // 둘 다 완료될 때까지 대기
+}
+
+// 코루틴 스코프에서 실행
+launch {
+    val user = fetchUserData(1L) // suspend — 블로킹하지 않고 대기
+    println(user)
+}
+```
+
+`suspend` 함수는 일시 중단될 수 있고, 중단 중에 스레드를 점유하지 않는다.
+
+### Java — Virtual Threads (Project Loom)
+
+Java 21의 Virtual Threads는 JVM이 관리하는 경량 스레드다. Fiber와 개념적으로 동일하지만, 기존 Java 스레드 API와 완전히 호환되는 것이 특징이다.
+
+```java
+// 기존 코드 그대로 — API 변경 없음
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (int i = 0; i < 100_000; i++) {
+        executor.submit(() -> {
+            // 블로킹 HTTP 호출 — Virtual Thread이므로 OS 스레드 점유하지 않음
+            String response = httpClient.send(request, bodyHandler).body();
+            process(response);
+        });
+    }
+}
+```
+
+Virtual Thread가 I/O 블로킹에 들어가면 JVM이 자동으로 언마운트(해당 Virtual Thread를 캐리어 스레드에서 분리)하고 다른 Virtual Thread를 실행시킨다. 기존 블로킹 코드 그대로 쓰면서 논블로킹의 효율을 얻는다.
+
+### Python — asyncio
+
+Python은 GIL(Global Interpreter Lock) 때문에 멀티스레딩이 제한적이다. `asyncio`의 이벤트 루프와 `async/await`으로 동시성을 처리한다.
+
+```python
+import asyncio
+import aiohttp
+
+async def fetch(session, url):
+    async with session.get(url) as response:  # 논블로킹 I/O
+        return await response.json()
+
+async def main():
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch(session, url) for url in urls]
+        results = await asyncio.gather(*tasks)  # 동시에 모두 실행
+```
+
+## 동시성 모델 비교
+
+| | OS 스레드 | 이벤트 루프 | Fiber/Virtual Thread |
+|---|---|---|---|
+| 동시 처리 수 | 수천 | 수십만 | 수십만~수백만 |
+| 메모리 | 높음 (스레드당 ~1MB) | 낮음 | 낮음 (Fiber당 수 KB) |
+| 코드 스타일 | 동기 (직관적) | 비동기 (콜백/Promise) | 동기 (직관적) |
+| 멀티코어 활용 | ✅ | 추가 설정 필요 | ✅ |
+| 복잡성 | 낮음 | 높음 | 낮음 |
+| 대표 | Java Thread | Node.js | Go Goroutine, Java VT |
+
+## 핵심 통찰
+
+Fiber/Virtual Thread의 핵심 가치는 **동기 코드의 직관성과 논블로킹의 효율을 동시에**제공한다는 것이다.
+
+이벤트 루프 방식은 성능이 좋지만 "비동기로 생각"해야 하는 정신적 부담이 크다. 콜백이나 Promise 체인은 에러 처리와 디버깅이 어렵고, 동기 API를 비동기 코드 안에서 쓰면 이벤트 루프가 블로킹된다.
+
+Fiber는 그냥 블로킹 코드를 쓰면 된다. 런타임이 알아서 다른 Fiber에게 제어권을 넘기고 I/O가 완료되면 재개한다. 개발자는 비동기 모델을 의식하지 않아도 된다.
+
+---
+
+동시성 모델의 진화는 결국 "어떻게 하면 개발자가 비동기를 의식하지 않고도 높은 처리량을 얻을 수 있는가"라는 질문에 대한 답을 찾아가는 과정이다. Fiber와 Virtual Thread는 그 질문에 현재까지 가장 좋은 답 중 하나다. Go가 Goroutine으로 이미 증명했고, Java가 Virtual Thread로 뒤를 따랐다.

@@ -1,0 +1,211 @@
+---
+title: "CSR vs SSR — 렌더링 전략의 선택"
+date: "2026-03-26"
+category: "Frontend"
+tags: ["CSR", "SSR", "SSG", "ISR", "Next.js", "Performance"]
+summary: "클라이언트 사이드 렌더링과 서버 사이드 렌더링의 차이, 각각의 장단점, SSG/ISR까지 렌더링 전략을 비교합니다."
+---
+
+웹 애플리케이션을 어디서 렌더링하느냐 — 클라이언트(브라우저)인지 서버인지 — 는 성능, SEO, 개발 복잡도에 큰 영향을 미친다.
+
+## CSR (Client-Side Rendering)
+
+HTML을 최소한으로 받고, JavaScript가 브라우저에서 DOM을 생성한다.
+
+```
+서버 → 빈 HTML + JS 번들 → 브라우저
+브라우저: JS 실행 → API 호출 → DOM 생성 → 화면 표시
+```
+
+서버가 내려주는 HTML:
+
+```html
+<!DOCTYPE html>
+<html>
+  <head><title>My App</title></head>
+  <body>
+    <div id="root"></div>  <!-- 비어있음 -->
+    <script src="/static/js/main.js"></script>
+  </body>
+</html>
+```
+
+React의 기본 동작 방식이다.
+
+### CSR의 장점
+
+- **서버 부하 낮음** — 정적 파일만 제공. CDN으로 전 세계 배포 용이
+- **인터랙션 빠름** — 첫 로드 후 페이지 전환 시 전체 리로드 없음
+- **개발 단순** — 프론트/백 분리가 명확, API 기반 개발
+
+### CSR의 단점
+
+- **FCP(First Contentful Paint) 느림** — JS 다운로드/파싱/실행 후에야 화면이 보임
+- **SEO 불리** — 크롤러가 JS 실행 전 HTML을 보면 내용이 없음
+- **초기 로딩 시 빈 화면** — 데이터 로딩 중 스피너가 보임
+
+```
+타임라인:
+t=0ms   HTML 수신 (비어있음)
+t=500ms JS 번들 다운로드 완료
+t=600ms JS 파싱/실행
+t=700ms API 호출 시작
+t=1200ms API 응답
+t=1250ms 화면 표시 ← FCP
+```
+
+## SSR (Server-Side Rendering)
+
+서버가 요청마다 완성된 HTML을 생성해서 보낸다.
+
+```
+브라우저 요청 → 서버: 데이터 조회 + HTML 생성 → 완성된 HTML 전송
+브라우저: HTML 파싱 → 화면 즉시 표시 → JS 로드 → Hydration
+```
+
+Next.js의 `getServerSideProps` (Pages Router) 또는 기본 Server Component (App Router):
+
+```typescript
+// Next.js App Router — 기본이 SSR
+async function ProductPage({ params }: { params: { id: string } }) {
+  const product = await fetch(`/api/products/${params.id}`).then(r => r.json())
+
+  return (
+    <div>
+      <h1>{product.name}</h1>
+      <p>{product.description}</p>
+    </div>
+  )
+}
+```
+
+서버가 내려주는 HTML:
+
+```html
+<!DOCTYPE html>
+<html>
+  <body>
+    <div id="root">
+      <div>
+        <h1>iPhone 15</h1>
+        <p>최신 Apple 스마트폰...</p>
+      </div>
+    </div>
+    <script src="/static/js/main.js"></script>
+  </body>
+</html>
+```
+
+### Hydration
+
+SSR은 서버에서 HTML을 만들지만, 인터랙션을 위해 클라이언트에서 JavaScript가 다시 실행된다. 이 과정을 **Hydration**이라고 한다.
+
+```
+서버 → 완성된 HTML (정적) → 브라우저 표시 → JS 로드 → Hydration (이벤트 핸들러 연결)
+```
+
+Hydration 전: 보이지만 클릭이 안 됨 (TTI 전)
+Hydration 후: 완전히 인터랙티브
+
+### SSR의 장점
+
+- **FCP 빠름** — HTML이 완성된 채로 오므로 바로 표시
+- **SEO 유리** — 크롤러가 완성된 HTML을 바로 파싱 가능
+- **소셜 미디어 미리보기** — Open Graph 태그가 서버에서 생성됨
+
+### SSR의 단점
+
+- **서버 부하** — 모든 요청마다 렌더링 비용
+- **TTFB(Time to First Byte) 증가** — 서버 처리 시간만큼 지연
+- **서버 필요** — CDN만으로 배포 불가
+
+## SSG (Static Site Generation)
+
+빌드 타임에 HTML을 미리 생성한다.
+
+```
+빌드 시: 데이터 조회 → HTML 생성 → 정적 파일로 저장
+요청 시: 미리 만들어진 HTML 즉시 반환
+```
+
+```typescript
+// Next.js App Router — generateStaticParams
+export async function generateStaticParams() {
+  const posts = await getAllPosts()
+  return posts.map(post => ({ slug: post.slug }))
+}
+
+async function PostPage({ params }: { params: { slug: string } }) {
+  const post = await getPostBySlug(params.slug)
+  return <Article post={post} />
+}
+```
+
+### SSG의 장점
+
+- **가장 빠름** — 미리 만들어진 HTML을 CDN에서 바로 제공
+- **서버 부하 없음** — 정적 파일 서빙
+- **매우 안정적** — 서버 다운 없음
+
+### SSG의 단점
+
+- **데이터 실시간성 없음** — 빌드 시점 데이터로 고정
+- **빌드 시간** — 페이지 수가 많으면 빌드가 오래 걸림
+- **콘텐츠 업데이트 시 재빌드 필요**
+
+## ISR (Incremental Static Regeneration)
+
+SSG의 성능 + SSR의 최신성을 결합. 일정 시간마다 백그라운드에서 페이지를 재생성한다.
+
+```typescript
+// Next.js App Router
+export const revalidate = 60  // 60초마다 재검증
+
+async function NewsPage() {
+  const news = await fetch('https://api.example.com/news', {
+    next: { revalidate: 60 }  // 60초 캐시
+  }).then(r => r.json())
+
+  return <NewsList items={news} />
+}
+```
+
+첫 요청: 빌드된 HTML 반환 (즉시)
+60초 후 첫 요청: 오래된 HTML 반환 + 백그라운드에서 재생성
+다음 요청: 새로 생성된 HTML 반환
+
+## 전략 비교
+
+| | CSR | SSR | SSG | ISR |
+|---|---|---|---|---|
+| FCP | 느림 | 빠름 | 가장 빠름 | 가장 빠름 |
+| SEO | 불리 | 유리 | 유리 | 유리 |
+| 서버 부하 | 낮음 | 높음 | 없음 | 낮음 |
+| 데이터 최신성 | 항상 최신 | 항상 최신 | 빌드 시점 | 주기적 갱신 |
+| 인프라 | CDN | 서버 필요 | CDN | CDN + 백그라운드 |
+| 적합한 사용 | 대시보드, 관리자 | 사용자별 페이지 | 블로그, 문서 | 뉴스, 상품 목록 |
+
+## 실제 선택 기준
+
+**CSR 선택:**
+- 로그인 후 사용자별 데이터만 보여주는 페이지 (SEO 불필요)
+- 관리자 대시보드
+- 실시간 데이터 (차트, 알림)
+
+**SSR 선택:**
+- 사용자마다 다른 콘텐츠 (개인화)
+- 요청 시점 데이터가 중요한 페이지
+- 쿠키/헤더 기반 조건부 렌더링
+
+**SSG 선택:**
+- 블로그, 문서, 마케팅 페이지
+- 변경이 거의 없는 콘텐츠
+- 트래픽이 많고 성능이 중요
+
+**ISR 선택:**
+- 데이터가 자주 바뀌지만 실시간일 필요는 없음
+- 뉴스, 상품 카탈로그, 가격 정보
+
+---
+
+Next.js App Router는 페이지 단위가 아닌 **컴포넌트 단위**로 렌더링 전략을 혼용할 수 있다. 같은 페이지 안에서도 정적 헤더는 SSG, 사용자 정보는 CSR, 상품 목록은 ISR로 조합하는 것이 현대 웹 개발의 접근 방식이다.

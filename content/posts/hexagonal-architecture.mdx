@@ -1,0 +1,372 @@
+---
+title: "헥사고날 아키텍처 — 포트와 어댑터로 의존성을 다스리는 법"
+date: "2026-03-26"
+category: "Backend"
+tags: ["Architecture", "Hexagonal", "DDD", "Clean Architecture", "Spring"]
+summary: "Alistair Cockburn이 제안한 헥사고날 아키텍처(포트 & 어댑터 패턴)가 무엇인지, 왜 필요한지, Spring Boot에서 어떻게 구현하는지 정리합니다."
+---
+
+레이어드 아키텍처(Controller → Service → Repository)는 직관적이지만 시간이 지나면서 문제가 생긴다. 비즈니스 로직이 프레임워크, DB, 외부 API에 점점 의존하게 되고, 어느 순간 테스트가 어렵고 기술 변경이 두려운 코드가 된다. 헥사고날 아키텍처는 이 문제를 **의존성의 방향을 명시적으로 통제**함으로써 해결한다.
+
+## 핵심 아이디어
+
+헥사고날 아키텍처는 2005년 Alistair Cockburn이 제안한 패턴이다. **포트 & 어댑터(Ports & Adapters)** 패턴이라고도 부른다. 다른 이름으로는 클린 아키텍처, 어니언 아키텍처가 있는데 세부 구현은 다르지만 핵심 철학은 같다.
+
+핵심 원칙은 하나다.
+
+> **도메인(비즈니스 로직)은 아무것도 모른다.**
+
+도메인은 Spring을 모른다. JPA를 모른다. HTTP를 모른다. Kafka를 모른다. 데이터베이스가 MySQL인지 MongoDB인지 모른다. 도메인은 오직 비즈니스 규칙만 알고 있다.
+
+외부 세계(UI, DB, 메시지 큐, 외부 API)가 도메인에 맞춰 어댑터를 통해 연결된다.
+
+```
+          외부 세계
+   ┌──────────────────────┐
+   │  HTTP  Kafka  CLI    │  ← Driving Adapters (입력)
+   └────────┬─────────────┘
+            │ (포트를 통해)
+   ┌────────▼─────────────┐
+   │                      │
+   │   도메인 (비즈니스)   │  ← 아무것도 모름, 아무것에도 의존 안 함
+   │                      │
+   └────────┬─────────────┘
+            │ (포트를 통해)
+   ┌────────▼─────────────┐
+   │  DB   외부API  메일  │  ← Driven Adapters (출력)
+   └──────────────────────┘
+```
+
+## 포트(Port)란
+
+포트는 **인터페이스**다. 도메인이 외부 세계와 소통하는 계약(contract)을 정의한다.
+
+**인바운드 포트(Inbound Port)** — 외부에서 도메인으로 들어오는 진입점. 도메인이 외부에 제공하는 유스케이스 인터페이스다.
+
+```java
+// 인바운드 포트 — 도메인이 제공하는 유스케이스
+public interface PlaceOrderUseCase {
+    OrderId placeOrder(PlaceOrderCommand command);
+}
+
+public interface CancelOrderUseCase {
+    void cancelOrder(OrderId orderId, String reason);
+}
+
+public interface GetOrderQuery {
+    Order getOrder(OrderId orderId);
+}
+```
+
+**아웃바운드 포트(Outbound Port)** — 도메인이 외부 세계에 요청하는 인터페이스. 도메인이 필요로 하지만 직접 구현하지 않는 것들이다.
+
+```java
+// 아웃바운드 포트 — 도메인이 필요로 하는 것
+public interface OrderRepository {
+    void save(Order order);
+    Optional<Order> findById(OrderId id);
+}
+
+public interface PaymentPort {
+    PaymentResult requestPayment(PaymentRequest request);
+}
+
+public interface NotificationPort {
+    void notifyOrderPlaced(OrderId orderId, CustomerId customerId);
+}
+```
+
+## 어댑터(Adapter)란
+
+어댑터는 포트의 구현체다. 외부 기술과 도메인 포트 사이를 연결한다.
+
+**인바운드 어댑터** — 외부 요청을 받아 도메인 포트(유스케이스)를 호출한다.
+
+```java
+// HTTP 인바운드 어댑터
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+
+    private final PlaceOrderUseCase placeOrderUseCase;
+    private final GetOrderQuery getOrderQuery;
+
+    public OrderController(PlaceOrderUseCase placeOrderUseCase,
+                           GetOrderQuery getOrderQuery) {
+        this.placeOrderUseCase = placeOrderUseCase;
+        this.getOrderQuery = getOrderQuery;
+    }
+
+    @PostMapping
+    public ResponseEntity<OrderResponse> placeOrder(
+            @RequestBody @Valid PlaceOrderRequest request) {
+        PlaceOrderCommand command = PlaceOrderCommand.of(
+            request.customerId(),
+            request.items(),
+            request.shippingAddress()
+        );
+        OrderId orderId = placeOrderUseCase.placeOrder(command);
+        return ResponseEntity.ok(new OrderResponse(orderId.value()));
+    }
+}
+
+// Kafka 인바운드 어댑터 — 같은 유스케이스를 다른 진입점으로 호출
+@Component
+public class OrderEventConsumer {
+
+    private final PlaceOrderUseCase placeOrderUseCase;
+
+    @KafkaListener(topics = "order-requests")
+    public void consume(OrderRequestEvent event) {
+        PlaceOrderCommand command = PlaceOrderCommand.of(
+            event.customerId(),
+            event.items(),
+            event.shippingAddress()
+        );
+        placeOrderUseCase.placeOrder(command);
+    }
+}
+```
+
+**아웃바운드 어댑터** — 도메인의 아웃바운드 포트를 구현해 실제 기술로 연결한다.
+
+```java
+// JPA 아웃바운드 어댑터
+@Component
+public class OrderJpaAdapter implements OrderRepository {
+
+    private final OrderJpaRepository jpaRepository;
+    private final OrderMapper mapper;
+
+    @Override
+    public void save(Order order) {
+        OrderJpaEntity entity = mapper.toEntity(order);
+        jpaRepository.save(entity);
+    }
+
+    @Override
+    public Optional<Order> findById(OrderId id) {
+        return jpaRepository.findById(id.value())
+            .map(mapper::toDomain);
+    }
+}
+
+// 결제 외부 API 아웃바운드 어댑터
+@Component
+public class TossPaymentAdapter implements PaymentPort {
+
+    private final TossPaymentClient client;
+
+    @Override
+    public PaymentResult requestPayment(PaymentRequest request) {
+        TossPaymentResponse response = client.pay(
+            request.orderId().value(),
+            request.amount(),
+            request.method()
+        );
+        return response.isSuccess()
+            ? PaymentResult.success(response.transactionId())
+            : PaymentResult.failed(response.errorMessage());
+    }
+}
+```
+
+## 도메인 서비스 (유스케이스 구현체)
+
+인바운드 포트를 구현하는 도메인 서비스다. Spring 의존성 없이 순수 Java로 작성한다.
+
+```java
+// 도메인 서비스 — 인바운드 포트 구현, 아웃바운드 포트 사용
+@Service
+public class PlaceOrderService implements PlaceOrderUseCase {
+
+    private final OrderRepository orderRepository;       // 아웃바운드 포트
+    private final PaymentPort paymentPort;               // 아웃바운드 포트
+    private final NotificationPort notificationPort;     // 아웃바운드 포트
+
+    public PlaceOrderService(OrderRepository orderRepository,
+                             PaymentPort paymentPort,
+                             NotificationPort notificationPort) {
+        this.orderRepository = orderRepository;
+        this.paymentPort = paymentPort;
+        this.notificationPort = notificationPort;
+    }
+
+    @Override
+    @Transactional
+    public OrderId placeOrder(PlaceOrderCommand command) {
+        // 도메인 객체 생성 — 비즈니스 규칙 검증
+        Order order = Order.create(
+            command.customerId(),
+            command.items(),
+            command.shippingAddress()
+        );
+
+        // 결제 요청 (아웃바운드 포트를 통해 — 구현체가 뭔지 모름)
+        PaymentResult payment = paymentPort.requestPayment(
+            new PaymentRequest(order.id(), order.totalAmount())
+        );
+
+        if (!payment.isSuccess()) {
+            throw new PaymentFailedException(payment.errorMessage());
+        }
+
+        order.confirmPayment(payment.transactionId());
+
+        // 저장 (아웃바운드 포트를 통해 — JPA인지 MongoDB인지 모름)
+        orderRepository.save(order);
+
+        // 알림 (아웃바운드 포트를 통해 — 이메일인지 푸시인지 모름)
+        notificationPort.notifyOrderPlaced(order.id(), order.customerId());
+
+        return order.id();
+    }
+}
+```
+
+도메인 서비스는 `@Transactional` 같은 Spring 애너테이션을 쓸 수 있다. 그러나 JPA Entity나 `HttpServletRequest` 같은 기술 의존성은 없다.
+
+## 패키지 구조
+
+```
+com.example.order/
+├── domain/
+│   ├── model/
+│   │   ├── Order.java              # 도메인 객체
+│   │   ├── OrderItem.java
+│   │   └── OrderId.java
+│   ├── port/
+│   │   ├── in/                     # 인바운드 포트 (유스케이스)
+│   │   │   ├── PlaceOrderUseCase.java
+│   │   │   ├── CancelOrderUseCase.java
+│   │   │   └── GetOrderQuery.java
+│   │   └── out/                    # 아웃바운드 포트
+│   │       ├── OrderRepository.java
+│   │       ├── PaymentPort.java
+│   │       └── NotificationPort.java
+│   └── service/                    # 유스케이스 구현체
+│       └── PlaceOrderService.java
+└── adapter/
+    ├── in/                         # 인바운드 어댑터
+    │   ├── web/
+    │   │   └── OrderController.java
+    │   └── messaging/
+    │       └── OrderEventConsumer.java
+    └── out/                        # 아웃바운드 어댑터
+        ├── persistence/
+        │   ├── OrderJpaAdapter.java
+        │   ├── OrderJpaRepository.java
+        │   └── OrderJpaEntity.java
+        ├── payment/
+        │   └── TossPaymentAdapter.java
+        └── notification/
+            └── EmailNotificationAdapter.java
+```
+
+## 테스트가 쉬워진다
+
+헥사고날 아키텍처의 가장 큰 실용적 장점은 **테스트 용이성**이다.
+
+**도메인 서비스 단위 테스트** — DB, HTTP, 메시지 큐 없이 Mock으로만 테스트한다.
+
+```java
+class PlaceOrderServiceTest {
+
+    // 아웃바운드 포트를 Mock으로 교체
+    private final OrderRepository orderRepository = mock(OrderRepository.class);
+    private final PaymentPort paymentPort = mock(PaymentPort.class);
+    private final NotificationPort notificationPort = mock(NotificationPort.class);
+
+    private final PlaceOrderService sut = new PlaceOrderService(
+        orderRepository, paymentPort, notificationPort
+    );
+
+    @Test
+    void 결제_성공_시_주문이_저장된다() {
+        // given
+        PlaceOrderCommand command = PlaceOrderCommand.of(...);
+        when(paymentPort.requestPayment(any()))
+            .thenReturn(PaymentResult.success("tx-001"));
+
+        // when
+        OrderId orderId = sut.placeOrder(command);
+
+        // then
+        verify(orderRepository).save(any(Order.class));
+        verify(notificationPort).notifyOrderPlaced(any(), any());
+        assertThat(orderId).isNotNull();
+    }
+
+    @Test
+    void 결제_실패_시_예외가_발생한다() {
+        // given
+        when(paymentPort.requestPayment(any()))
+            .thenReturn(PaymentResult.failed("잔액 부족"));
+
+        // when & then
+        assertThatThrownBy(() -> sut.placeOrder(command))
+            .isInstanceOf(PaymentFailedException.class);
+        verify(orderRepository, never()).save(any());
+    }
+}
+```
+
+Spring Context 없이 순수 Java로 빠르게 실행되는 테스트다.
+
+**어댑터 단위 테스트** — 각 어댑터는 독립적으로 테스트한다.
+
+```java
+@WebMvcTest(OrderController.class)
+class OrderControllerTest {
+
+    @MockBean
+    private PlaceOrderUseCase placeOrderUseCase;
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Test
+    void 주문_요청이_유스케이스를_호출한다() throws Exception {
+        when(placeOrderUseCase.placeOrder(any()))
+            .thenReturn(OrderId.of(1L));
+
+        mockMvc.perform(post("/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    { "customerId": 1, "items": [...] }
+                    """))
+               .andExpect(status().isOk())
+               .andExpect(jsonPath("$.orderId").value(1));
+    }
+}
+```
+
+## 레이어드 아키텍처와 비교
+
+| | 레이어드 | 헥사고날 |
+|---|---|---|
+| 의존성 방향 | 위 → 아래 (Controller → Service → Repository) | 모두 도메인을 향함 |
+| 도메인과 기술 분리 | 약함 (Service가 JPA 등에 의존) | 강함 (도메인은 기술 모름) |
+| 테스트 | DB/Spring 필요한 경우 많음 | 도메인은 순수 Java 테스트 가능 |
+| 기술 교체 | 어렵고 파급 범위 큼 | 어댑터만 교체 |
+| 복잡성 | 낮음 | 높음 (인터페이스, 어댑터, 매퍼 증가) |
+| 적합한 규모 | 소규모, 단순 CRUD | 복잡한 비즈니스 로직, 대규모 |
+
+## 언제 도입할까
+
+헥사고날 아키텍처는 복잡성을 관리하는 도구다. 복잡성이 없는 곳에 쓰면 오히려 코드만 늘어난다.
+
+**도입이 적합한 경우:**
+- 비즈니스 규칙이 복잡하고 자주 변경된다
+- 여러 인프라 기술(DB, 메시지 큐, 외부 API)이 교체될 가능성이 있다
+- 도메인 로직 테스트를 빠르고 안정적으로 해야 한다
+- DDD와 함께 Bounded Context 단위로 시스템을 구성한다
+
+**도입이 과한 경우:**
+- 단순 CRUD 서비스
+- 팀 규모가 작고 도메인이 단순하다
+- 빠른 프로토타이핑이 우선이다
+
+---
+
+헥사고날 아키텍처는 "도메인을 중심에 두라"는 철학의 구조적 표현이다. 처음 보면 인터페이스와 어댑터가 너무 많다고 느낄 수 있다. 그러나 복잡한 비즈니스 도메인에서 기술 변경에 흔들리지 않고 비즈니스 규칙을 명확하게 테스트할 수 있는 코드를 원한다면, 그 복잡성은 지불할 만한 비용이다.

@@ -1,0 +1,249 @@
+---
+title: "Web Vitals — 구글이 측정하는 웹 성능 지표"
+date: "2026-03-26"
+category: "Frontend"
+tags: ["Web Vitals", "Performance", "LCP", "CLS", "INP", "SEO"]
+summary: "Core Web Vitals(LCP, CLS, INP)를 중심으로 각 지표가 무엇을 측정하는지, 점수를 올리는 방법, 측정 도구까지 정리합니다."
+---
+
+구글은 2021년부터 Core Web Vitals를 검색 순위 알고리즘에 반영하기 시작했다. 성능이 SEO에 직접 영향을 미친다. 어떤 지표가 있고, 어떻게 개선할 수 있는지 알아보자.
+
+## Core Web Vitals
+
+세 가지 핵심 지표가 있다.
+
+### LCP (Largest Contentful Paint)
+
+**뷰포트에서 가장 큰 콘텐츠 요소가 렌더링되는 시점.** 사용자 입장에서 "페이지가 로드됐다"고 느끼는 시점에 가깝다.
+
+측정 대상:
+- `<img>` 요소
+- `<video>` 포스터 이미지
+- CSS `background-image`가 있는 블록 요소
+- 텍스트 블록
+
+```
+Good:     ≤ 2.5s
+Needs improvement: 2.5s ~ 4.0s
+Poor:     > 4.0s
+```
+
+**LCP 개선 방법:**
+
+```html
+<!-- 1. 히어로 이미지 preload -->
+<link rel="preload" as="image" href="hero.jpg">
+
+<!-- 2. LCP 이미지는 lazy loading 하지 않음 -->
+<img src="hero.jpg" alt="Hero">  <!-- loading="lazy" 없음 -->
+
+<!-- 3. 이미지 크기 명시 (레이아웃 시프트 방지) -->
+<img src="hero.jpg" width="1200" height="600" alt="Hero">
+```
+
+```css
+/* 4. 폰트 렌더링 차단 방지 */
+@font-face {
+  font-family: 'MyFont';
+  src: url('font.woff2') format('woff2');
+  font-display: swap;  /* 폰트 로드 전 폴백 폰트 사용 */
+}
+```
+
+### CLS (Cumulative Layout Shift)
+
+**페이지 로드 중 발생하는 레이아웃 이동의 누적 점수.** 이미지가 로드되면서 텍스트가 밀리거나, 광고 배너가 갑자기 나타나는 현상.
+
+```
+Good:     ≤ 0.1
+Needs improvement: 0.1 ~ 0.25
+Poor:     > 0.25
+```
+
+CLS 점수 계산:
+```
+레이아웃 이동 점수 = 영향 분율 × 거리 분율
+영향 분율: 화면에서 이동한 요소가 차지하는 비율
+거리 분율: 요소가 이동한 거리 / 뷰포트 크기
+```
+
+**CLS 개선 방법:**
+
+```html
+<!-- 1. 이미지/비디오에 크기 명시 -->
+<img src="photo.jpg" width="800" height="600" alt="">
+
+<!-- 2. 광고/임베드 공간 미리 확보 -->
+<div style="min-height: 250px;">
+  <!-- 광고가 로드될 공간 -->
+</div>
+```
+
+```css
+/* 3. 동적으로 추가되는 콘텐츠는 position: absolute 활용 */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+}
+
+/* 4. 애니메이션은 transform 사용 */
+.slide-in {
+  transform: translateY(-20px);  /* top 대신 transform */
+  animation: slide 0.3s ease;
+}
+
+@keyframes slide {
+  from { transform: translateY(-20px); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
+}
+```
+
+### INP (Interaction to Next Paint)
+
+**모든 사용자 인터랙션(클릭, 키보드, 탭)에 대한 응답 시간.** 2024년에 FID(First Input Delay)를 대체했다. 첫 인터랙션만 측정하는 FID와 달리 페이지 수명 동안의 모든 인터랙션을 측정한다.
+
+```
+Good:     ≤ 200ms
+Needs improvement: 200ms ~ 500ms
+Poor:     > 500ms
+```
+
+**INP 개선 방법:**
+
+```javascript
+// 1. 무거운 작업을 비동기로 분리
+button.addEventListener('click', async () => {
+  // 즉시 UI 업데이트 (사용자에게 응답)
+  button.disabled = true
+  showSpinner()
+
+  // 무거운 작업은 비동기로
+  await heavyTask()
+  hideSpinner()
+})
+
+// 2. 긴 태스크를 yield로 분할
+async function processLargeList(items) {
+  for (let i = 0; i < items.length; i++) {
+    processItem(items[i])
+
+    // 50개마다 메인 스레드 양보
+    if (i % 50 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+  }
+}
+
+// 3. Web Worker로 CPU 집약적 작업 분리
+const worker = new Worker('heavy-task.js')
+worker.postMessage({ data: largeData })
+worker.onmessage = (e) => updateUI(e.data)
+```
+
+## 기타 주요 지표
+
+**FCP (First Contentful Paint)** — 첫 번째 콘텐츠(텍스트, 이미지)가 화면에 그려지는 시점.
+
+```
+Good: ≤ 1.8s
+```
+
+**TTFB (Time to First Byte)** — 브라우저가 서버로부터 첫 번째 바이트를 받는 시간. 서버 응답 속도.
+
+```
+Good: ≤ 800ms
+```
+
+**FID (First Input Delay)** — 첫 번째 인터랙션에 대한 응답 시간. INP로 대체됨.
+
+**TBT (Total Blocking Time)** — FCP와 TTI 사이에 메인 스레드가 50ms 이상 블로킹된 시간의 합. Long Tasks 최소화.
+
+## 측정 도구
+
+### Lighthouse
+
+Chrome DevTools 내장. 로컬 환경에서 측정.
+
+```bash
+# CLI로 실행
+npx lighthouse https://example.com --output html --view
+```
+
+### PageSpeed Insights
+
+실제 사용자 데이터(CrUX)와 Lighthouse 결과를 함께 보여준다.
+
+```
+URL: https://pagespeed.web.dev/
+```
+
+### Chrome DevTools
+
+Performance 탭에서 실시간 측정.
+
+```
+F12 → Performance → Record → 페이지 조작 → Stop
+```
+
+### web-vitals 라이브러리
+
+실제 사용자 환경에서 지표를 수집한다.
+
+```javascript
+import { onLCP, onINP, onCLS, onFCP, onTTFB } from 'web-vitals'
+
+// 각 지표를 수집해서 분석 서비스로 전송
+onLCP(metric => sendToAnalytics(metric))
+onINP(metric => sendToAnalytics(metric))
+onCLS(metric => sendToAnalytics(metric))
+```
+
+### Next.js 내장 측정
+
+```typescript
+// app/layout.tsx (Next.js)
+export function reportWebVitals(metric) {
+  console.log(metric)
+  // { name: 'LCP', value: 2300, rating: 'good', ... }
+}
+```
+
+## 실무 개선 체크리스트
+
+**LCP 개선:**
+- [ ] LCP 요소 파악 (주로 히어로 이미지 또는 큰 텍스트 블록)
+- [ ] LCP 이미지 `<link rel="preload">` 추가
+- [ ] 이미지 WebP/AVIF 포맷 변환
+- [ ] CDN 사용으로 TTFB 단축
+- [ ] `font-display: swap` 설정
+
+**CLS 개선:**
+- [ ] 모든 `<img>`, `<video>`에 `width`/`height` 명시
+- [ ] 동적 콘텐츠 영역 높이 미리 확보
+- [ ] 폰트 로드로 인한 텍스트 변화 최소화
+
+**INP 개선:**
+- [ ] Long Tasks (50ms 이상) 분할
+- [ ] 이벤트 핸들러 최적화 (불필요한 작업 제거)
+- [ ] 무거운 계산 Web Worker 이전
+- [ ] React의 `startTransition`으로 비긴급 업데이트 분리
+
+```typescript
+import { startTransition } from 'react'
+
+// 긴급하지 않은 상태 업데이트를 저우선순위로
+input.addEventListener('input', (e) => {
+  // 즉시 처리 (긴급)
+  setInputValue(e.target.value)
+
+  // 나중에 처리 (비긴급 — 검색 결과 필터링)
+  startTransition(() => {
+    setFilteredResults(filter(data, e.target.value))
+  })
+})
+```
+
+---
+
+Web Vitals는 수치보다 사용자 경험을 측정한다. LCP는 "언제 내용이 보이는가", CLS는 "화면이 흔들리지 않는가", INP는 "클릭하면 바로 반응하는가"다. 이 세 가지가 좋으면 사용자가 빠르고 안정적으로 느끼는 웹을 만든 것이다.

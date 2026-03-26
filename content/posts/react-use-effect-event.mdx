@@ -1,0 +1,240 @@
+---
+title: "React의 useEffectEvent — Effect와 이벤트 로직의 분리"
+date: "2026-03-26"
+category: "Frontend"
+tags: ["React", "Hooks", "useEffectEvent", "useEffect"]
+summary: "React 실험적 훅 useEffectEvent가 해결하는 문제 — Effect에서 반응하지 않아야 하는 값을 어떻게 읽을 수 있는지 정리합니다."
+---
+
+`useEffect`를 작성하다 보면 의존성 배열 때문에 난처한 상황이 생긴다. Effect가 어떤 값을 읽어야 하는데, 그 값이 바뀔 때마다 Effect를 재실행하고 싶지는 않은 경우다. `useEffectEvent`는 이 문제를 해결하기 위해 제안된 실험적 훅이다.
+
+> **참고:** `useEffectEvent`는 React 18.3 기준 실험적 API다. `experimental` 채널에서만 사용 가능하며, 안정 API가 되는 시점에 이름이나 동작이 바뀔 수 있다.
+
+## 문제: Effect 의존성의 딜레마
+
+채팅방에 연결하면서 연결 시 로그를 남기는 코드를 보자.
+
+```tsx
+function ChatRoom({ roomId }) {
+  const [messages, setMessages] = useState([])
+
+  useEffect(() => {
+    const connection = createConnection(roomId)
+    connection.connect()
+    connection.on('message', (msg) => {
+      setMessages(prev => [...prev, msg])
+    })
+    return () => connection.disconnect()
+  }, [roomId])
+  // ...
+}
+```
+
+여기에 로그 기능을 추가한다. 로그 레벨은 설정에서 읽어온다.
+
+```tsx
+function ChatRoom({ roomId }) {
+  const [messages, setMessages] = useState([])
+  const logLevel = useLogLevel()  // 외부 상태
+
+  useEffect(() => {
+    const connection = createConnection(roomId)
+    connection.on('connect', () => {
+      logConnection(roomId, logLevel)  // logLevel 사용
+    })
+    connection.connect()
+    return () => connection.disconnect()
+  }, [roomId, logLevel])  // logLevel을 의존성에 추가해야 함
+```
+
+문제가 생겼다. `logLevel`이 의존성에 포함되었기 때문에, **사용자가 로그 레벨을 바꿀 때마다 채팅방 연결이 끊어지고 다시 연결된다.** 이것은 원하는 동작이 아니다.
+
+`logLevel`은 연결이 설정될 때 읽기만 하면 되고, `logLevel`이 바뀐다고 채팅방을 재연결할 이유가 없다.
+
+## 잘못된 해결책들
+
+### 의존성 배열에서 제거 (lint 무시)
+
+```tsx
+useEffect(() => {
+  const connection = createConnection(roomId)
+  connection.on('connect', () => {
+    logConnection(roomId, logLevel)
+  })
+  connection.connect()
+  return () => connection.disconnect()
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, [roomId])  // logLevel 빠뜨림
+```
+
+이 코드는 `logLevel`이 바뀌어도 Effect가 재실행되지 않아서 클로저 안에 오래된 `logLevel`이 남는다. 버그다.
+
+### ref로 감싸기
+
+```tsx
+const logLevelRef = useRef(logLevel)
+useEffect(() => { logLevelRef.current = logLevel })
+
+useEffect(() => {
+  const connection = createConnection(roomId)
+  connection.on('connect', () => {
+    logConnection(roomId, logLevelRef.current)  // ref로 접근
+  })
+  connection.connect()
+  return () => connection.disconnect()
+}, [roomId])
+```
+
+동작은 하지만 패턴이 장황하고 의도가 불명확하다.
+
+## useEffectEvent
+
+`useEffectEvent`는 Effect 안에서 쓰는 "이벤트 핸들러"를 만든다. 이 핸들러는:
+1. Effect 의존성이 아니다 (변경 시 Effect 재실행 없음)
+2. 항상 최신 값을 읽는다 (오래된 클로저 문제 없음)
+
+```tsx
+import { experimental_useEffectEvent as useEffectEvent } from 'react'
+
+function ChatRoom({ roomId }) {
+  const [messages, setMessages] = useState([])
+  const logLevel = useLogLevel()
+
+  // Effect Event — 의존성이 아니지만 항상 최신 logLevel을 읽음
+  const onConnect = useEffectEvent(() => {
+    logConnection(roomId, logLevel)
+  })
+
+  useEffect(() => {
+    const connection = createConnection(roomId)
+    connection.on('connect', onConnect)  // onConnect는 의존성에 추가 안 함
+    connection.connect()
+    return () => connection.disconnect()
+  }, [roomId])  // roomId만 의존성
+```
+
+`onConnect`는 `roomId`가 바뀔 때만 Effect가 재실행되도록 하면서, 실행 시점에는 항상 최신 `logLevel`을 읽는다.
+
+## 핵심 개념: 반응형 vs 비반응형
+
+React의 Effect는 **반응형(reactive)**이다. 의존성이 바뀌면 재실행된다.
+
+Effect Event는 **비반응형(non-reactive)**이다. 값이 바뀌어도 재실행을 유발하지 않지만, 호출될 때는 최신 값을 가진다.
+
+```tsx
+// 이 구분이 핵심
+useEffect(() => {
+  // 반응형 코드: roomId가 바뀌면 재실행됨
+  const connection = createConnection(roomId)
+
+  connection.on('message', onMessage)  // onMessage는 비반응형
+
+  connection.connect()
+  return () => connection.disconnect()
+}, [roomId])  // roomId에만 반응
+```
+
+## 더 많은 예시
+
+### 방문 로깅
+
+```tsx
+function Page({ url }) {
+  const { userId } = useAuth()
+
+  const onVisit = useEffectEvent((visitedUrl) => {
+    logVisit(visitedUrl, userId)  // userId는 반응형 아님
+  })
+
+  useEffect(() => {
+    onVisit(url)
+  }, [url])  // url이 바뀔 때만 실행, userId 변경 시 재실행 없음
+}
+```
+
+### 장바구니 알림
+
+```tsx
+function ProductPage({ productId }) {
+  const [addedToCart, setAddedToCart] = useState(false)
+  const { theme } = useTheme()
+
+  const onConnected = useEffectEvent(() => {
+    if (addedToCart) {
+      showNotification('상품이 이미 장바구니에 있습니다', theme)
+    }
+  })
+
+  useEffect(() => {
+    const connection = createProductConnection(productId)
+    connection.on('connected', onConnected)
+    connection.connect()
+    return () => connection.disconnect()
+  }, [productId])
+  // addedToCart, theme이 바뀌어도 재연결 없음
+}
+```
+
+## 제약사항
+
+`useEffectEvent`에는 중요한 제약이 있다.
+
+**Effect 안에서만 호출해야 한다.**
+
+```tsx
+const onConnect = useEffectEvent(() => {
+  // ...
+})
+
+// ❌ Effect 밖에서 호출 불가
+function handleClick() {
+  onConnect()  // 잘못된 사용
+}
+
+// ✅ Effect 안에서만 사용
+useEffect(() => {
+  connection.on('connect', onConnect)  // 올바른 사용
+  // ...
+}, [])
+```
+
+**Effect Event를 다른 컴포넌트나 훅에 전달하지 않는다.**
+
+```tsx
+// ❌
+function useTimer(callback) {
+  useEffect(() => {
+    const id = setInterval(callback, 1000)
+    return () => clearInterval(id)
+  }, [callback])
+}
+
+// ✅ — 내부에서 useEffectEvent 처리
+function useTimer(callback) {
+  const onTick = useEffectEvent(callback)
+  useEffect(() => {
+    const id = setInterval(onTick, 1000)
+    return () => clearInterval(id)
+  }, [])  // callback 변경에 영향받지 않음
+}
+```
+
+## Effect Event vs useCallback
+
+언뜻 비슷해 보이지만 목적이 다르다.
+
+```tsx
+// useCallback — 함수 참조를 안정화 (의존성에 포함됨)
+const handleSubmit = useCallback(() => {
+  submit(formData)
+}, [formData])  // formData 변경 시 새 함수 생성
+
+// useEffectEvent — Effect 안의 비반응형 로직 (의존성에 포함 안 됨)
+const onSubmit = useEffectEvent(() => {
+  logSubmit(formData)  // 항상 최신 formData 읽음, 하지만 재실행 유발 안 함
+})
+```
+
+---
+
+`useEffectEvent`는 "Effect는 `roomId`에 반응해야 하지만, 로그 레벨에는 반응하지 않아야 한다"는 의도를 코드로 명확히 표현할 수 있게 해준다. Effect의 의존성 배열을 `eslint-disable`로 속이거나 `ref` 패턴을 반복하는 것보다 훨씬 의도가 명확하다. 안정 API가 되는 시점을 기다리며 개념을 이해해두면 도움이 된다.

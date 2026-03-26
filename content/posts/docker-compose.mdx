@@ -1,0 +1,332 @@
+---
+title: "도커 컴포즈 — 멀티 컨테이너 앱을 하나의 파일로"
+date: "2026-03-26"
+category: "DevOps"
+tags: ["Docker", "Docker Compose", "Container", "DevOps"]
+summary: "여러 컨테이너로 구성된 애플리케이션을 docker-compose.yml 하나로 정의하고 관리하는 방법을 정리합니다."
+---
+
+실제 애플리케이션은 보통 여러 컨테이너로 구성된다. 웹 서버, API 서버, 데이터베이스, 캐시, 메시지 큐. 이걸 docker run 명령어로 하나씩 실행하면 관리하기 어렵다. 도커 컴포즈는 멀티 컨테이너 구성을 하나의 YAML 파일로 정의하고 한 번에 실행한다.
+
+## docker-compose.yml 기본 구조
+
+```yaml
+version: "3.9"
+
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+
+  api:
+    build: ./api
+    environment:
+      - DATABASE_URL=postgresql://postgres:secret@db:5432/myapp
+      - REDIS_URL=redis://cache:6379
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: myapp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cache:
+    image: redis:7-alpine
+    volumes:
+      - redisdata:/data
+
+volumes:
+  pgdata:
+  redisdata:
+```
+
+## 핵심 명령어
+
+```bash
+# 모든 서비스 시작 (백그라운드)
+docker compose up -d
+
+# 로그 확인
+docker compose logs
+docker compose logs -f api   # 특정 서비스, 실시간
+
+# 서비스 상태 확인
+docker compose ps
+
+# 서비스 중지 (컨테이너만 중지, 볼륨 유지)
+docker compose stop
+
+# 중지 + 컨테이너 삭제 (볼륨 유지)
+docker compose down
+
+# 중지 + 컨테이너 + 볼륨 모두 삭제
+docker compose down -v
+
+# 특정 서비스만 재시작
+docker compose restart api
+
+# 서비스 내에서 명령어 실행
+docker compose exec api sh
+docker compose exec db psql -U postgres
+
+# 이미지 빌드 (코드 변경 후)
+docker compose build api
+docker compose up -d --build  # 빌드하고 재시작
+```
+
+## services 주요 설정
+
+### build
+
+이미지를 Dockerfile로 빌드한다.
+
+```yaml
+services:
+  api:
+    build:
+      context: ./api         # 빌드 컨텍스트 경로
+      dockerfile: Dockerfile.prod  # 기본값은 Dockerfile
+      args:
+        NODE_ENV: production
+        BUILD_DATE: "2026-03-26"
+```
+
+### environment & env_file
+
+```yaml
+services:
+  api:
+    # 직접 설정
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # 호스트 환경변수에서 가져오기 (값 없으면 에러)
+      API_KEY: ${API_KEY}
+
+    # .env 파일에서 로드
+    env_file:
+      - .env
+      - .env.production
+```
+
+### ports & expose
+
+```yaml
+services:
+  api:
+    ports:
+      - "3000:3000"          # 호스트:컨테이너
+      - "127.0.0.1:3001:3001"  # 로컬호스트만
+    expose:
+      - "3000"  # 같은 네트워크 컨테이너에만 노출 (호스트에는 미노출)
+```
+
+### volumes
+
+```yaml
+services:
+  api:
+    volumes:
+      - ./src:/app/src             # bind mount (개발용 핫리로드)
+      - node_modules:/app/node_modules  # named volume (컨테이너 내 설치 유지)
+      - /app/dist                  # anonymous volume
+      - ./config.yml:/app/config.yml:ro  # 읽기 전용
+
+volumes:
+  node_modules:  # 최상위에 선언
+```
+
+### depends_on
+
+서비스 시작 순서와 헬스체크 연동.
+
+```yaml
+services:
+  api:
+    depends_on:
+      db:
+        condition: service_healthy    # db 헬스체크 통과 후 시작
+      cache:
+        condition: service_started   # cache가 시작되면 (기본값)
+      migration:
+        condition: service_completed_successfully  # 종료 코드 0으로 완료
+
+  db:
+    image: postgres:16
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+```
+
+### restart
+
+```yaml
+services:
+  api:
+    restart: always        # 항상 재시작
+    restart: on-failure    # 에러 종료 시만 재시작
+    restart: unless-stopped  # 수동 중지 외에는 재시작
+    restart: "no"          # 재시작 안 함 (기본값)
+```
+
+## 네트워크
+
+컴포즈는 기본적으로 모든 서비스를 같은 네트워크에 연결한다. 프로젝트명이 접두사가 된다.
+
+```yaml
+# 커스텀 네트워크 정의
+networks:
+  frontend:
+  backend:
+    driver: bridge
+
+services:
+  nginx:
+    networks:
+      - frontend
+
+  api:
+    networks:
+      - frontend
+      - backend
+
+  db:
+    networks:
+      - backend
+```
+
+## 여러 환경 구성: override 파일
+
+기본 설정과 환경별 오버라이드를 분리한다.
+
+```yaml
+# docker-compose.yml (공통)
+services:
+  api:
+    image: myapi
+    environment:
+      NODE_ENV: production
+```
+
+```yaml
+# docker-compose.override.yml (개발용, 자동으로 적용됨)
+services:
+  api:
+    build: .            # 이미지 대신 빌드
+    volumes:
+      - .:/app          # 코드 마운트
+    environment:
+      NODE_ENV: development
+    ports:
+      - "9229:9229"     # 디버거 포트
+```
+
+```yaml
+# docker-compose.prod.yml (프로덕션)
+services:
+  api:
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+```
+
+```bash
+# 개발: docker-compose.yml + docker-compose.override.yml 자동 적용
+docker compose up
+
+# 프로덕션: 명시적으로 파일 지정
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+## 실전 예시: Node.js + PostgreSQL + Redis
+
+```yaml
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:secret@db:5432/myapp
+      REDIS_URL: redis://cache:6379
+    depends_on:
+      db:
+        condition: service_healthy
+    command: npm run dev
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: myapp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d myapp"]
+      interval: 5s
+      retries: 10
+
+  cache:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
+  redisdata:
+```
+
+```bash
+# 개발 시작
+docker compose up -d
+
+# 마이그레이션 실행
+docker compose exec api npm run migrate
+
+# 로그 확인
+docker compose logs -f
+
+# 전체 초기화
+docker compose down -v && docker compose up -d
+```
+
+---
+
+도커 컴포즈는 개발 환경을 팀 전체에서 동일하게 유지하는 가장 실용적인 방법이다. `docker compose up -d` 하나로 데이터베이스부터 캐시까지 전체 환경이 올라온다. "내 로컬에서는 되는데"라는 문제를 해결하는 핵심 도구다.
