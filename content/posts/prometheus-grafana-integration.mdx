@@ -1,0 +1,331 @@
+---
+title: "Prometheus + Grafana 연계 — 완전한 모니터링 스택 구성하기"
+date: "2026-03-26"
+category: "DevOps"
+tags: ["Prometheus", "Grafana", "Monitoring", "Docker", "Spring Boot"]
+summary: "Prometheus와 Grafana를 왜 함께 쓰는지, Docker Compose로 어떻게 구성하는지, Spring Boot 애플리케이션을 어떻게 연결하는지 단계별로 정리합니다."
+---
+
+Prometheus는 데이터를 수집하고 저장하지만 시각화 기능이 기본적이다. Grafana는 시각화에 특화되어 있지만 데이터를 직접 수집하지 않는다. 이 두 가지가 조합되면 완전한 모니터링 스택이 완성된다.
+
+## 왜 함께 쓰는가
+
+Prometheus만 쓰면 PromQL로 데이터를 조회하고 기본 그래프를 볼 수 있다. 그러나 이것은 개발자용 탐색 도구에 가깝다. 여러 메트릭을 한 화면에 배치하고, 시간 범위를 바꾸고, 팀원 누구나 보기 좋게 구성하려면 Grafana가 필요하다.
+
+```
+수집·저장·쿼리    →  시각화·대시보드·알림
+   Prometheus    →       Grafana
+```
+
+두 도구의 역할이 명확하게 분리된다. Prometheus는 데이터 백엔드, Grafana는 프레젠테이션 레이어다.
+
+## Docker Compose로 환경 구성
+
+로컬 또는 서버에서 빠르게 구성하는 방법이다.
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:
+```
+
+```yaml
+# prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'spring-boot-app'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+```
+
+```bash
+docker compose up -d
+```
+
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000` (admin / admin)
+
+## Spring Boot 애플리케이션 연결
+
+### 의존성 추가
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-registry-prometheus</artifactId>
+</dependency>
+```
+
+### 설정
+
+```yaml
+# application.yml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+```
+
+`http://localhost:8080/actuator/prometheus`에 접속하면 메트릭이 텍스트 형식으로 노출된다.
+
+### 커스텀 메트릭 추가
+
+```java
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+
+    private final OrderService orderService;
+    private final Counter orderCounter;
+    private final Timer orderTimer;
+
+    public OrderController(OrderService orderService, MeterRegistry registry) {
+        this.orderService = orderService;
+        this.orderCounter = Counter.builder("order.created.total")
+            .description("생성된 주문 수")
+            .register(registry);
+        this.orderTimer = Timer.builder("order.processing.duration")
+            .description("주문 처리 시간")
+            .publishPercentiles(0.5, 0.9, 0.99)
+            .register(registry);
+    }
+
+    @PostMapping
+    public ResponseEntity<Order> createOrder(@RequestBody CreateOrderRequest request) {
+        Order order = orderTimer.record(() -> orderService.create(request));
+        orderCounter.increment();
+        return ResponseEntity.ok(order);
+    }
+}
+```
+
+## Grafana에서 Prometheus 연결
+
+1. Grafana 접속 → **Connections** → **Data sources** → **Add data source**
+2. **Prometheus** 선택
+3. URL: `http://prometheus:9090` (Docker Compose 네트워크 내부)
+4. **Save & Test** → "Successfully queried the Prometheus API" 확인
+
+## 프로비저닝으로 자동화
+
+매번 UI에서 설정하는 것은 번거롭다. 코드로 데이터 소스와 대시보드를 자동 설정할 수 있다.
+
+```yaml
+# grafana/provisioning/datasources/prometheus.yml
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+```
+
+```yaml
+# grafana/provisioning/dashboards/dashboards.yml
+apiVersion: 1
+
+providers:
+  - name: default
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards
+```
+
+대시보드 JSON 파일을 같은 경로에 두면 Grafana 시작 시 자동으로 로드된다.
+
+## 실제 대시보드 구성
+
+### Spring Boot 대시보드 임포트
+
+커뮤니티 대시보드를 활용하면 시간을 크게 절약할 수 있다.
+
+1. Grafana → **Dashboards** → **Import**
+2. 대시보드 ID 입력:
+   - **12900** — Spring Boot 2.1 Statistics
+   - **4701** — JVM (Micrometer)
+   - **11378** — Spring Boot 2.x Statistics
+3. Prometheus 데이터 소스 선택 → Import
+
+### 핵심 패널 구성
+
+직접 대시보드를 만들 때 포함해야 할 핵심 패널들이다.
+
+**HTTP 요청 수 (초당)**
+```promql
+sum(rate(http_server_requests_seconds_count[5m])) by (uri)
+```
+
+**에러율**
+```promql
+sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+/
+sum(rate(http_server_requests_seconds_count[5m]))
+```
+
+**p99 응답 시간**
+```promql
+histogram_quantile(0.99,
+  sum(rate(http_server_requests_seconds_bucket[5m])) by (le, uri)
+)
+```
+
+**JVM 힙 사용량**
+```promql
+jvm_memory_used_bytes{area="heap"}
+```
+
+**GC 빈도**
+```promql
+rate(jvm_gc_pause_seconds_count[5m])
+```
+
+**활성 데이터베이스 커넥션**
+```promql
+hikaricp_connections_active
+```
+
+## Node Exporter로 서버 메트릭 수집
+
+애플리케이션 메트릭 외에 서버(CPU, 메모리, 디스크) 메트릭도 수집하려면 Node Exporter를 추가한다.
+
+```yaml
+# docker-compose.yml에 추가
+node-exporter:
+  image: prom/node-exporter:latest
+  container_name: node-exporter
+  ports:
+    - "9100:9100"
+  volumes:
+    - /proc:/host/proc:ro
+    - /sys:/host/sys:ro
+    - /:/rootfs:ro
+  command:
+    - '--path.procfs=/host/proc'
+    - '--path.sysfs=/host/sys'
+    - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+  restart: unless-stopped
+```
+
+```yaml
+# prometheus.yml에 추가
+- job_name: 'node'
+  static_configs:
+    - targets: ['node-exporter:9100']
+```
+
+Node Exporter 대시보드: **1860** (Node Exporter Full)
+
+## 알림 설정
+
+### Grafana Alerting
+
+1. 패널 편집 → **Alert** 탭 → **Create alert rule**
+2. 조건 설정:
+   ```
+   WHEN avg() OF query(A, 5m, now) IS ABOVE 0.05
+   ```
+3. Notification channel 설정 (Slack, 이메일 등)
+
+### Slack 연동
+
+```yaml
+# 알림 채널 설정 (Grafana UI 또는 provisioning)
+notifiers:
+  - name: Slack
+    type: slack
+    settings:
+      url: https://hooks.slack.com/services/xxx/yyy/zzz
+      recipient: '#alerts'
+      mentionUsers: '@oncall'
+```
+
+## Kubernetes 환경에서의 구성
+
+Kubernetes 환경에서는 Helm Chart를 사용하는 것이 편리하다.
+
+```bash
+# kube-prometheus-stack 설치
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm install monitoring prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --create-namespace
+```
+
+이 Helm Chart 하나로 Prometheus, Grafana, Alertmanager, Node Exporter, kube-state-metrics가 모두 설치된다. Kubernetes 클러스터 전체 메트릭을 자동으로 수집하고 기본 대시보드까지 제공한다.
+
+## 모니터링 스택의 전체 그림
+
+```
+[Spring Boot App]
+    │ /actuator/prometheus
+    ▼
+[Prometheus]  ←── scrape (15초마다)
+    │ PromQL 쿼리
+    ▼
+[Grafana]
+    ├── 대시보드 시각화
+    └── 알림 → [Slack / PagerDuty / Email]
+
+[Node Exporter] ──scrape──▶ [Prometheus]
+[DB Exporter] ───scrape──▶ [Prometheus]
+```
+
+---
+
+Prometheus + Grafana 조합은 구성이 복잡해 보이지만 Docker Compose 하나로 로컬에서 쉽게 시작할 수 있다. 한번 구성해두면 애플리케이션에 메트릭을 추가하고 대시보드에 패널을 올리는 것은 매우 빠르다. 시스템이 어떻게 동작하는지 실시간으로 파악하는 경험은 개발과 운영 방식을 근본적으로 바꾼다.
