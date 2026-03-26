@@ -2,7 +2,7 @@
   {
     "slug": "ai-vibe-coding-architecture",
     "title": "AI 시대의 개발자 — 바이브 코딩과 아키텍처 설계 능력",
-    "category": "General",
+    "category": "AI",
     "tags": [
       "AI",
       "Architecture",
@@ -73,7 +73,7 @@
   {
     "slug": "claude-code-channels",
     "title": "Claude Code Channels — Telegram·Discord에서 AI 코딩 에이전트 제어하기",
-    "category": "General",
+    "category": "AI",
     "tags": [
       "Claude",
       "Claude Code",
@@ -90,7 +90,7 @@
   {
     "slug": "claude-computer-use-2026",
     "title": "Claude Computer Use — AI가 직접 컴퓨터를 제어하는 시대",
-    "category": "General",
+    "category": "AI",
     "tags": [
       "Claude",
       "AI",
@@ -119,7 +119,7 @@
   {
     "slug": "claude-superpowers-plugin",
     "title": "Claude Superpowers 플러그인 — Claude Code를 확장하는 스킬 시스템",
-    "category": "General",
+    "category": "AI",
     "tags": [
       "Claude",
       "Claude Code",
@@ -320,7 +320,7 @@
   {
     "slug": "gstack",
     "title": "gstack — Claude Code를 가상 개발팀으로 만드는 오픈소스 워크플로우",
-    "category": "General",
+    "category": "AI",
     "tags": [
       "Claude Code",
       "gstack",

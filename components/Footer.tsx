@@ -1,6 +1,6 @@
 import Link from 'next/link'
 
-const CATEGORIES = ['Frontend', 'Backend', 'Architecture', 'DevOps']
+const CATEGORIES = ['Frontend', 'Backend', 'Architecture', 'DevOps', 'AI']
 
 export default function Footer() {
   return (
