@@ -62,18 +62,18 @@
   }
 
   .animate-fade-in-down {
-    animation: fade-in-down 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: fade-in-down 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   .animate-slide-down {
-    animation: slide-down 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: slide-down 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   .animate-fade-in {
-    animation: fade-in 0.15s ease-out both;
+    animation: fade-in 0.3s ease-out both;
   }
 
   .animate-page-enter {
-    animation: page-enter 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: page-enter 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 }
