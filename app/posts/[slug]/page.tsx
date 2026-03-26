@@ -4,6 +4,7 @@ import matter from 'gray-matter'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { MDXRemote } from 'next-mdx-remote/rsc'
+import remarkGfm from 'remark-gfm'
 import { getAllPosts } from '@/lib/posts'
 import Comments from '@/components/Comments'
 
@@ -76,7 +77,7 @@ export default async function PostPage({ params }: Props) {
       </header>
 
       <div className="prose prose-stone max-w-none font-body leading-relaxed">
-        <MDXRemote source={content} />
+        <MDXRemote source={content} options={{ mdxOptions: { remarkPlugins: [remarkGfm] } }} />
       </div>
 
       <Comments />
