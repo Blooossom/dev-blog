@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { useState, useRef, useEffect } from 'react'
 
 const CATEGORIES = [
@@ -11,9 +12,22 @@ const CATEGORIES = [
 ]
 
 export default function NavBar() {
+  const pathname = usePathname()
   const [menuOpen, setMenuOpen] = useState(false)
   const [topicsOpen, setTopicsOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
+
+  const isActive = (href: string) =>
+    href === '/' ? pathname === '/' : pathname.startsWith(href)
+
+  const linkClass = (href: string) =>
+    `transition-colors duration-200 ${
+      isActive(href)
+        ? 'text-primary font-extrabold'
+        : 'text-on-surface-variant hover:text-primary'
+    }`
+
+  const isTopicsActive = CATEGORIES.some((c) => pathname.startsWith(c.href))
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -37,10 +51,7 @@ export default function NavBar() {
 
         {/* Desktop nav */}
         <div className="hidden md:flex items-center space-x-8 font-headline font-bold tracking-tight text-sm">
-          <Link
-            href="/categories"
-            className="text-on-surface-variant hover:text-primary transition-colors duration-200"
-          >
+          <Link href="/categories" className={linkClass('/categories')}>
             Articles
           </Link>
 
@@ -48,7 +59,11 @@ export default function NavBar() {
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setTopicsOpen((prev) => !prev)}
-              className="flex items-center gap-1 text-on-surface-variant hover:text-primary transition-colors duration-200"
+              className={`flex items-center gap-1 transition-colors duration-200 ${
+                isTopicsActive
+                  ? 'text-primary font-extrabold'
+                  : 'text-on-surface-variant hover:text-primary'
+              }`}
             >
               Topics
               <svg
@@ -79,17 +94,11 @@ export default function NavBar() {
             )}
           </div>
 
-          <Link
-            href="/tags"
-            className="text-on-surface-variant hover:text-primary transition-colors duration-200"
-          >
+          <Link href="/tags" className={linkClass('/tags')}>
             Tags
           </Link>
 
-          <Link
-            href="/about"
-            className="text-on-surface-variant hover:text-primary transition-colors duration-200"
-          >
+          <Link href="/about" className={linkClass('/about')}>
             About
           </Link>
         </div>
