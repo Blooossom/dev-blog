@@ -1,0 +1,273 @@
+---
+title: "Bun — 빠른 JavaScript 런타임의 등장, Node.js·Deno와 비교"
+date: "2026-03-26"
+category: "Frontend"
+tags: ["Bun", "JavaScript", "Runtime", "Node.js", "Deno", "Performance"]
+summary: "Bun이 무엇인지, Node.js·Deno와 어떻게 다른지, 번들러·패키지 매니저·테스트 러너까지 통합한 올인원 툴킷의 장단점을 정리합니다."
+---
+
+JavaScript 생태계는 오랫동안 Node.js 중심이었다. 2018년 Deno가 나왔고, 2022년 Bun이 등장했다. Bun은 런타임만이 아니라 패키지 매니저, 번들러, 테스트 러너를 하나로 합친 올인원 툴킷이다.
+
+## Bun이란
+
+Bun은 **Zig 언어로 작성된 JavaScript/TypeScript 런타임**이다. Node.js처럼 서버사이드 JavaScript를 실행하지만, 속도에 집착하며 설계됐다. V8 대신 **JavaScriptCore(JSC)**를 엔진으로 사용한다. Safari와 WebKit이 쓰는 바로 그 엔진이다.
+
+```bash
+# 설치
+curl -fsSL https://bun.sh/install | bash
+
+# 버전 확인
+bun --version
+
+# TypeScript 파일 바로 실행 (트랜스파일 불필요)
+bun run server.ts
+
+# Node.js 호환 — 기존 코드 그대로
+bun run app.js
+```
+
+## 핵심 특징
+
+### TypeScript를 기본 지원
+
+Node.js에서 TypeScript를 실행하려면 `ts-node`, `tsx`, 또는 `tsc`로 컴파일 후 실행해야 한다. Bun은 TypeScript를 네이티브로 실행한다. 설정 없이 `.ts` 파일을 바로 실행할 수 있다.
+
+```bash
+# Node.js
+npx ts-node server.ts
+# 또는 tsc 빌드 후: node dist/server.js
+
+# Bun
+bun server.ts  # 그냥 실행
+```
+
+### 패키지 매니저 내장
+
+npm, yarn, pnpm 설치 없이도 패키지를 관리할 수 있다. npm 레지스트리를 그대로 사용하면서 속도가 훨씬 빠르다.
+
+```bash
+bun install           # npm install 대비 최대 30x 빠름
+bun add express       # npm install express
+bun remove lodash     # npm uninstall lodash
+bun update            # npm update
+```
+
+내부적으로 바이너리 락파일(`bun.lockb`)을 사용해서 텍스트 기반 `package-lock.json`보다 파싱이 빠르다.
+
+### 번들러 내장
+
+esbuild, webpack, Rollup 없이도 번들링이 가능하다.
+
+```bash
+bun build ./index.ts --outdir ./dist
+bun build ./index.ts --outdir ./dist --minify --sourcemap
+```
+
+```typescript
+// API로도 사용
+await Bun.build({
+  entrypoints: ['./index.ts'],
+  outdir: './dist',
+  minify: true,
+  target: 'browser',
+})
+```
+
+### 테스트 러너 내장
+
+Jest와 호환되는 API를 기본 제공한다.
+
+```typescript
+import { describe, test, expect } from 'bun:test'
+
+describe('sum', () => {
+  test('1 + 2 = 3', () => {
+    expect(1 + 2).toBe(3)
+  })
+
+  test('async', async () => {
+    const result = await fetch('https://api.example.com/data')
+    expect(result.ok).toBe(true)
+  })
+})
+```
+
+```bash
+bun test
+bun test --watch
+bun test --coverage
+```
+
+### Web API 네이티브 지원
+
+`fetch`, `Request`, `Response`, `WebSocket`, `ReadableStream` 등 브라우저 표준 Web API를 별도 설치 없이 바로 사용할 수 있다.
+
+```typescript
+// fetch는 전역으로 사용 가능
+const res = await fetch('https://api.example.com')
+const data = await res.json()
+
+// WebSocket 서버
+const server = Bun.serve({
+  port: 3000,
+  fetch(req, server) {
+    if (server.upgrade(req)) return
+    return new Response('WebSocket만 허용')
+  },
+  websocket: {
+    message(ws, msg) {
+      ws.send(`Echo: ${msg}`)
+    },
+  },
+})
+```
+
+## 성능 비교
+
+Bun의 주요 벤치마크 결과 (공식 사이트 및 커뮤니티 측정):
+
+| 작업 | Node.js | Deno | Bun |
+|------|---------|------|-----|
+| HTTP 서버 처리량 | 기준 | ~1.1x | ~4x |
+| 시작 시간 | 기준 | ~1.3x | ~4x |
+| `npm install` (cold) | 기준 | N/A | ~30x |
+| TypeScript 실행 | + ts-node | 기준 | ~2x |
+| SQLite 쿼리 | + 라이브러리 | + 라이브러리 | 내장, 빠름 |
+
+> 벤치마크는 워크로드에 따라 다를 수 있다. CPU 집약적 작업보다 I/O 집약적 작업에서 차이가 두드러진다.
+
+## Node.js · Deno · Bun 비교
+
+| | Node.js | Deno | Bun |
+|---|---|---|---|
+| 출시 | 2009 | 2018 | 2022 |
+| 엔진 | V8 | V8 | JavaScriptCore |
+| 언어 | C++, JS | Rust | Zig |
+| TypeScript | 별도 설정 | 기본 지원 | 기본 지원 |
+| 패키지 매니저 | npm (별도) | URL import / jsr | 내장 |
+| 번들러 | 별도 (webpack 등) | 별도 | 내장 |
+| 테스트 러너 | 별도 (Jest 등) | 내장 | 내장 |
+| Node.js 호환 | — | 부분적 | 대부분 호환 |
+| Web API | 부분적 | 완전 | 대부분 |
+| npm 생태계 | ✅ | ✅ | ✅ |
+| 안정성 | 매우 높음 | 높음 | 성숙 중 |
+| 기업 사용 | 매우 많음 | 증가 중 | 증가 중 |
+
+### Node.js와의 주요 차이
+
+**호환성**: Bun은 Node.js 호환을 명시적으로 목표로 한다. `package.json`, `node_modules`, CommonJS, ESM 모두 지원한다. 대부분의 Node.js 프로젝트는 `package.json`의 `node` 명령어를 `bun`으로 바꾸는 것만으로 실행된다.
+
+```json
+{
+  "scripts": {
+    "start": "bun server.ts",  // node server.js 대신
+    "test": "bun test"         // jest 대신
+  }
+}
+```
+
+**모듈 시스템**: Node.js는 CommonJS(`require`)와 ESM(`import`) 사이에서 오랫동안 혼란이 있었다. Bun은 둘 다 같은 파일에서 섞어 쓸 수 있다.
+
+### Deno와의 주요 차이
+
+Deno는 URL 기반 임포트와 강한 보안 모델(권한 명시 필요)을 강조했다. 실용적인 npm 생태계 접근성은 나중에 추가됐다. Bun은 처음부터 npm 호환을 전제로 기존 생태계와의 마찰을 최소화했다.
+
+## Bun의 추가 기능
+
+### 내장 SQLite
+
+```typescript
+import { Database } from 'bun:sqlite'
+
+const db = new Database('myapp.db')
+db.run('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)')
+db.run('INSERT INTO users (name) VALUES (?)', ['Alice'])
+
+const users = db.query('SELECT * FROM users').all()
+console.log(users)  // [{ id: 1, name: 'Alice' }]
+```
+
+### 내장 HTTP 서버
+
+```typescript
+const server = Bun.serve({
+  port: 3000,
+  async fetch(req) {
+    const url = new URL(req.url)
+
+    if (url.pathname === '/api/hello') {
+      return Response.json({ message: 'Hello, Bun!' })
+    }
+
+    return new Response('Not Found', { status: 404 })
+  },
+})
+
+console.log(`Listening on http://localhost:${server.port}`)
+```
+
+### 파일 I/O
+
+```typescript
+// 파일 읽기
+const text = await Bun.file('data.txt').text()
+const json = await Bun.file('config.json').json()
+const buffer = await Bun.file('image.png').arrayBuffer()
+
+// 파일 쓰기
+await Bun.write('output.txt', 'Hello, Bun!')
+await Bun.write('data.json', JSON.stringify({ key: 'value' }))
+```
+
+### 환경변수 자동 로드
+
+`.env` 파일을 별도 라이브러리(`dotenv`) 없이 자동으로 로드한다.
+
+```bash
+# .env
+DATABASE_URL=postgresql://localhost/mydb
+API_KEY=secret
+```
+
+```typescript
+// 별도 설정 없이 바로 접근
+console.log(process.env.DATABASE_URL)
+console.log(Bun.env.API_KEY)
+```
+
+## 장단점 정리
+
+### 장점
+
+- **속도** — 시작 시간, HTTP 처리량, 패키지 설치 모두 빠름
+- **올인원** — 런타임 + 패키지 매니저 + 번들러 + 테스트 러너. 도구 선택 피로 감소
+- **TypeScript 기본 지원** — 별도 설정 없이 `.ts` 파일 바로 실행
+- **Node.js 호환** — 기존 코드 대부분 그대로 작동
+- **Web API 내장** — fetch, WebSocket 등 브라우저 API 즉시 사용
+
+### 단점
+
+- **안정성** — Node.js 대비 역사가 짧아 프로덕션 엣지 케이스가 덜 검증됨
+- **macOS/Linux만** — Windows 지원은 실험적 (WSL 통해서는 사용 가능)
+- **일부 Node.js API 미구현** — 완전한 호환이 아닌 "대부분" 호환. 특정 네이티브 모듈에서 문제 발생 가능
+- **생태계** — 커뮤니티, 레퍼런스, 문제 해결 자료가 Node.js 대비 적음
+- **JavaScriptCore** — V8과 다른 최적화 특성. 일부 워크로드에서 V8이 더 빠를 수 있음
+
+## 언제 Bun을 선택하는가
+
+**Bun이 적합한 경우:**
+- 새 프로젝트를 시작할 때 (Node.js 호환 걱정 없음)
+- 개발 도구, 스크립트, CLI 도구 제작
+- TypeScript를 주로 쓰는 프로젝트
+- 빠른 시작 시간이 중요한 서버리스/엣지 환경
+- 테스트 속도가 중요한 CI 파이프라인
+
+**Node.js를 유지하는 경우:**
+- 프로덕션에서 오랫동안 검증이 필요한 미션 크리티컬 서비스
+- 네이티브 모듈(`node-gyp`)에 크게 의존하는 경우
+- Windows 서버 환경
+- 팀이 Node.js 생태계와 도구에 깊이 투자되어 있는 경우
+
+---
+
+Bun은 Node.js를 당장 대체한다기보다는 **개발 생산성을 높이는 현실적 선택지**가 됐다. gstack, Claude Code Channels 같은 최신 AI 개발 도구들이 Bun을 기반으로 선택하는 것은 우연이 아니다. 빠른 실행, TypeScript 기본 지원, 설치가 간단한 올인원 특성이 스크립팅과 도구 제작에 잘 맞는다.
