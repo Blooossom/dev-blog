@@ -9,7 +9,7 @@ interface Props {
 export default function PostCard({ post }: Props) {
   return (
     <Link href={`/posts/${post.slug}`} className="block group">
-      <article className="bg-surface-container-lowest rounded-xl p-6 hover:bg-surface-container-low transition-colors duration-200 shadow-warm">
+      <article className="bg-surface-container-lowest rounded-xl p-6 hover:bg-surface-container-low transition-all duration-200 ease-out shadow-warm hover:shadow-warm-md hover:-translate-y-0.5">
         {post.thumbnail && (
           <div className="relative aspect-video rounded-lg overflow-hidden mb-5">
             <Image src={post.thumbnail} alt={post.title} fill className="object-cover" />

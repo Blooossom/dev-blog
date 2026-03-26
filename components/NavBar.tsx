@@ -78,7 +78,7 @@ export default function NavBar() {
             </button>
 
             {topicsOpen && (
-              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-3 w-44 bg-surface-container rounded-xl shadow-lg border border-outline-variant/20 overflow-hidden">
+              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-3 w-44 bg-surface-container rounded-xl shadow-lg border border-outline-variant/20 overflow-hidden animate-fade-in-down">
                 <div className="py-1.5">
                   {CATEGORIES.map((cat) => (
                     <Link
@@ -105,7 +105,7 @@ export default function NavBar() {
         </div>
 
         <div className="hidden md:flex items-center space-x-5">
-          <Link href="/search" aria-label="검색">
+          <Link href="/search" aria-label="검색" className="hover:scale-110 transition-transform duration-150 inline-flex">
             <svg
               className="w-5 h-5 text-on-surface-variant hover:text-primary transition-colors"
               fill="none"
@@ -122,7 +122,7 @@ export default function NavBar() {
           </Link>
           <Link
             href="/subscribe/success"
-            className="primary-gradient text-on-primary font-headline font-bold text-sm px-5 py-2 rounded-lg hover:opacity-90 transition-opacity"
+            className="primary-gradient text-on-primary font-headline font-bold text-sm px-5 py-2 rounded-lg hover:opacity-90 hover:-translate-y-px active:translate-y-0 transition-all duration-150"
           >
             Subscribe
           </Link>
@@ -146,7 +146,7 @@ export default function NavBar() {
 
       {/* Mobile menu */}
       {menuOpen && (
-        <div className="md:hidden bg-surface-container-low px-6 pb-6 space-y-1 font-headline font-bold text-sm">
+        <div className="md:hidden bg-surface-container-low px-6 pb-6 space-y-1 font-headline font-bold text-sm animate-slide-down">
           <Link
             href="/categories"
             className="block py-2.5 text-on-surface-variant hover:text-primary border-b border-outline-variant/10"
