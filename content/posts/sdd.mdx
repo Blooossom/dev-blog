@@ -1,0 +1,356 @@
+---
+title: 'SDD — 스펙이 먼저, 코드는 그 다음'
+date: '2026-03-27'
+category: Backend
+tags:
+  - SDD
+  - Specification-Driven Development
+  - API-First
+  - OpenAPI
+  - Contract Testing
+  - Software Design
+summary: >-
+  Specification-Driven Development(SDD)의 개념, API-First 접근법, OpenAPI 스펙 기반 개발 흐름,
+  계약 테스트까지 — 스펙을 중심으로 팀 전체가 정렬되는 방법을 정리합니다.
+thumbnail: /thumbnails/sdd.svg
+---
+
+
+코드를 먼저 짜고 문서를 나중에 쓰면 어떻게 되는가. 문서는 항상 코드를 따라가지 못하고, 팀 간 소통은 "실제로 해봐야 안다"는 암묵적 의존으로 가득 찬다. SDD(Specification-Driven Development)는 이 흐름을 뒤집는다. **스펙이 먼저고, 코드는 그 스펙의 구현이다.**
+
+## SDD란
+
+SDD는 명세(Specification)를 개발의 중심에 놓는 방법론이다. 구현 이전에 시스템이 어떻게 동작해야 하는지를 명확하게 정의하고, 그 스펙을 기준으로 개발, 테스트, 문서화가 이루어진다.
+
+핵심 원칙은 하나다:
+
+> **스펙은 단일 진실 공급원(Single Source of Truth)이다.**
+
+백엔드 개발자, 프론트엔드 개발자, QA, PM 모두가 같은 스펙을 바라보며 일한다. 스펙이 바뀌면 그것이 변경의 시작점이 된다.
+
+## API-First 개발 흐름
+
+SDD가 가장 잘 드러나는 영역은 API 설계다.
+
+```
+기존 (Code-First):
+  코드 작성 → API 동작 → 문서화 (뒤늦게)
+  → 프론트는 백엔드가 완성될 때까지 대기
+
+API-First (Spec-First):
+  OpenAPI 스펙 작성 → 합의 → 병렬 개발
+  → 백엔드: 스펙을 구현
+  → 프론트: 스펙 기반 Mock으로 개발 시작
+  → QA: 스펙 기반 테스트 케이스 작성
+```
+
+프론트엔드와 백엔드가 스펙 하나를 기준으로 동시에 개발을 시작할 수 있다.
+
+## OpenAPI로 스펙 작성
+
+```yaml
+# openapi.yaml
+openapi: 3.0.3
+info:
+  title: Order API
+  version: 1.0.0
+
+paths:
+  /orders:
+    post:
+      summary: 주문 생성
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: 주문 생성 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          description: 잘못된 요청
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: 재고 부족
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /orders/{orderId}:
+    get:
+      summary: 주문 조회
+      operationId: getOrder
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 주문 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: 주문 없음
+
+components:
+  schemas:
+    CreateOrderRequest:
+      type: object
+      required: [itemId, quantity]
+      properties:
+        itemId:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 100
+        couponCode:
+          type: string
+          nullable: true
+
+    Order:
+      type: object
+      required: [id, status, totalPrice, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PENDING, CONFIRMED, CANCELLED]
+        totalPrice:
+          type: integer
+          description: 원화 기준 총 금액
+        createdAt:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+```
+
+이 스펙 하나가 팀 전체의 계약이 된다.
+
+## 스펙에서 코드 생성
+
+OpenAPI 스펙이 있으면 보일러플레이트 코드를 자동 생성할 수 있다.
+
+### 서버 스텁 (Spring Boot)
+
+```bash
+openapi-generator-cli generate \
+  -i openapi.yaml \
+  -g spring \
+  -o ./generated \
+  --additional-properties=interfaceOnly=true
+```
+
+생성된 인터페이스:
+
+```java
+// 생성된 코드 (수정하지 않음)
+public interface OrdersApi {
+
+    @PostMapping("/orders")
+    ResponseEntity<Order> createOrder(@RequestBody CreateOrderRequest request);
+
+    @GetMapping("/orders/{orderId}")
+    ResponseEntity<Order> getOrder(@PathVariable UUID orderId);
+}
+```
+
+개발자는 이 인터페이스를 구현하기만 하면 된다. 스펙과 구현이 자동으로 일치한다.
+
+```java
+// 개발자가 작성하는 코드
+@RestController
+public class OrderController implements OrdersApi {
+
+    private final OrderService orderService;
+
+    @Override
+    public ResponseEntity<Order> createOrder(CreateOrderRequest request) {
+        Order order = orderService.place(request);
+        return ResponseEntity.status(201).body(order);
+    }
+
+    @Override
+    public ResponseEntity<Order> getOrder(UUID orderId) {
+        return orderService.findById(orderId)
+            .map(ResponseEntity::ok)
+            .orElse(ResponseEntity.notFound().build());
+    }
+}
+```
+
+### 클라이언트 코드 (TypeScript)
+
+```bash
+openapi-generator-cli generate \
+  -i openapi.yaml \
+  -g typescript-fetch \
+  -o ./src/api/generated
+```
+
+프론트엔드는 생성된 타입과 클라이언트를 그대로 사용한다:
+
+```typescript
+import { OrdersApi, CreateOrderRequest } from './api/generated'
+
+const api = new OrdersApi()
+
+async function placeOrder(itemId: string, quantity: number) {
+  const request: CreateOrderRequest = { itemId, quantity }
+  const order = await api.createOrder({ createOrderRequest: request })
+  console.log(order.id, order.status)
+}
+```
+
+백엔드 구현 완료를 기다릴 필요 없이, 스펙 기반으로 프론트엔드 개발을 진행한다.
+
+## Mock 서버로 병렬 개발
+
+스펙만 있으면 실제 서버 없이도 개발이 가능하다.
+
+```bash
+# Prism으로 Mock 서버 실행
+npx @stoplight/prism-cli mock openapi.yaml --port 4010
+```
+
+스펙의 example 값을 기반으로 실제 응답을 반환하는 Mock 서버가 즉시 뜬다.
+
+```bash
+# 테스트
+curl -X POST http://localhost:4010/orders \
+  -H "Content-Type: application/json" \
+  -d '{"itemId": "ITEM-001", "quantity": 2}'
+
+# 스펙의 example 기반 응답
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "status": "PENDING",
+  "totalPrice": 50000,
+  "createdAt": "2026-03-27T09:00:00Z"
+}
+```
+
+백엔드가 구현을 마칠 때까지 프론트엔드는 Mock 서버를 바라보며 UI를 완성한다.
+
+## 계약 테스트 (Contract Testing)
+
+SDD의 완성은 계약 테스트다. 스펙을 기준으로 실제 구현이 스펙을 만족하는지 자동으로 검증한다.
+
+### Provider 테스트 (백엔드)
+
+```java
+// Dredd 또는 Schemathesis로 자동화
+// OpenAPI 스펙 → 자동으로 모든 엔드포인트 테스트 케이스 생성
+```
+
+```bash
+# Schemathesis: 스펙 기반 자동 테스트
+schemathesis run openapi.yaml --url http://localhost:8080
+```
+
+Schemathesis는 스펙의 모든 엔드포인트를 읽어 유효한 요청과 경계값 케이스를 자동으로 생성해서 서버에 보낸다. 개발자가 케이스를 직접 작성하지 않아도 스펙과 구현의 불일치를 잡아낸다.
+
+### Pact를 활용한 Consumer-Driven Contract Testing
+
+```javascript
+// consumer.test.js (프론트엔드 / 클라이언트)
+const { Pact } = require('@pact-foundation/pact')
+
+const provider = new Pact({
+  consumer: 'frontend-app',
+  provider: 'order-api',
+})
+
+describe('Order API 계약', () => {
+  before(() => provider.setup())
+  after(() => provider.finalize())
+
+  it('주문 생성 성공', async () => {
+    await provider.addInteraction({
+      state: '재고가 있을 때',
+      uponReceiving: '주문 생성 요청',
+      withRequest: {
+        method: 'POST',
+        path: '/orders',
+        body: { itemId: 'ITEM-001', quantity: 2 },
+      },
+      willRespondWith: {
+        status: 201,
+        body: {
+          id: like('uuid'),
+          status: 'PENDING',
+          totalPrice: like(50000),
+        },
+      },
+    })
+
+    const response = await orderApi.create({ itemId: 'ITEM-001', quantity: 2 })
+    expect(response.status).toBe('PENDING')
+  })
+})
+```
+
+클라이언트가 기대하는 계약을 파일로 저장하고, 백엔드는 이 계약 파일을 기준으로 테스트를 통과해야 배포될 수 있다.
+
+## TDD vs SDD
+
+TDD와 SDD는 충돌하지 않는다. 함께 사용할 수 있고, 실제로 보완 관계에 있다.
+
+| 관점 | TDD | SDD |
+|------|-----|-----|
+| 중심 | 코드 단위의 동작 검증 | 시스템 경계의 계약 명세 |
+| 범위 | 함수·클래스 단위 | API·서비스 경계 |
+| 도구 | JUnit, Jest, Vitest | OpenAPI, Pact, Schemathesis |
+| 산출물 | 테스트 코드 | 스펙 문서 + 계약 |
+| 피드백 | 구현 과정에서 즉시 | 팀 간 합의 시점에 |
+
+실무에서는 이렇게 조합한다:
+- **시스템 경계는 SDD**: API 스펙을 먼저 작성하고 팀 간 합의
+- **구현 내부는 TDD**: 스펙을 구현하는 과정에서 Red-Green-Refactor
+
+## 스펙 드리프트 방지
+
+SDD의 가장 큰 위험은 스펙이 실제 구현과 달라지는 **드리프트**다. 이를 방지하는 방법:
+
+**1. 스펙을 코드 저장소에 함께 관리한다.** 코드와 스펙이 같은 PR에 포함되면 리뷰 단계에서 불일치를 잡을 수 있다.
+
+**2. CI에 스펙 검증을 포함한다.**
+
+```yaml
+# .github/workflows/ci.yml
+- name: Validate API against spec
+  run: schemathesis run openapi.yaml --url http://localhost:8080
+```
+
+매 PR마다 스펙과 실제 동작을 자동으로 비교한다.
+
+**3. 코드에서 스펙을 생성하지 않는다.** `@ApiResponse` 어노테이션으로 코드에서 스펙을 뽑아내면 스펙이 구현의 종속물이 된다. 스펙은 항상 사람이 의도적으로 작성하고, 코드는 그 스펙을 따른다.
+
+---
+
+SDD는 특히 여러 팀이 하나의 시스템을 함께 만드는 환경에서 진가를 발휘한다. 스펙이라는 명확한 계약이 있으면 "백엔드가 뭘 만들고 있는지 모르겠어서 기다리고 있어요"라는 상황이 사라진다. 팀은 스펙을 중심으로 정렬되고, 코드는 그 합의의 결과물이 된다.

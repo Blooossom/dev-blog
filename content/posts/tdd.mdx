@@ -1,0 +1,245 @@
+---
+title: TDD — 테스트가 설계를 이끈다
+date: '2026-03-27'
+category: Backend
+tags:
+  - TDD
+  - Testing
+  - Clean Code
+  - Java
+  - JavaScript
+  - Software Design
+summary: >-
+  테스트 주도 개발(TDD)의 Red-Green-Refactor 사이클, 테스트 더블(Mock·Stub·Spy), 실전 예시, 그리고 TDD가
+  단순한 테스트 기법이 아니라 설계 방법론인 이유를 정리합니다.
+thumbnail: /thumbnails/tdd.svg
+---
+
+
+TDD를 처음 들으면 "테스트를 먼저 쓰는 것"으로 이해하기 쉽다. 하지만 TDD의 핵심 가치는 테스트가 아니라 **설계**다. 코드를 어떻게 사용할지 먼저 정의함으로써, 더 나은 API와 아키텍처가 자연스럽게 나온다.
+
+## Red-Green-Refactor
+
+TDD의 모든 것은 이 세 단계에 담겨 있다.
+
+```
+Red    → 실패하는 테스트를 먼저 작성한다
+Green  → 테스트를 통과시키는 최소한의 코드를 작성한다
+Refactor → 중복을 제거하고 코드를 개선한다
+```
+
+**Red**: 아직 존재하지 않는 기능에 대한 테스트를 작성한다. 컴파일조차 안 될 수 있다. 중요한 것은 테스트가 명확히 실패(빨간 불)해야 한다는 것이다. "무엇을 만들어야 하는가"를 코드로 명세하는 단계다.
+
+**Green**: 오직 테스트를 통과시키는 것만 목표로 한다. 아름다운 코드, 완벽한 구조는 나중이다. 하드코딩도 괜찮다. 목표는 초록 불 하나다.
+
+**Refactor**: 테스트가 통과한 상태에서 코드를 개선한다. 중복 제거, 명확한 네이밍, 적절한 추상화. 테스트가 안전망이 되어 자유롭게 리팩토링할 수 있다.
+
+이 사이클을 작은 단위로 빠르게 반복한다. 한 사이클에 수분이면 충분하다.
+
+## 예시: 장바구니 할인 계산
+
+### Step 1 — Red
+
+```java
+// CartDiscountTest.java
+@Test
+void 정가_아이템_할인_없음() {
+    Cart cart = new Cart();
+    cart.add(new Item("책", 10_000));
+
+    assertThat(cart.totalPrice()).isEqualTo(10_000);
+}
+```
+
+`Cart`와 `Item` 클래스가 없으므로 컴파일 실패. 명확한 실패 상태.
+
+### Step 2 — Green (최소 구현)
+
+```java
+public class Item {
+    private final String name;
+    private final int price;
+
+    public Item(String name, int price) {
+        this.name = name;
+        this.price = price;
+    }
+
+    public int getPrice() { return price; }
+}
+
+public class Cart {
+    private final List<Item> items = new ArrayList<>();
+
+    public void add(Item item) { items.add(item); }
+
+    public int totalPrice() {
+        return items.stream().mapToInt(Item::getPrice).sum();
+    }
+}
+```
+
+테스트 통과. 다음 케이스로.
+
+### Step 3 — 다음 Red: 10만원 이상 10% 할인
+
+```java
+@Test
+void 십만원_이상_구매시_10퍼센트_할인() {
+    Cart cart = new Cart();
+    cart.add(new Item("노트북", 120_000));
+
+    assertThat(cart.totalPrice()).isEqualTo(108_000);
+}
+```
+
+### Step 4 — Green
+
+```java
+public int totalPrice() {
+    int subtotal = items.stream().mapToInt(Item::getPrice).sum();
+    return subtotal >= 100_000
+        ? (int)(subtotal * 0.9)
+        : subtotal;
+}
+```
+
+### Step 5 — Refactor
+
+```java
+private static final int DISCOUNT_THRESHOLD = 100_000;
+private static final double DISCOUNT_RATE = 0.9;
+
+public int totalPrice() {
+    int subtotal = items.stream().mapToInt(Item::getPrice).sum();
+    return subtotal >= DISCOUNT_THRESHOLD
+        ? (int)(subtotal * DISCOUNT_RATE)
+        : subtotal;
+}
+```
+
+의미 있는 상수명으로 가독성이 높아졌고, 테스트는 여전히 통과한다.
+
+## 테스트 더블
+
+외부 의존성(DB, API, 메일 서버)을 테스트에서 대체하는 객체들이다.
+
+| 종류 | 역할 |
+|------|------|
+| **Dummy** | 전달만 하고 실제로는 사용되지 않는 플레이스홀더 |
+| **Stub** | 미리 정해진 값을 반환. 상태 검증용 |
+| **Fake** | 실제 구현이 있지만 단순화된 버전 (인메모리 DB 등) |
+| **Spy** | 실제 객체처럼 동작하되 호출 정보를 기록 |
+| **Mock** | 기대 행동을 미리 정의하고 검증. 행위 검증용 |
+
+```java
+// Mockito를 사용한 Mock 예시
+@ExtendWith(MockitoExtension.class)
+class OrderServiceTest {
+
+    @Mock
+    PaymentGateway paymentGateway;
+
+    @Mock
+    InventoryService inventoryService;
+
+    @InjectMocks
+    OrderService orderService;
+
+    @Test
+    void 재고_있을_때_주문_성공() {
+        // given
+        when(inventoryService.isAvailable("ITEM-001", 2)).thenReturn(true);
+        when(paymentGateway.charge(any())).thenReturn(PaymentResult.success());
+
+        // when
+        Order order = orderService.place("ITEM-001", 2, 50_000);
+
+        // then
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
+        verify(paymentGateway, times(1)).charge(any());
+    }
+
+    @Test
+    void 재고_없을_때_주문_실패() {
+        when(inventoryService.isAvailable("ITEM-001", 2)).thenReturn(false);
+
+        assertThatThrownBy(() -> orderService.place("ITEM-001", 2, 50_000))
+            .isInstanceOf(OutOfStockException.class);
+
+        verifyNoInteractions(paymentGateway);
+    }
+}
+```
+
+**주의:** Mock을 남용하면 테스트가 구현 세부사항에 결합된다. 가능하면 Stub이나 Fake를 먼저 고려하고, 행위 검증이 꼭 필요한 경우에만 Mock을 사용한다.
+
+## JavaScript/TypeScript TDD
+
+```typescript
+// discount.test.ts
+import { calculateDiscount } from './discount'
+
+describe('calculateDiscount', () => {
+  it('할인 코드 없으면 원래 가격 반환', () => {
+    expect(calculateDiscount(50_000, null)).toBe(50_000)
+  })
+
+  it('SUMMER10 코드: 10% 할인', () => {
+    expect(calculateDiscount(50_000, 'SUMMER10')).toBe(45_000)
+  })
+
+  it('HALF 코드: 50% 할인', () => {
+    expect(calculateDiscount(50_000, 'HALF')).toBe(25_000)
+  })
+
+  it('알 수 없는 코드: 에러', () => {
+    expect(() => calculateDiscount(50_000, 'INVALID')).toThrow('Unknown discount code')
+  })
+})
+```
+
+테스트 먼저 작성. 이 시점에서 `calculateDiscount`는 존재하지 않는다.
+
+```typescript
+// discount.ts
+const DISCOUNT_CODES: Record<string, number> = {
+  SUMMER10: 0.1,
+  HALF: 0.5,
+}
+
+export function calculateDiscount(price: number, code: string | null): number {
+  if (code === null) return price
+
+  const rate = DISCOUNT_CODES[code]
+  if (rate === undefined) throw new Error('Unknown discount code')
+
+  return price * (1 - rate)
+}
+```
+
+## TDD가 설계를 개선하는 이유
+
+TDD를 하면서 테스트 작성이 어렵다면, 그것은 **설계가 나쁘다는 신호**다.
+
+- **테스트하기 어려운 코드** → 의존성이 강하게 결합되어 있거나, 클래스가 너무 많은 책임을 진다
+- **setup 코드가 길다** → 클래스가 너무 많은 것을 알고 있다
+- **private 메서드를 테스트하고 싶다** → 해당 로직이 별도 클래스로 분리되어야 한다는 신호
+
+TDD를 따르다 보면 자연스럽게 단일 책임 원칙, 의존성 역전, 작은 인터페이스로 향하게 된다. 테스트가 아키텍처를 교정하는 피드백 루프다.
+
+## 실전 팁
+
+**테스트 이름은 명세처럼 작성한다.** `test1()`, `testCalc()` 가 아니라 `할인_쿠폰_없을_때_원가_반환()`. 테스트가 문서가 된다.
+
+**하나의 테스트는 하나의 행동만 검증한다.** 여러 assert가 들어가면 테스트의 의도가 흐려진다.
+
+**테스트 픽스처를 공유하는 데 주의한다.** `@BeforeEach`로 공유된 상태는 테스트 간 결합을 만든다. 각 테스트에 필요한 객체는 그 테스트 안에서 생성하는 것이 명확하다.
+
+**경계 케이스부터 테스트한다.** 정상 케이스보다 null, 빈 값, 최솟값, 최댓값이 더 많은 버그를 잡는다.
+
+**리팩토링은 테스트가 통과한 상태에서만 한다.** 빨간 불 상태에서 코드를 정리하기 시작하면 목표가 섞인다.
+
+---
+
+TDD의 가장 큰 오해는 "속도가 느려진다"는 것이다. 초반에는 느린 것이 맞다. 하지만 코드베이스가 커질수록, 팀원이 늘어날수록, 그 속도는 역전된다. 테스트가 없는 코드는 변경이 두렵고, 변경이 두려우면 시스템은 굳어간다. TDD는 코드를 항상 움직일 수 있는 상태로 유지하는 방법이다.
