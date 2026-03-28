@@ -393,6 +393,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'java21-virtual-threads':         { pattern: 'threads',  colors: { accent: '#4ade80', accent2: '#86efac' } },
   'concurrency-and-fiber':          { pattern: 'threads',  colors: { accent: '#34d399', accent2: '#6ee7b7' } },
   'synchronized-volatile':          { pattern: 'threads',  colors: { accent: '#a3e635', accent2: '#d9f99d' } },
+  'spring-dependency':              { pattern: 'spring',   colors: { accent: '#4ade80', accent2: '#86efac' } },
   'spring-boot-4-features':         { pattern: 'spring' },
   'spring-http-clients-comparison': { pattern: 'flow',     colors: { accent: '#6ee7b7' } },
   'browser-rendering':              { pattern: 'browser' },
