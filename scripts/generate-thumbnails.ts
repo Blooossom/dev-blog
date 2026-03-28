@@ -405,6 +405,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'csr-vs-ssr':                     { pattern: 'browser',  colors: { accent: '#e9d5ff', accent2: '#f3e8ff' } },
   'web-vitals':                     { pattern: 'gauge' },
   'react-use-effect-event':         { pattern: 'neural',   colors: { bg1: '#0d1b33', bg2: '#1e3a6e', accent: '#7dd3fc', accent2: '#bae6fd' } },
+  'package-manager':                { pattern: 'layers',   colors: { bg1: '#0f1a2e', bg2: '#1e3460', accent: '#7dd3fc', accent2: '#bae6fd' } },
   'bun':                            { pattern: 'code',     colors: { bg1: '#1c0d0a', bg2: '#4a1a10', accent: '#fb923c', accent2: '#fed7aa' } },
   'zod':                            { pattern: 'shield' },
   'fsd-architecture':               { pattern: 'layers',   colors: { accent: '#c4b5fd' } },
