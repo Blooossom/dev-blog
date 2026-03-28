@@ -1,0 +1,545 @@
+---
+title: 트랜스파일링 — 코드를 코드로 번역한다
+date: '2026-03-28'
+category: Frontend
+tags:
+  - Transpiling
+  - Babel
+  - TypeScript
+  - SWC
+  - JavaScript
+  - Build
+summary: >-
+  트랜스파일러가 무엇인지, Babel과 TypeScript 컴파일러와 SWC가 어떻게 다른지,
+  실제로 어떤 변환이 일어나는지 예시로 정리합니다.
+thumbnail: /thumbnails/transpiling.svg
+---
+
+
+최신 JavaScript 문법으로 코드를 짜면 구형 브라우저에서 실행되지 않는다. TypeScript는 브라우저가 아예 이해하지 못한다. JSX는 표준 JS가 아니다. **트랜스파일링**은 이런 코드를 실행 가능한 JavaScript로 변환하는 과정이다.
+
+## 트랜스파일링이란
+
+트랜스파일링(transpiling)은 한 언어로 작성된 소스 코드를 **같은 추상화 수준의 다른 언어**로 변환하는 것이다. 트랜스파일러(transpiler)는 source-to-source compiler라고도 부른다.
+
+컴파일(compile)과 비교하면 차이가 명확하다.
+
+```
+컴파일:    C → 기계어 (추상화 수준이 낮아짐)
+트랜스파일: TypeScript → JavaScript (같은 수준의 언어 간 변환)
+           ES2022 → ES5 (같은 언어의 구버전으로 변환)
+           JSX → JavaScript (확장 문법 → 표준 문법)
+```
+
+트랜스파일러의 출력은 여전히 사람이 읽을 수 있는 코드다. 기계어가 아니다.
+
+---
+
+## 왜 필요한가
+
+### 브라우저 호환성
+
+브라우저마다 지원하는 JavaScript 버전이 다르다. 2024년 기준으로 Chrome은 최신 ECMAScript를 거의 전부 지원하지만, 기업 환경에서는 IE11이나 구버전 Chrome을 지원해야 하는 경우가 아직 있다.
+
+```javascript
+// 개발자가 쓰는 코드 (ES2022)
+const result = obj?.data?.value ?? 'default'
+
+// IE11에서 실행 가능한 코드 (ES5)
+var result = (obj === null || obj === void 0
+  ? void 0
+  : obj.data === null || obj.data === void 0
+  ? void 0
+  : obj.data.value) !== null && (obj === null || obj === void 0
+  ? void 0
+  : obj.data === null || obj.data === void 0
+  ? void 0
+  : obj.data.value) !== undefined
+  ? obj.data.value
+  : 'default'
+```
+
+### 최신 문법 사용
+
+ECMAScript는 매년 새 기능이 추가된다. 트랜스파일러가 있으면 브라우저 지원을 기다리지 않고 새 문법을 바로 쓸 수 있다. 실험적 제안(proposal) 단계의 문법도 플러그인으로 사용 가능하다.
+
+### 비표준 언어
+
+TypeScript, JSX, Flow는 JavaScript 엔진이 직접 실행할 수 없다. 이것들도 트랜스파일러가 처리한다.
+
+---
+
+## Babel의 동작
+
+Babel은 가장 널리 쓰이는 JavaScript 트랜스파일러다. 동작은 세 단계로 나뉜다.
+
+```
+소스 코드 → [Parse] → AST → [Transform] → AST → [Generate] → 변환된 코드
+```
+
+### 1단계: Parse
+
+소스 코드를 **AST(Abstract Syntax Tree, 추상 구문 트리)**로 파싱한다.
+
+```javascript
+// 소스 코드
+const add = (a, b) => a + b
+```
+
+```json
+// AST (간략화)
+{
+  "type": "VariableDeclaration",
+  "kind": "const",
+  "declarations": [{
+    "type": "VariableDeclarator",
+    "id": { "type": "Identifier", "name": "add" },
+    "init": {
+      "type": "ArrowFunctionExpression",
+      "params": [
+        { "type": "Identifier", "name": "a" },
+        { "type": "Identifier", "name": "b" }
+      ],
+      "body": {
+        "type": "BinaryExpression",
+        "operator": "+",
+        "left": { "type": "Identifier", "name": "a" },
+        "right": { "type": "Identifier", "name": "b" }
+      }
+    }
+  }]
+}
+```
+
+코드를 문자열로 처리하지 않는다. 트리 구조로 만들어 각 노드의 의미를 파악한다.
+
+### 2단계: Transform
+
+플러그인이 AST를 순회하며 노드를 교체하거나 추가한다. `ArrowFunctionExpression`을 `FunctionExpression`으로 바꾸는 것도 이 단계다.
+
+### 3단계: Generate
+
+변환된 AST를 다시 코드 문자열로 출력한다.
+
+### 플러그인과 프리셋
+
+Babel은 기본적으로 아무 변환도 하지 않는다. 플러그인을 추가해야 특정 문법을 변환한다.
+
+```javascript
+// babel.config.js
+module.exports = {
+  plugins: [
+    '@babel/plugin-transform-arrow-functions',
+    '@babel/plugin-transform-optional-chaining',
+  ],
+}
+```
+
+플러그인을 하나씩 나열하면 관리가 어렵다. **프리셋(preset)**은 플러그인 묶음이다.
+
+```javascript
+module.exports = {
+  presets: [
+    ['@babel/preset-env', {
+      targets: '> 0.25%, not dead',  // browserslist 쿼리
+    }],
+    '@babel/preset-react',
+    '@babel/preset-typescript',
+  ],
+}
+```
+
+`@babel/preset-env`는 `targets`에 지정한 브라우저 목록을 기준으로 **필요한 변환만** 적용한다. 최신 브라우저만 지원하면 대부분 변환이 생략된다.
+
+---
+
+## Babel 실제 변환 예시
+
+### 화살표 함수 → 일반 함수
+
+```javascript
+// 입력
+const greet = (name) => `Hello, ${name}`
+
+const obj = {
+  value: 42,
+  getValue: () => this.value,  // 화살표 함수는 this를 바인딩하지 않음
+}
+```
+
+```javascript
+// 출력
+var greet = function(name) {
+  return "Hello, " + name;
+};
+
+var _this = this;
+
+var obj = {
+  value: 42,
+  getValue: function() { return _this.value; },
+};
+```
+
+`this` 바인딩 동작을 유지하기 위해 `_this`로 감싼다.
+
+### 옵셔널 체이닝 → 조건문
+
+```javascript
+// 입력
+const city = user?.address?.city
+const len = arr?.length
+user?.update()
+```
+
+```javascript
+// 출력
+var _user, _user$address;
+var city = (_user = user) === null || _user === void 0
+  ? void 0
+  : (_user$address = _user.address) === null || _user$address === void 0
+  ? void 0
+  : _user$address.city;
+
+var len = arr === null || arr === void 0 ? void 0 : arr.length;
+
+user === null || user === void 0 ? void 0 : user.update();
+```
+
+`null`과 `undefined` 양쪽을 체크한다. `void 0`은 `undefined`와 동일하다.
+
+### async/await → Promise 체인
+
+```javascript
+// 입력
+async function fetchUser(id) {
+  const res = await fetch(`/api/users/${id}`)
+  const data = await res.json()
+  return data
+}
+```
+
+```javascript
+// 출력 (regenerator-runtime 사용)
+function fetchUser(id) {
+  return _asyncToGenerator(function* () {
+    var res = yield fetch("/api/users/" + id);
+    var data = yield res.json();
+    return data;
+  })();
+}
+```
+
+또는 Promise 체인으로 변환하는 방식도 있다.
+
+```javascript
+function fetchUser(id) {
+  return fetch("/api/users/" + id).then(function(res) {
+    return res.json();
+  }).then(function(data) {
+    return data;
+  });
+}
+```
+
+`regenerator-runtime`을 쓰면 번들 크기가 늘어난다. 타겟 브라우저가 async/await를 지원한다면 변환이 생략된다.
+
+### JSX → React.createElement
+
+```jsx
+// 입력 (Classic transform)
+function Button({ label, onClick }) {
+  return (
+    <button className="btn" onClick={onClick}>
+      {label}
+    </button>
+  )
+}
+```
+
+```javascript
+// 출력 (Classic transform)
+function Button({ label, onClick }) {
+  return React.createElement(
+    "button",
+    { className: "btn", onClick: onClick },
+    label
+  );
+}
+```
+
+React 17부터 **New JSX Transform**이 도입됐다. `React`를 import하지 않아도 된다.
+
+```javascript
+// 출력 (New JSX transform — React 17+)
+import { jsx as _jsx } from "react/jsx-runtime";
+
+function Button({ label, onClick }) {
+  return _jsx("button", {
+    className: "btn",
+    onClick: onClick,
+    children: label,
+  });
+}
+```
+
+`@babel/preset-react`에서 `runtime: 'automatic'`으로 설정하면 new transform이 적용된다.
+
+```javascript
+// babel.config.js
+['@babel/preset-react', { runtime: 'automatic' }]
+```
+
+---
+
+## TypeScript 트랜스파일
+
+TypeScript를 JavaScript로 변환하는 방법은 세 가지다.
+
+### tsc (TypeScript 컴파일러)
+
+```bash
+npx tsc --target ES2020 --outDir dist src/index.ts
+```
+
+TypeScript 공식 컴파일러다. **타입 체크 + 트랜스파일**을 모두 수행한다.
+
+```
+타입 오류 → 빌드 실패
+```
+
+빌드 시간이 길다. 특히 대형 프로젝트에서 느리다.
+
+### ts-loader / babel-loader + @babel/preset-typescript
+
+webpack 환경에서 많이 쓴다.
+
+```javascript
+// webpack.config.js
+module.exports = {
+  module: {
+    rules: [
+      {
+        test: /\.tsx?$/,
+        use: 'ts-loader',
+      },
+    ],
+  },
+}
+```
+
+`ts-loader`는 내부적으로 `tsc`를 사용한다. 타입 체크를 포함한다.
+
+### @babel/preset-typescript
+
+```javascript
+// babel.config.js
+module.exports = {
+  presets: ['@babel/preset-typescript'],
+}
+```
+
+Babel은 TypeScript 문법을 **타입 체크 없이 그냥 제거**한다. 타입 어노테이션을 싹 지우고 JavaScript만 남긴다.
+
+```typescript
+// 입력
+function greet(name: string): string {
+  return `Hello, ${name}`
+}
+
+interface User {
+  id: number
+  name: string
+}
+
+const user: User = { id: 1, name: 'Alice' }
+```
+
+```javascript
+// 출력 (타입 정보 전부 제거)
+function greet(name) {
+  return `Hello, ${name}`;
+}
+
+const user = { id: 1, name: 'Alice' };
+```
+
+Babel은 타입 오류가 있어도 트랜스파일을 완료한다. **타입 체크는 별도로 `tsc --noEmit`을 실행해야 한다.**
+
+```bash
+# 타입 체크만 (파일 출력 없음)
+npx tsc --noEmit
+
+# 트랜스파일은 Babel이 처리
+npx babel src --out-dir dist --extensions '.ts,.tsx'
+```
+
+이 방식이 빠르다. CI에서 타입 체크를 분리해서 병렬로 돌리는 팀이 많다.
+
+| 방식 | 타입 체크 | 속도 | 주 용도 |
+|------|-----------|------|---------|
+| tsc | O | 느림 | 라이브러리 배포, 타입 검증 |
+| ts-loader | O | 중간 | webpack 통합 |
+| @babel/preset-typescript | X | 빠름 | 앱 번들링 (CRA, Next.js 기본값) |
+
+---
+
+## SWC
+
+SWC(Speedy Web Compiler)는 Rust로 작성된 트랜스파일러다. Babel과 동일한 역할을 한다.
+
+```bash
+# SWC 설치
+npm install --save-dev @swc/core @swc/cli
+
+# 트랜스파일
+npx swc src/index.ts -o dist/index.js
+```
+
+```json
+// .swcrc
+{
+  "jsc": {
+    "parser": {
+      "syntax": "typescript",
+      "tsx": true
+    },
+    "target": "es2020"
+  },
+  "module": {
+    "type": "commonjs"
+  }
+}
+```
+
+### Babel 대비 속도
+
+Babel은 JavaScript로 작성되어 있다. Node.js 위에서 싱글 스레드로 실행된다. SWC는 Rust로 컴파일된 네이티브 바이너리가 멀티 스레드로 실행된다.
+
+```
+SWC: Babel 대비 약 20x ~ 70x 빠름 (벤치마크 기준)
+```
+
+코드베이스가 클수록 차이가 크다.
+
+### Next.js와 Vite
+
+**Next.js 12+**는 Babel 대신 SWC를 기본 트랜스파일러로 사용한다. `babel.config.js`가 없는 프로젝트는 자동으로 SWC가 적용된다.
+
+```javascript
+// next.config.js
+module.exports = {
+  swcMinify: true,  // SWC로 minification도 처리 (기본값 true, Next.js 13+)
+}
+```
+
+**Vite**는 개발 서버에서 esbuild를 사용하고, 프로덕션 빌드에서는 Rollup을 사용한다. TypeScript와 JSX 변환은 esbuild가 처리한다. esbuild도 Go로 작성된 네이티브 바이너리로 Babel보다 훨씬 빠르다.
+
+---
+
+## 소스맵(Source Map)
+
+트랜스파일된 코드는 원본과 다르다. 브라우저 DevTools에서 에러가 발생하면 변환된 코드의 줄 번호가 표시되어 디버깅이 어렵다.
+
+**소스맵**은 변환된 코드의 위치와 원본 코드의 위치를 매핑하는 파일이다.
+
+```
+dist/bundle.js:1234:45  →  src/components/Button.tsx:23:10
+```
+
+### 소스맵 생성
+
+```javascript
+// babel.config.js
+module.exports = {
+  sourceMaps: true,  // 또는 'inline'
+}
+```
+
+```json
+// .swcrc
+{
+  "sourceMaps": true
+}
+```
+
+```javascript
+// webpack.config.js
+module.exports = {
+  devtool: 'source-map',            // 별도 .map 파일 생성
+  // devtool: 'inline-source-map', // 번들 파일 안에 포함
+  // devtool: 'eval-source-map',   // 빠른 빌드 (개발용)
+}
+```
+
+소스맵 파일 형식은 JSON이다. 변환된 코드 끝에 링크가 붙는다.
+
+```javascript
+// dist/bundle.js 마지막 줄
+//# sourceMappingURL=bundle.js.map
+```
+
+브라우저는 이 주석을 보고 `.map` 파일을 로드해서 원본 코드로 매핑한다.
+
+### 프로덕션에서의 소스맵
+
+소스맵을 배포하면 원본 코드가 노출된다. 보안이 중요하면 두 가지 선택지가 있다.
+
+1. 소스맵을 서버에만 두고 외부에 공개하지 않는다 (Sentry 등 에러 트래킹 도구가 서버에서 읽어감)
+2. 소스맵을 아예 생성하지 않는다 (디버깅 불편)
+
+---
+
+## 트랜스파일링 vs 폴리필
+
+트랜스파일링과 폴리필은 자주 같이 언급되지만 해결하는 문제가 다르다.
+
+**트랜스파일링**은 **문법**을 변환한다.
+
+```javascript
+// 화살표 함수 문법 → 일반 함수 문법으로 변환
+const fn = () => {}  →  var fn = function() {}
+```
+
+구형 엔진이 파싱조차 못 하는 문법을 파싱 가능한 형태로 바꾼다.
+
+**폴리필(polyfill)**은 **런타임 API**를 채워 넣는다.
+
+```javascript
+// Promise, fetch, Array.prototype.includes는 문법이 아니라 API다
+// 구형 브라우저에 없으면 코드를 추가해서 흉내 낸다
+
+if (!Array.prototype.includes) {
+  Array.prototype.includes = function(value) {
+    return this.indexOf(value) !== -1
+  }
+}
+```
+
+`Promise`, `fetch`, `Map`, `Set`, `Array.from`, `Object.assign` 같은 것들은 트랜스파일러가 처리할 수 없다. 이것들은 언어에 추가된 새 API다. 폴리필로 구현체를 주입해야 한다.
+
+```javascript
+// core-js로 폴리필 추가
+import 'core-js/stable'
+import 'regenerator-runtime/runtime'
+```
+
+또는 `@babel/preset-env`의 `useBuiltIns` 옵션으로 자동화한다.
+
+```javascript
+// babel.config.js
+['@babel/preset-env', {
+  targets: '> 0.25%, not dead',
+  useBuiltIns: 'usage',  // 코드에 실제로 쓰인 폴리필만 자동 삽입
+  corejs: 3,
+}]
+```
+
+| 구분 | 대상 | 방식 | 도구 |
+|------|------|------|------|
+| 트랜스파일링 | 문법 | 코드 변환 | Babel, SWC, tsc |
+| 폴리필 | 런타임 API | 구현체 주입 | core-js, polyfill.io |
+
+---
+
+트랜스파일링은 현대 프론트엔드 빌드 과정에서 거의 항상 일어난다. Babel이 동작 원리의 기준이고, SWC와 esbuild는 같은 일을 네이티브 속도로 처리한다. TypeScript 트랜스파일은 타입 체크와 별개라는 것, 소스맵이 디버깅을 가능하게 한다는 것, 폴리필은 트랜스파일링으로 해결할 수 없는 API 문제를 담당한다는 것 — 이 세 가지를 구분하면 빌드 설정의 각 옵션이 무슨 역할을 하는지 명확히 보인다.

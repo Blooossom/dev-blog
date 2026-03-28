@@ -1,0 +1,243 @@
+---
+title: React + TypeScript에서 falsy 값이 만드는 버그
+date: '2026-03-28'
+category: Frontend
+tags:
+  - React
+  - TypeScript
+  - JSX
+  - Falsy
+  - Rendering
+summary: >-
+  0, '', null, undefined, false — React JSX에서 falsy 값이 어떻게 다르게 렌더링되는지,
+  타입스크립트가 어디까지 잡아주는지, 그리고 실수를 막는 패턴을 정리합니다.
+thumbnail: /thumbnails/react-ts-falsy.svg
+---
+
+
+React 컴포넌트를 작성하다 보면 예상치 못한 `0`이 화면에 나타나거나, 아무것도 없어야 할 자리에 텍스트가 보이는 경험을 한다. 대부분 falsy 값을 `&&`로 조건부 렌더링할 때 생기는 문제다. JavaScript의 falsy 동작 방식과 JSX의 렌더링 규칙이 미묘하게 다르기 때문이다.
+
+## JSX에서 렌더링되는 값과 되지 않는 값
+
+React가 JSX를 처리할 때, 모든 falsy 값이 동일하게 무시되지 않는다.
+
+| 값 | 렌더링 결과 |
+|----|------------|
+| `false` | 아무것도 렌더링하지 않음 |
+| `null` | 아무것도 렌더링하지 않음 |
+| `undefined` | 아무것도 렌더링하지 않음 |
+| `''` (빈 문자열) | 아무것도 렌더링하지 않음 |
+| `0` | **`0`을 렌더링함** |
+| `NaN` | **`NaN`을 렌더링함** |
+
+`0`과 `NaN`은 JavaScript에서 falsy지만, React는 이것들을 텍스트 노드로 렌더링한다.
+
+---
+
+## 대표적인 실수: && 연산자
+
+```tsx
+function Cart({ items }: { items: string[] }) {
+  return (
+    <div>
+      {items.length && <ItemList items={items} />}
+    </div>
+  )
+}
+```
+
+`items`가 비어 있으면 `items.length`는 `0`이다. `0 && <ItemList />`는 `0`을 반환한다. 결과적으로 화면에 `0`이 렌더링된다.
+
+```
+items = []  →  0 && <ItemList />  →  0  →  화면에 "0" 출력
+```
+
+### 올바른 패턴
+
+**Boolean 변환:**
+
+```tsx
+{items.length > 0 && <ItemList items={items} />}
+{!!items.length && <ItemList items={items} />}
+{Boolean(items.length) && <ItemList items={items} />}
+```
+
+**삼항 연산자:**
+
+```tsx
+{items.length > 0 ? <ItemList items={items} /> : null}
+```
+
+`items.length > 0`이 `false`일 때 `null`을 반환하므로 아무것도 렌더링되지 않는다.
+
+---
+
+## 숫자 0이 실수가 되는 다른 패턴들
+
+```tsx
+// count가 0이면 화면에 "0" 출력
+{count && <Badge count={count} />}
+
+// price가 0이면 화면에 "0" 출력
+{price && <span>₩{price}</span>}
+
+// index가 0이면 화면에 "0" 출력
+{index && <Divider />}
+```
+
+숫자를 조건으로 쓸 때는 항상 비교 연산자를 사용한다.
+
+```tsx
+{count > 0 && <Badge count={count} />}
+{price !== 0 && <span>₩{price}</span>}
+{index !== 0 && <Divider />}
+```
+
+---
+
+## TypeScript가 잡아주는 경우
+
+TypeScript는 일부 상황에서 이 실수를 컴파일 타임에 감지한다.
+
+```tsx
+function Component({ value }: { value: number }) {
+  // TS 에러: 'number' type은 JSX children으로 사용 불가 (tsconfig에 따라 다름)
+  // 실제로는 에러가 안 날 수 있음
+  return <div>{value && <span>있음</span>}</div>
+}
+```
+
+그러나 TypeScript가 항상 잡아주지는 않는다. `value`가 `number | undefined` 타입이면 `&&`를 쓰더라도 에러가 발생하지 않는다.
+
+```tsx
+function Component({ count }: { count: number | undefined }) {
+  // TypeScript 에러 없음 — 하지만 count가 0이면 화면에 "0" 출력
+  return <div>{count && <Badge />}</div>
+}
+```
+
+TypeScript의 타입 시스템은 "이 값이 JSX에서 어떻게 렌더링될지"를 검사하지 않는다. 타입이 맞으면 통과된다.
+
+### ESLint로 감지
+
+`eslint-plugin-react`의 `react/jsx-no-leaked-render` 룰이 이 패턴을 잡아준다.
+
+```json
+{
+  "rules": {
+    "react/jsx-no-leaked-render": ["error", { "validStrategies": ["ternary", "coerce"] }]
+  }
+}
+```
+
+```tsx
+// ESLint 에러
+{count && <Badge />}
+
+// OK
+{count > 0 && <Badge />}
+{!!count && <Badge />}
+```
+
+---
+
+## null vs undefined 렌더링
+
+```tsx
+function Component({ label }: { label: string | null | undefined }) {
+  return <div>{label}</div>
+}
+```
+
+- `label = null` → 아무것도 렌더링하지 않음
+- `label = undefined` → 아무것도 렌더링하지 않음
+- `label = ''` → 빈 문자열, 아무것도 보이지 않음 (하지만 DOM에 빈 텍스트 노드 존재)
+
+세 가지 모두 화면에 보이지 않지만, `null`/`undefined`와 `''`는 목적이 다르다. `null`/`undefined`는 "데이터 없음"이고, `''`는 "빈 문자열"이다. 명시적으로 구분하는 것이 타입 안전성에 좋다.
+
+---
+
+## 옵셔널 prop과 기본값
+
+```tsx
+interface Props {
+  title?: string       // string | undefined
+  count?: number       // number | undefined
+  isActive?: boolean   // boolean | undefined
+}
+
+function Card({ title, count, isActive }: Props) {
+  return (
+    <div>
+      {/* title이 undefined면 아무것도 렌더링 안 함 — 안전 */}
+      {title && <h2>{title}</h2>}
+
+      {/* count가 0이면 "0" 렌더링 — 위험 */}
+      {count && <span>{count}개</span>}
+
+      {/* isActive가 undefined이면 렌더링 안 함 — 안전하지만 의도 불명확 */}
+      {isActive && <ActiveBadge />}
+    </div>
+  )
+}
+```
+
+기본값으로 명확히 하는 것이 낫다.
+
+```tsx
+function Card({ title, count = 0, isActive = false }: Props) {
+  return (
+    <div>
+      {title && <h2>{title}</h2>}
+      {count > 0 && <span>{count}개</span>}
+      {isActive && <ActiveBadge />}
+    </div>
+  )
+}
+```
+
+---
+
+## 빈 문자열 조건부 렌더링
+
+```tsx
+function Label({ text }: { text: string }) {
+  // text가 빈 문자열일 때 아무것도 렌더링 안 함 — 의도적?
+  return <div>{text && <span className="label">{text}</span>}</div>
+}
+```
+
+빈 문자열도 `&&`에서 falsy로 처리된다. `text`가 `''`이면 `<span>`이 렌더링되지 않는다. 빈 문자열을 명시적으로 제외하려는 의도라면 괜찮지만, 의도가 불분명하면 명시적으로 쓰는 것이 낫다.
+
+```tsx
+{text.length > 0 && <span className="label">{text}</span>}
+{text !== '' && <span className="label">{text}</span>}
+```
+
+---
+
+## 실전 정리
+
+```tsx
+// ❌ 숫자를 && 조건으로 바로 사용
+{items.length && <List />}
+{count && <Badge />}
+
+// ✅ 비교 연산으로 Boolean 확보
+{items.length > 0 && <List />}
+{count > 0 && <Badge />}
+
+// ✅ 또는 삼항 연산자
+{items.length > 0 ? <List /> : null}
+
+// ✅ Boolean 변환 (간결하게)
+{!!items.length && <List />}
+
+// ❌ 문자열도 체크 필요한 경우
+{text && <Label text={text} />}
+
+// ✅ 명시적 확인
+{text !== '' && <Label text={text} />}
+```
+
+TypeScript를 쓴다고 falsy 렌더링 버그가 사라지지 않는다. 타입 시스템과 JSX 렌더링 규칙은 별개의 레이어다. `&&` 왼쪽에 숫자가 오는 순간 항상 의심하고, 비교 연산자로 명시적으로 Boolean을 만드는 습관이 가장 확실한 방어책이다.
