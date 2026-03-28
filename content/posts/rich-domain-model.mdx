@@ -1,0 +1,491 @@
+---
+title: '풍부한 도메인 모델 — Value Object, Aggregate, 도메인 이벤트'
+date: '2026-03-28'
+category: Backend
+tags:
+  - DDD
+  - Rich Domain Model
+  - Value Object
+  - Aggregate
+  - Domain Events
+  - OOP
+  - Java
+summary: >-
+  풍부한 도메인 모델의 핵심 구성 요소 — Value Object의 불변성, Aggregate의 일관성 경계, 도메인 이벤트까지. 도메인
+  지식을 코드로 표현하는 방법을 깊이 있게 정리합니다.
+thumbnail: /thumbnails/rich-domain-model.svg
+---
+
+
+[빈약한 도메인 모델](/posts/anemic-domain-model)이 안티패턴인 이유는 이미 잘 알려져 있다. 그 반대편에 있는 풍부한 도메인 모델(Rich Domain Model)은 단순히 "setter를 없애고 메서드를 추가하는 것"이 아니다. 도메인의 언어와 규칙을 코드로 표현하는 설계 전략이다.
+
+## 도메인 모델의 두 가지 핵심 구성 요소
+
+풍부한 도메인 모델은 **Entity**와 **Value Object**로 이루어진다.
+
+| 구분 | Entity | Value Object |
+|------|--------|--------------|
+| 식별 기준 | 고유 ID (동일성) | 속성 값 (동등성) |
+| 가변성 | 상태 변경 가능 | 불변 |
+| 예시 | 주문, 고객, 상품 | 금액, 주소, 이메일, 날짜 범위 |
+
+Entity는 시간이 지나도 같은 존재임을 ID로 식별한다. Value Object는 속성이 같으면 같은 것이다.
+
+## Value Object — 불변 객체로 도메인 표현
+
+`BigDecimal price`와 `Money price`는 다르다. `BigDecimal`은 숫자일 뿐이지만, `Money`는 금액이라는 도메인 개념을 담는다.
+
+### Money
+
+```java
+public final class Money {
+
+    private final BigDecimal amount;
+    private final Currency currency;
+
+    private Money(BigDecimal amount, Currency currency) {
+        if (amount.compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException("금액은 0 이상이어야 합니다: " + amount);
+        }
+        this.amount = amount.setScale(2, RoundingMode.HALF_UP);
+        this.currency = currency;
+    }
+
+    public static Money of(long amount, Currency currency) {
+        return new Money(BigDecimal.valueOf(amount), currency);
+    }
+
+    public static Money of(BigDecimal amount, Currency currency) {
+        return new Money(amount, currency);
+    }
+
+    public static Money krw(long amount) {
+        return Money.of(amount, Currency.getInstance("KRW"));
+    }
+
+    // 불변 연산 — 새 객체를 반환한다
+    public Money add(Money other) {
+        validateSameCurrency(other);
+        return new Money(this.amount.add(other.amount), this.currency);
+    }
+
+    public Money subtract(Money other) {
+        validateSameCurrency(other);
+        BigDecimal result = this.amount.subtract(other.amount);
+        if (result.compareTo(BigDecimal.ZERO) < 0) {
+            throw new InsufficientAmountException(this, other);
+        }
+        return new Money(result, this.currency);
+    }
+
+    public Money multiply(int multiplier) {
+        return new Money(this.amount.multiply(BigDecimal.valueOf(multiplier)), this.currency);
+    }
+
+    public Money applyDiscount(DiscountRate rate) {
+        return new Money(this.amount.multiply(BigDecimal.ONE.subtract(rate.value())), this.currency);
+    }
+
+    public boolean isGreaterThan(Money other) {
+        validateSameCurrency(other);
+        return this.amount.compareTo(other.amount) > 0;
+    }
+
+    private void validateSameCurrency(Money other) {
+        if (!this.currency.equals(other.currency)) {
+            throw new CurrencyMismatchException(this.currency, other.currency);
+        }
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Money m)) return false;
+        return amount.compareTo(m.amount) == 0 && currency.equals(m.currency);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(amount.stripTrailingZeros(), currency);
+    }
+
+    @Override
+    public String toString() {
+        return String.format("%s %s", currency.getCurrencyCode(), amount);
+    }
+}
+```
+
+핵심은 세 가지다.
+
+1. **불변** — 필드가 `final`이고, 연산은 항상 새 객체를 반환한다
+2. **자기검증** — 생성 시점에 유효성을 검증한다. 음수 금액은 존재할 수 없다
+3. **동등성** — `equals`/`hashCode`를 값 기준으로 구현한다
+
+Java 17 이상이라면 `record`로 더 간결하게 표현할 수 있다.
+
+```java
+public record Email(String value) {
+
+    // compact constructor — record는 생성자에서 검증
+    public Email {
+        if (value == null || !value.matches("^[\\w.]+@[\\w.]+\\.[a-z]{2,}$")) {
+            throw new InvalidEmailException(value);
+        }
+        value = value.toLowerCase();
+    }
+
+    public String domain() {
+        return value.substring(value.indexOf('@') + 1);
+    }
+}
+```
+
+```java
+// 사용
+Email email = new Email("User@Example.com");
+email.value()   // "user@example.com" — 항상 소문자
+email.domain()  // "example.com"
+
+// 동등성 비교 — record는 자동으로 값 기반 equals
+new Email("user@example.com").equals(new Email("user@example.com")) // true
+```
+
+### 날짜 범위 Value Object
+
+```java
+public record DateRange(LocalDate start, LocalDate end) {
+
+    public DateRange {
+        Objects.requireNonNull(start, "시작일은 필수입니다");
+        Objects.requireNonNull(end, "종료일은 필수입니다");
+        if (start.isAfter(end)) {
+            throw new InvalidDateRangeException(start, end);
+        }
+    }
+
+    public boolean contains(LocalDate date) {
+        return !date.isBefore(start) && !date.isAfter(end);
+    }
+
+    public boolean overlaps(DateRange other) {
+        return !this.end.isBefore(other.start) && !other.end.isBefore(this.start);
+    }
+
+    public long days() {
+        return ChronoUnit.DAYS.between(start, end);
+    }
+
+    public DateRange extend(int days) {
+        return new DateRange(start, end.plusDays(days));
+    }
+}
+```
+
+```java
+DateRange summer = new DateRange(
+    LocalDate.of(2026, 6, 1),
+    LocalDate.of(2026, 8, 31)
+);
+
+summer.contains(LocalDate.of(2026, 7, 15))  // true
+summer.days()                                // 91
+summer.overlaps(new DateRange(...))          // 겹치면 true
+```
+
+날짜 범위라는 개념이 코드에 명확히 표현된다. `LocalDate start`와 `LocalDate end`라는 두 필드가 분리되어 있을 때와 달리, 범위의 유효성과 관련 연산이 한 곳에 모인다.
+
+## Aggregate — 일관성의 경계
+
+Aggregate는 함께 변경되어야 하는 객체들의 묶음이다. 묶음에는 반드시 하나의 **Aggregate Root**가 있고, 외부는 오직 Root를 통해서만 내부에 접근한다.
+
+```
+주문 Aggregate
+┌─────────────────────────────────┐
+│ Order (Aggregate Root)          │
+│   ├── OrderItem (Entity)        │
+│   │     ├── ProductId (VO)      │
+│   │     ├── Quantity (VO)       │
+│   │     └── Money (VO)          │
+│   ├── ShippingAddress (VO)      │
+│   ├── Money totalAmount (VO)    │
+│   └── OrderStatus (Enum/VO)     │
+└─────────────────────────────────┘
+```
+
+`OrderItem`을 직접 수정하는 것은 허용되지 않는다. `Order.addItem()`, `Order.removeItem()`을 통해야 한다. 이것이 일관성 경계다.
+
+### Aggregate 불변 규칙(Invariant)
+
+```java
+public class Order {
+
+    private final OrderId id;
+    private final CustomerId customerId;
+    private OrderStatus status;
+    private final List<OrderItem> items;
+    private Money totalAmount;
+    private ShippingAddress shippingAddress;
+
+    // ── 생성 ──────────────────────────────────────────────
+
+    public static Order place(CustomerId customerId,
+                               List<OrderItem> items,
+                               ShippingAddress address) {
+        // 불변 규칙: 주문은 아이템이 1개 이상이어야 한다
+        if (items == null || items.isEmpty()) {
+            throw new EmptyOrderException();
+        }
+        // 불변 규칙: 아이템당 수량은 1~99개
+        items.forEach(OrderItem::validateQuantity);
+
+        Order order = new Order(OrderId.generate(), customerId, address);
+        items.forEach(order::addItemInternal);
+        return order;
+    }
+
+    // ── 행위 ──────────────────────────────────────────────
+
+    public OrderItem addItem(ProductId productId, Quantity quantity, Money unitPrice) {
+        requireStatus(OrderStatus.PENDING, "아이템 추가");
+
+        // 불변 규칙: 같은 상품은 수량을 합산한다
+        return items.stream()
+            .filter(item -> item.productId().equals(productId))
+            .findFirst()
+            .map(existing -> {
+                existing.increaseQuantity(quantity);
+                recalculateTotal();
+                return existing;
+            })
+            .orElseGet(() -> {
+                OrderItem item = OrderItem.of(productId, quantity, unitPrice);
+                items.add(item);
+                recalculateTotal();
+                return item;
+            });
+    }
+
+    public void removeItem(ProductId productId) {
+        requireStatus(OrderStatus.PENDING, "아이템 제거");
+
+        boolean removed = items.removeIf(item -> item.productId().equals(productId));
+        if (!removed) throw new OrderItemNotFoundException(productId);
+
+        // 불변 규칙: 아이템이 0개면 주문 자체를 유지할 수 없다
+        if (items.isEmpty()) throw new EmptyOrderException();
+
+        recalculateTotal();
+    }
+
+    public void changeShippingAddress(ShippingAddress newAddress) {
+        requireStatus(OrderStatus.PENDING, "배송지 변경");
+        this.shippingAddress = Objects.requireNonNull(newAddress);
+    }
+
+    public void confirm() {
+        requireStatus(OrderStatus.PENDING, "주문 확정");
+        this.status = OrderStatus.CONFIRMED;
+    }
+
+    public void cancel(CancelReason reason) {
+        if (status == OrderStatus.DELIVERED || status == OrderStatus.SHIPPED) {
+            throw new OrderNotCancellableException(id, status);
+        }
+        if (status == OrderStatus.CANCELLED) {
+            throw new OrderAlreadyCancelledException(id);
+        }
+        this.status = OrderStatus.CANCELLED;
+    }
+
+    // ── 내부 헬퍼 ──────────────────────────────────────────
+
+    private void requireStatus(OrderStatus required, String operation) {
+        if (this.status != required) {
+            throw new InvalidOrderStatusException(id, operation, required, status);
+        }
+    }
+
+    private void recalculateTotal() {
+        this.totalAmount = items.stream()
+            .map(OrderItem::subtotal)
+            .reduce(Money.krw(0), Money::add);
+    }
+
+    // 외부에서 items를 수정할 수 없도록
+    public List<OrderItem> items() {
+        return Collections.unmodifiableList(items);
+    }
+}
+```
+
+`recalculateTotal()`이 `addItem`, `removeItem` 마다 호출된다. 총액이 아이템 합계와 다른 상태는 존재할 수 없다. 이것이 불변 규칙(Invariant)이다.
+
+## 도메인 이벤트
+
+상태가 바뀌었을 때 다른 부분에 알려야 한다면 — 주문 확정 시 메일 발송, 재고 감소 — 어떻게 할까?
+
+Service에서 직접 호출하면 도메인 로직과 부수 효과가 결합된다.
+
+```java
+// ❌ Service에 너무 많은 책임
+public void confirmOrder(OrderId orderId) {
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    order.confirm();
+    orderRepository.save(order);
+
+    // 도메인과 관계없는 부수 효과들
+    emailService.sendConfirmationEmail(order.customerId());
+    inventoryService.decrease(order.items());
+    pointService.accumulate(order.customerId(), order.totalAmount());
+}
+```
+
+도메인 이벤트를 사용하면 도메인 객체는 "무슨 일이 일어났는가"만 기록하고, 그 결과로 무엇을 할지는 다른 곳에서 결정한다.
+
+```java
+// 도메인 이벤트 정의
+public record OrderConfirmed(
+    OrderId orderId,
+    CustomerId customerId,
+    List<OrderItem> items,
+    Money totalAmount,
+    Instant occurredAt
+) implements DomainEvent {
+
+    public static OrderConfirmed of(Order order) {
+        return new OrderConfirmed(
+            order.id(),
+            order.customerId(),
+            order.items(),
+            order.totalAmount(),
+            Instant.now()
+        );
+    }
+}
+```
+
+```java
+// Order 내부에서 이벤트 수집
+public class Order extends AggregateRoot<OrderId> {
+
+    public void confirm() {
+        requireStatus(OrderStatus.PENDING, "주문 확정");
+        this.status = OrderStatus.CONFIRMED;
+
+        // 이벤트를 발행하지 않고 "등록"만 한다
+        registerEvent(OrderConfirmed.of(this));
+    }
+}
+
+// AggregateRoot는 이벤트 수집만 담당
+public abstract class AggregateRoot<ID> {
+
+    private final List<DomainEvent> domainEvents = new ArrayList<>();
+
+    protected void registerEvent(DomainEvent event) {
+        domainEvents.add(event);
+    }
+
+    public List<DomainEvent> pullDomainEvents() {
+        List<DomainEvent> events = List.copyOf(domainEvents);
+        domainEvents.clear();
+        return events;
+    }
+}
+```
+
+```java
+// Service — 저장 후 이벤트 발행
+@Service
+@Transactional
+public class OrderApplicationService {
+
+    private final OrderRepository orderRepository;
+    private final ApplicationEventPublisher eventPublisher;
+
+    public void confirmOrder(OrderId orderId) {
+        Order order = orderRepository.findById(orderId).orElseThrow();
+        order.confirm();
+        orderRepository.save(order);
+
+        // 트랜잭션 커밋 후 이벤트 발행
+        order.pullDomainEvents().forEach(eventPublisher::publishEvent);
+    }
+}
+```
+
+```java
+// 이벤트 핸들러 — 각자의 책임만 처리
+@EventListener
+public void onOrderConfirmed(OrderConfirmed event) {
+    emailService.sendConfirmationEmail(event.customerId());
+}
+
+@EventListener
+public void onOrderConfirmedForInventory(OrderConfirmed event) {
+    inventoryService.decrease(event.items());
+}
+
+@EventListener
+public void onOrderConfirmedForPoints(OrderConfirmed event) {
+    pointService.accumulate(event.customerId(), event.totalAmount());
+}
+```
+
+이제 새로운 부수 효과가 생겨도 `OrderApplicationService`를 건드리지 않는다. 핸들러만 추가하면 된다. 도메인 로직과 애플리케이션 로직이 분리된다.
+
+## 도메인 서비스
+
+두 Aggregate가 협력해야 하는 로직은 어느 쪽에도 속하지 않는다. 이런 경우 **도메인 서비스**로 표현한다.
+
+```java
+// 결제 도메인 서비스 — Order와 Payment 두 Aggregate를 다룬다
+public class PaymentDomainService {
+
+    // 도메인 서비스는 상태가 없다
+    public Payment processPayment(Order order, PaymentMethod method) {
+
+        // 주문 금액 검증
+        if (order.totalAmount().isGreaterThan(method.availableBalance())) {
+            throw new InsufficientBalanceException(method, order.totalAmount());
+        }
+
+        // 결제 객체 생성 — Payment Aggregate
+        Payment payment = Payment.create(
+            order.id(),
+            order.totalAmount(),
+            method
+        );
+
+        return payment;
+    }
+}
+```
+
+도메인 서비스는 인프라(DB, 외부 API)에 의존하지 않는다. 인프라 의존이 필요하면 Application Service가 담당한다.
+
+## 설계 원칙 정리
+
+**말로 할 수 있으면 코드로도 표현할 수 있다.** "주문은 배송 완료 후 취소할 수 없다"는 규칙이 있다면 `order.cancel()` 안에 그 코드가 있어야 한다. Service에 있거나 클라이언트에 있거나 DB 제약조건에만 있다면, 그것은 규칙이 모델에 없는 것이다.
+
+**불가능한 상태를 타입으로 없앤다.** `Optional<String> cancelReason`보다는 상태 전환을 명시하는 설계가 낫다. 취소 사유는 취소 상태에서만 의미 있다. `CancelledOrder`라는 별도 타입이나 sealed class가 이를 표현할 수 있다.
+
+```java
+// Java 17+ sealed class로 상태 표현
+public sealed interface OrderState
+    permits PendingOrder, ConfirmedOrder, CancelledOrder, DeliveredOrder {}
+
+public record CancelledOrder(
+    OrderId id, CustomerId customerId,
+    Money totalAmount, CancelReason reason, Instant cancelledAt
+) implements OrderState {}
+```
+
+취소된 주문에는 반드시 취소 사유가 있다. 타입 시스템이 강제한다.
+
+**Aggregate 경계를 작게 유지한다.** 하나의 트랜잭션 안에서 여러 Aggregate를 수정해야 한다면, 경계가 잘못 그어진 신호일 수 있다. 도메인 이벤트를 통한 Eventually Consistent 접근을 고려한다.
+
+---
+
+풍부한 도메인 모델의 가치는 "코드가 더 복잡해진다"는 단기 비용과, "비즈니스 규칙이 항상 한 곳에 있고 도메인을 신뢰할 수 있다"는 장기 이득을 저울질한 결과다. 시스템이 단순하다면 빈약한 모델로 충분하다. 비즈니스 규칙이 복잡하고 여러 팀이 도메인을 공유한다면, 도메인 모델이 살아있는 문서가 될 수 있다.
