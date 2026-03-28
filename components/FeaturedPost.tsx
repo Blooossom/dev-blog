@@ -1,6 +1,6 @@
 import Link from 'next/link'
-import Image from 'next/image'
 import type { PostMeta } from '@/lib/posts'
+import FeaturedPostVisual from './FeaturedPostVisual'
 
 interface Props {
   post: PostMeta
@@ -41,16 +41,14 @@ export default function FeaturedPost({ post }: Props) {
           </Link>
         </div>
 
-        {/* Right: image */}
+        {/* Right: featured visual */}
         <div className="lg:col-span-5 relative">
-          <div className="aspect-[4/5] rounded-xl overflow-hidden bg-surface-container shadow-warm">
-            {post.thumbnail ? (
-              <Image src={post.thumbnail} alt={post.title} fill className="object-cover object-left" />
-            ) : (
-              <div className="w-full h-full bg-surface-container-high flex items-center justify-center">
-                <span className="font-label text-on-surface-variant text-sm">No Image</span>
-              </div>
-            )}
+          <div className="aspect-[4/5] rounded-xl overflow-hidden shadow-warm">
+            <FeaturedPostVisual
+              title={post.title}
+              category={post.category}
+              tags={post.tags}
+            />
           </div>
           <div className="absolute -bottom-6 -right-6 w-32 h-32 bg-primary-container/10 -z-10 rounded-xl" />
         </div>
