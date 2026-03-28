@@ -384,6 +384,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'prometheus-grafana-integration': { pattern: 'chart',    colors: { accent: '#fb923c', accent2: '#fde68a' } },
   'zero-downtime-deployment':       { pattern: 'flow',     colors: { accent: '#4ade80', accent2: '#86efac' } },
   'forward-reverse-proxy':          { pattern: 'flow' },
+  'nginx-upstream':                 { pattern: 'flow',     colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
   'hexagonal-architecture':         { pattern: 'hexagons' },
   'ddd-bounded-context':            { pattern: 'hexagons', colors: { accent: '#6ee7b7', accent2: '#a7f3d0' } },
   'cqrs-pattern':                   { pattern: 'flow',     colors: { accent: '#86efac', accent2: '#d1fae5' } },
