@@ -45,7 +45,7 @@ export default function FeaturedPost({ post }: Props) {
         <div className="lg:col-span-5 relative">
           <div className="aspect-[4/5] rounded-xl overflow-hidden bg-surface-container shadow-warm">
             {post.thumbnail ? (
-              <Image src={post.thumbnail} alt={post.title} fill className="object-cover" />
+              <Image src={post.thumbnail} alt={post.title} fill className="object-cover object-left" />
             ) : (
               <div className="w-full h-full bg-surface-container-high flex items-center justify-center">
                 <span className="font-label text-on-surface-variant text-sm">No Image</span>
