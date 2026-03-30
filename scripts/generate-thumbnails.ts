@@ -403,6 +403,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'sync-async-blocking':            { pattern: 'threads',  colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'timeseries-db':                  { pattern: 'chart',    colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#34d399', accent2: '#6ee7b7' } },
   'engineering-cost':               { pattern: 'gauge',    colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
+  'transaction-boundary':           { pattern: 'flow',     colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'spring-boot-4-features':         { pattern: 'spring' },
   'spring-http-clients-comparison': { pattern: 'flow',     colors: { accent: '#6ee7b7' } },
   'tree-shaking':                   { pattern: 'network',  colors: { bg1: '#0f1a2e', bg2: '#1e3460', accent: '#7dd3fc', accent2: '#bae6fd' } },

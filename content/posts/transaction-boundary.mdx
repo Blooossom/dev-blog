@@ -1,0 +1,341 @@
+---
+title: 트랜잭션 경계를 잘 잡아야 하는 이유
+date: '2026-03-30'
+category: Backend
+tags:
+  - Transaction
+  - Spring
+  - JPA
+  - Database
+  - Performance
+  - Java
+summary: >-
+  트랜잭션 경계가 너무 넓으면 락 경합과 성능 저하가 생기고, 너무 좁으면 데이터 정합성이 깨집니다.
+  @Transactional의 동작 원리부터 경계를 잘못 잡았을 때의 실제 문제까지 정리합니다.
+thumbnail: /thumbnails/transaction-boundary.svg
+---
+
+
+트랜잭션은 "전부 성공하거나 전부 실패"를 보장하는 단위다. 어디서 시작해서 어디서 끝내야 하는가 — 이 경계를 어떻게 잡느냐가 성능과 정합성을 동시에 결정한다.
+
+## 트랜잭션이 보장하는 것
+
+ACID에서 트랜잭션 경계와 직접 관련된 속성은 세 가지다.
+
+**원자성(Atomicity)**: 경계 안의 작업은 전부 성공하거나 전부 롤백된다. 주문 생성과 재고 감소가 같은 트랜잭션 안에 있어야 하나가 실패했을 때 다른 것도 함께 되돌아간다.
+
+**격리성(Isolation)**: 트랜잭션이 실행되는 동안 다른 트랜잭션의 중간 상태가 보이지 않는다. 트랜잭션이 길수록 다른 트랜잭션과 충돌할 시간이 늘어난다.
+
+**지속성(Durability)**: 커밋된 트랜잭션은 영구적으로 반영된다. 경계가 끝나는 시점(커밋)에 보장된다.
+
+---
+
+## 트랜잭션 경계가 너무 넓으면
+
+### 락 점유 시간이 길어진다
+
+```java
+@Transactional
+public void processOrder(Long orderId) {
+    Order order = orderRepository.findById(orderId).orElseThrow();  // (1) SELECT + 행 락
+
+    // (2) 외부 API 호출 — 수백 ms ~ 수 초 걸릴 수 있음
+    PaymentResult result = paymentClient.charge(order.getAmount());
+
+    // (3) 결제 결과 저장
+    order.confirm(result.getTransactionId());
+    orderRepository.save(order);
+}  // (4) 여기서 커밋 + 락 해제
+```
+
+`(1)`에서 행 락을 잡은 후 `(2)` 외부 API가 끝날 때까지 락을 쥐고 있다. API 응답이 2초 걸리면 그 2초 동안 다른 트랜잭션이 이 행을 수정할 수 없다. 동시 요청이 몰리면 락 대기 큐가 쌓이고, 타임아웃이 터진다.
+
+### 커넥션 풀이 고갈된다
+
+트랜잭션이 시작되면 DB 커넥션을 하나 점유한다. 외부 API 호출처럼 느린 작업이 트랜잭션 안에 있으면, 그 시간 동안 커넥션이 묶인다. 커넥션 풀(보통 10~50개)이 모두 차면 새 요청이 커넥션을 얻지 못해 대기한다.
+
+```
+커넥션 풀: [conn1][conn2][conn3]...[conn10]
+     ↑
+모두 외부 API 응답 기다리는 트랜잭션에 점유됨
+→ 새 요청: "Connection pool exhausted" 에러
+```
+
+### 롤백 범위가 의도와 달라진다
+
+```java
+@Transactional
+public void sendWelcomeEmail(Long userId) {
+    User user = userRepository.save(new User(...));  // (1) DB 저장
+
+    emailService.send(user.getEmail(), "환영합니다");  // (2) 이메일 발송
+    // 이메일 발송 실패 → 예외 → 트랜잭션 롤백 → (1)도 취소됨
+}
+```
+
+이메일 발송은 외부 시스템이고 실패해도 사용자 저장은 유지해야 한다. 하지만 같은 트랜잭션 안에 있으면 이메일 실패가 회원가입 자체를 롤백시킨다. 의도와 다른 롤백 범위다.
+
+---
+
+## 트랜잭션 경계가 너무 좁으면
+
+### 정합성이 깨진다
+
+```java
+// @Transactional 없음 — 각 호출이 별개의 트랜잭션
+public void transferMoney(Long fromId, Long toId, Money amount) {
+    Account from = accountRepository.findById(fromId).orElseThrow();
+    from.withdraw(amount);
+    accountRepository.save(from);                          // (1) 커밋
+
+    Account to = accountRepository.findById(toId).orElseThrow();
+    to.deposit(amount);
+    accountRepository.save(to);                            // (2) 커밋
+}
+```
+
+`(1)` 이후 `(2)` 실행 전에 서버가 죽으면 돈이 출금됐지만 입금되지 않는다. 두 작업은 반드시 같은 트랜잭션 안에 있어야 한다.
+
+### 더티 리드 / 반복 불가능한 읽기
+
+```java
+// 트랜잭션 없이 같은 데이터를 두 번 읽는 경우
+public void processReport(Long orderId) {
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    // 다른 트랜잭션이 order를 수정한다
+    validate(order);
+
+    Order sameOrder = orderRepository.findById(orderId).orElseThrow();
+    // sameOrder는 이미 바뀐 데이터 — 첫 번째 읽기와 다름
+    process(sameOrder);
+}
+```
+
+같은 요청 처리 중에 데이터가 달라지면 논리적 오류가 생긴다. 하나의 비즈니스 로직은 하나의 트랜잭션 안에서 일관된 스냅샷을 봐야 한다.
+
+---
+
+## Spring @Transactional의 동작 원리
+
+Spring은 AOP 프록시로 트랜잭션을 관리한다.
+
+```java
+@Service
+public class OrderService {
+
+    @Transactional
+    public void placeOrder(OrderRequest request) {
+        // 이 메서드 진입 전: 트랜잭션 시작 (커넥션 획득, BEGIN)
+        // ...
+        // 정상 종료: COMMIT + 커넥션 반납
+        // 예외 발생: ROLLBACK + 커넥션 반납
+    }
+}
+```
+
+실제로는 이렇게 동작한다:
+
+```java
+// Spring이 생성하는 프록시 (의사 코드)
+public void placeOrder(OrderRequest request) {
+    TransactionStatus tx = transactionManager.getTransaction(definition);
+    try {
+        target.placeOrder(request);  // 실제 메서드 호출
+        transactionManager.commit(tx);
+    } catch (RuntimeException e) {
+        transactionManager.rollback(tx);
+        throw e;
+    }
+}
+```
+
+### 프록시의 한계 — 자기 호출 문제
+
+```java
+@Service
+public class OrderService {
+
+    public void createBulkOrders(List<OrderRequest> requests) {
+        for (OrderRequest request : requests) {
+            createOrder(request);  // 같은 클래스의 메서드 직접 호출
+        }
+    }
+
+    @Transactional
+    public void createOrder(OrderRequest request) {
+        // @Transactional이 있지만 프록시를 거치지 않으므로 트랜잭션 없이 실행
+    }
+}
+```
+
+`createBulkOrders`가 `createOrder`를 직접 호출하면 프록시를 거치지 않아 `@Transactional`이 동작하지 않는다. 자기 호출(self-invocation)은 트랜잭션 경계가 적용되지 않는 대표적인 함정이다.
+
+해결책 — 별도 클래스로 분리:
+
+```java
+@Service
+@RequiredArgsConstructor
+public class OrderBulkService {
+    private final OrderService orderService;  // 주입받아서 호출 → 프록시 경유
+
+    public void createBulkOrders(List<OrderRequest> requests) {
+        for (OrderRequest request : requests) {
+            orderService.createOrder(request);  // 프록시를 통해 호출 → 트랜잭션 적용
+        }
+    }
+}
+```
+
+---
+
+## 올바른 경계 설계
+
+### 외부 I/O는 트랜잭션 밖으로
+
+```java
+// Before: 외부 API가 트랜잭션 안에 있음
+@Transactional
+public Order placeOrder(OrderRequest request) {
+    Order order = orderRepository.save(Order.create(request));
+    PaymentResult result = paymentClient.charge(request.amount());  // 락 점유 중 네트워크 대기
+    order.confirm(result.getTransactionId());
+    return orderRepository.save(order);
+}
+
+// After: 외부 API를 트랜잭션 경계 밖으로 분리
+public Order placeOrder(OrderRequest request) {
+    // 1단계: 최소한의 트랜잭션으로 주문 생성
+    Order order = createPendingOrder(request);
+
+    // 2단계: 트랜잭션 밖에서 외부 API 호출
+    PaymentResult result = paymentClient.charge(request.amount());
+
+    // 3단계: 결과를 짧은 트랜잭션으로 저장
+    return confirmOrder(order.getId(), result.getTransactionId());
+}
+
+@Transactional
+private Order createPendingOrder(OrderRequest request) {
+    return orderRepository.save(Order.create(request));
+}
+
+@Transactional
+private Order confirmOrder(Long orderId, String txId) {
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    order.confirm(txId);
+    return orderRepository.save(order);
+}
+```
+
+### 이메일·메시지 발송은 커밋 후에
+
+```java
+@Service
+@RequiredArgsConstructor
+@TransactionalEventListener  // 트랜잭션 커밋 후 실행
+public class OrderEventHandler {
+
+    private final EmailService emailService;
+
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void handleOrderConfirmed(OrderConfirmedEvent event) {
+        // DB 커밋이 완료된 후에 이메일 발송
+        // 이메일 실패해도 주문 트랜잭션은 이미 커밋됨
+        emailService.sendOrderConfirmation(event.getCustomerEmail());
+    }
+}
+
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+
+    private final ApplicationEventPublisher eventPublisher;
+
+    @Transactional
+    public Order confirmOrder(Long orderId) {
+        Order order = orderRepository.findById(orderId).orElseThrow();
+        order.confirm();
+        orderRepository.save(order);
+
+        // 이벤트 발행 — 실제 실행은 트랜잭션 커밋 후
+        eventPublisher.publishEvent(new OrderConfirmedEvent(order));
+
+        return order;
+    }
+}
+```
+
+### 읽기 전용 트랜잭션
+
+조회만 하는 메서드는 `readOnly = true`로 선언한다.
+
+```java
+@Transactional(readOnly = true)
+public List<Order> getOrdersByCustomer(Long customerId) {
+    return orderRepository.findByCustomerId(customerId);
+}
+```
+
+`readOnly = true`가 하는 일:
+- JPA의 변경 감지(dirty checking)를 비활성화 — 스냅샷을 유지하지 않아 메모리 절약
+- DB에 따라 읽기 전용 복제본(replica)으로 라우팅
+- 실수로 쓰기 작업이 포함되면 예외 발생
+
+---
+
+## 트랜잭션 전파(Propagation)
+
+`@Transactional`이 중첩 호출될 때 어떻게 처리할지 결정한다.
+
+```java
+@Transactional(propagation = Propagation.REQUIRED)  // 기본값
+// 호출 시 트랜잭션이 있으면 참여, 없으면 새로 시작
+
+@Transactional(propagation = Propagation.REQUIRES_NEW)
+// 항상 새 트랜잭션 시작. 호출한 트랜잭션은 일시 중단
+
+@Transactional(propagation = Propagation.NESTED)
+// 외부 트랜잭션 안에 중첩 트랜잭션(savepoint). 내부 롤백이 외부에 영향 없음
+
+@Transactional(propagation = Propagation.NOT_SUPPORTED)
+// 트랜잭션 없이 실행. 호출한 트랜잭션은 일시 중단
+```
+
+주문과 알림을 독립적으로 처리해야 할 때:
+
+```java
+@Service
+public class NotificationService {
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void saveNotification(Notification notification) {
+        // 주문 트랜잭션과 독립된 새 트랜잭션
+        // 알림 저장 실패해도 주문 트랜잭션은 영향 없음
+        notificationRepository.save(notification);
+    }
+}
+```
+
+---
+
+## 점검 체크리스트
+
+트랜잭션 경계를 설계할 때 확인할 질문들:
+
+1. **원자적으로 묶여야 하는 작업이 모두 같은 트랜잭션 안에 있는가?**
+   — 하나가 실패하면 나머지도 롤백되어야 하는 작업 목록을 먼저 정의한다.
+
+2. **트랜잭션 안에 외부 API 호출, 파일 I/O, 메시지 발송이 있는가?**
+   — 있다면 트랜잭션 경계 밖으로 꺼낸다.
+
+3. **트랜잭션이 얼마나 오래 열려 있는가?**
+   — 100ms 이상이라면 의심한다. 커넥션 점유 시간 = 다른 요청의 대기 시간.
+
+4. **조회 메서드에 `readOnly = true`가 붙어 있는가?**
+
+5. **자기 호출이 있는가?**
+   — `@Transactional`이 적용되지 않아 경계가 의도와 다를 수 있다.
+
+---
+
+트랜잭션 경계는 "언제 락을 잡고 언제 놓는가"와 같다. 락을 오래 쥐면 다른 요청이 기다리고, 너무 일찍 놓으면 중간 상태가 외부에 노출된다. 비즈니스 로직의 원자성 단위를 정확히 파악하고, 그 단위와 트랜잭션 경계를 일치시키는 것이 핵심이다.
