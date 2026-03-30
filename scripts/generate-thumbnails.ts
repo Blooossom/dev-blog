@@ -396,6 +396,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'synchronized-volatile':          { pattern: 'threads',  colors: { accent: '#a3e635', accent2: '#d9f99d' } },
   'spring-dependency':              { pattern: 'spring',   colors: { accent: '#4ade80', accent2: '#86efac' } },
   'graphql':                        { pattern: 'network',  colors: { bg1: '#1a0b2e', bg2: '#3d1773', accent: '#e879f9', accent2: '#f5d0fe' } },
+  'http-status-code':               { pattern: 'chart',    colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
   'spring-boot-4-features':         { pattern: 'spring' },
   'spring-http-clients-comparison': { pattern: 'flow',     colors: { accent: '#6ee7b7' } },
   'tree-shaking':                   { pattern: 'network',  colors: { bg1: '#0f1a2e', bg2: '#1e3460', accent: '#7dd3fc', accent2: '#bae6fd' } },
