@@ -1,0 +1,546 @@
+---
+title: 동기·비동기, 블로킹·논블로킹 — 네 개념의 정확한 의미
+date: '2026-03-30'
+category: Backend
+tags:
+  - Async
+  - Sync
+  - Blocking
+  - Non-blocking
+  - Concurrency
+  - Java
+  - JavaScript
+summary: >-
+  동기와 비동기, 블로킹과 논블로킹은 다른 축의 개념입니다. 각각의 정확한 의미와
+  네 가지 조합이 실제로 어떻게 동작하는지 Java·JavaScript 예시로 정리합니다.
+thumbnail: /thumbnails/sync-async-blocking.svg
+---
+
+동기/비동기, 블로킹/논블로킹은 자주 같은 의미처럼 쓰인다. 하지만 이 둘은 서로 다른 축의 개념이다. 섞어서 쓰면 코드 설계를 논할 때 혼란이 생긴다. 정확하게 구분해서 이해하면 시스템 성능 문제를 진단하고 올바른 아키텍처를 선택하는 데 실질적인 도움이 된다.
+
+---
+
+## 1. 두 축의 정의
+
+### 블로킹 vs 논블로킹 — 제어권 반납의 문제
+
+**블로킹(Blocking)**: 호출한 스레드가 작업이 완료될 때까지 제어권을 돌려받지 못한다. 스레드는 그 시간 동안 아무것도 하지 못하고 대기 상태가 된다.
+
+**논블로킹(Non-blocking)**: 호출 즉시 제어권을 돌려받는다. 작업이 끝나지 않았더라도 호출자는 다른 일을 계속할 수 있다.
+
+이것은 **OS/IO 레벨의 개념**이다. 커널에 IO 요청을 보냈을 때 해당 시스템 콜이 완료될 때까지 스레드를 잡아두는가 아닌가의 문제다.
+
+### 동기 vs 비동기 — 완료 통보의 문제
+
+**동기(Synchronous)**: 호출자가 작업 완료를 직접 확인한다. 결과가 반환될 때까지 다음 코드로 넘어가지 않는다.
+
+**비동기(Asynchronous)**: 작업 완료를 콜백, 이벤트, Future 등의 메커니즘으로 나중에 통보받는다. 호출자는 완료를 기다리지 않는다.
+
+이것은 **작업 완료 통보 방식**에 관한 개념이다. 결과를 누가, 어떻게, 언제 받아가는가의 문제다.
+
+### 왜 혼용하는가
+
+현실에서는 블로킹 IO를 쓰면 대부분 동기적으로 결과를 받고, 논블로킹 IO를 쓰면 대부분 비동기 콜백으로 완료를 통보받는다. 그래서 "블로킹 = 동기", "논블로킹 = 비동기"로 묶어서 부르는 경향이 생겼다.
+
+하지만 이 두 축은 독립적으로 조합될 수 있다. 그 조합을 이해하는 것이 핵심이다.
+
+---
+
+## 2. 네 가지 조합
+
+| | 블로킹 | 논블로킹 |
+|---|---|---|
+| **동기** | 전화 통화. 결과 나올 때까지 기다림 | 계속 폴링. CPU 낭비 |
+| **비동기** | select/poll 모델. 이벤트까지 블록 | 이벤트 루프. 가장 효율적 |
+
+### 동기 + 블로킹
+
+가장 직관적인 모델이다. 호출하고, 기다리고, 결과를 받는다. Java의 전통적인 IO, JDBC가 여기에 해당한다.
+
+```java
+// Java — 동기 + 블로킹
+InputStream is = socket.getInputStream();
+byte[] buf = new byte[1024];
+int n = is.read(buf); // 데이터가 올 때까지 이 라인에서 스레드가 멈춘다
+System.out.println("읽은 바이트: " + n);
+```
+
+`is.read()`가 반환되기 전까지 스레드는 완전히 멈춘다. 결과가 왔을 때 비로소 다음 라인으로 넘어간다. 동기적으로 결과를 받고, 그 동안 스레드는 블록된다.
+
+### 동기 + 논블로킹
+
+호출은 즉시 반환되지만, 결과가 준비됐는지 호출자가 직접 계속 확인한다. 폴링(polling) 방식이다.
+
+```java
+// Java NIO — 논블로킹 채널에서 동기적으로 폴링
+SocketChannel channel = SocketChannel.open();
+channel.configureBlocking(false); // 논블로킹 모드
+
+ByteBuffer buf = ByteBuffer.allocate(1024);
+int n;
+while ((n = channel.read(buf)) == 0) {
+    // 데이터가 없으면 0을 반환하고 즉시 돌아온다
+    // 그러나 결과를 기다리며 계속 루프를 돌린다 — CPU를 낭비한다
+}
+```
+
+제어권은 즉시 돌아오지만 결과를 직접 기다린다는 점에서 동기다. CPU를 계속 사용하면서 폴링하므로 실용적이지 않다. 실제로는 Selector와 조합해서 쓴다.
+
+### 비동기 + 블로킹
+
+여러 IO 소스를 기다리되, 적어도 하나에서 이벤트가 오기 전까지 스레드를 블록한다. Unix의 `select()`/`poll()` 시스템 콜이 이 모델이다.
+
+```java
+// Java NIO Selector — 비동기 + 블로킹
+Selector selector = Selector.open();
+channel.register(selector, SelectionKey.OP_READ);
+
+while (true) {
+    selector.select(); // 이벤트가 올 때까지 여기서 블록된다
+    Set<SelectionKey> keys = selector.selectedKeys();
+    for (SelectionKey key : keys) {
+        if (key.isReadable()) {
+            SocketChannel ch = (SocketChannel) key.channel();
+            ByteBuffer buf = ByteBuffer.allocate(1024);
+            ch.read(buf); // 이미 데이터가 있으므로 즉시 반환
+            // 콜백 없이 여기서 직접 처리 — 여러 채널을 하나의 스레드로 관리
+        }
+    }
+}
+```
+
+`selector.select()`는 이벤트가 오기 전까지 블록되므로 블로킹이다. 하지만 완료 통보는 이벤트 기반으로 받는다는 점에서 비동기다. 하나의 스레드로 수천 개의 커넥션을 처리하는 서버의 기초가 된다.
+
+### 비동기 + 논블로킹
+
+호출 즉시 제어권을 돌려받고, 완료 통보는 콜백이나 이벤트로 받는다. Node.js, Netty, Java NIO의 본래 목적이 이 모델이다.
+
+```javascript
+// Node.js — 비동기 + 논블로킹
+const fs = require('fs');
+
+fs.readFile('/etc/hosts', 'utf8', (err, data) => {
+    // 파일 읽기가 완료되면 이 콜백이 호출된다
+    console.log(data);
+});
+
+console.log('readFile 호출 직후 — 파일 읽기가 끝나기 전에 이 줄이 먼저 출력된다');
+```
+
+`fs.readFile()`은 즉시 반환된다. 파일 IO는 OS에 위임하고 이벤트 루프는 다른 작업을 처리한다. IO가 완료되면 콜백이 Task Queue에 들어오고 이벤트 루프가 처리한다.
+
+---
+
+## 3. Java 예시
+
+### 블로킹 IO: Socket + BufferedReader
+
+```java
+import java.io.*;
+import java.net.*;
+
+public class BlockingClient {
+    public static void main(String[] args) throws IOException {
+        Socket socket = new Socket("example.com", 80);
+
+        // 요청 전송
+        PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+        out.println("GET / HTTP/1.0\r\nHost: example.com\r\n");
+
+        // 응답 수신 — 스레드는 데이터가 올 때까지 각 readLine()에서 블록된다
+        BufferedReader in = new BufferedReader(
+            new InputStreamReader(socket.getInputStream())
+        );
+
+        String line;
+        while ((line = in.readLine()) != null) { // 블로킹
+            System.out.println(line);
+        }
+
+        socket.close();
+    }
+}
+```
+
+각 커넥션마다 스레드가 하나씩 필요하다. 동시 커넥션 수 = 스레드 수. 스레드는 비싸다.
+
+### 논블로킹 NIO: Selector + SocketChannel
+
+```java
+import java.io.*;
+import java.net.*;
+import java.nio.*;
+import java.nio.channels.*;
+import java.util.*;
+
+public class NioServer {
+    public static void main(String[] args) throws IOException {
+        ServerSocketChannel serverChannel = ServerSocketChannel.open();
+        serverChannel.bind(new InetSocketAddress(8080));
+        serverChannel.configureBlocking(false);
+
+        Selector selector = Selector.open();
+        serverChannel.register(selector, SelectionKey.OP_ACCEPT);
+
+        System.out.println("서버 시작 — 단일 스레드로 다중 커넥션 처리");
+
+        while (true) {
+            selector.select(); // 이벤트 대기 (블로킹)
+
+            Iterator<SelectionKey> iter = selector.selectedKeys().iterator();
+            while (iter.hasNext()) {
+                SelectionKey key = iter.next();
+                iter.remove();
+
+                if (key.isAcceptable()) {
+                    SocketChannel client = serverChannel.accept();
+                    client.configureBlocking(false);
+                    client.register(selector, SelectionKey.OP_READ);
+                    System.out.println("새 커넥션: " + client.getRemoteAddress());
+
+                } else if (key.isReadable()) {
+                    SocketChannel client = (SocketChannel) key.channel();
+                    ByteBuffer buf = ByteBuffer.allocate(256);
+                    int bytesRead = client.read(buf);
+
+                    if (bytesRead == -1) {
+                        client.close();
+                    } else {
+                        buf.flip();
+                        client.write(buf); // 에코 서버
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+단일 스레드로 수천 개의 커넥션을 처리한다. 스레드가 IO를 기다리며 낭비되지 않는다.
+
+### CompletableFuture로 비동기 체이닝
+
+```java
+import java.util.concurrent.*;
+
+public class AsyncExample {
+    public static void main(String[] args) throws Exception {
+        CompletableFuture<String> future = CompletableFuture
+            .supplyAsync(() -> {
+                // 별도 스레드에서 실행
+                simulateDbQuery();
+                return "user_data";
+            })
+            .thenApply(data -> {
+                // 결과를 받아 변환
+                return data.toUpperCase();
+            })
+            .thenCompose(data -> {
+                // 또 다른 비동기 작업과 체이닝
+                return CompletableFuture.supplyAsync(() -> "processed_" + data);
+            })
+            .exceptionally(ex -> {
+                System.err.println("에러: " + ex.getMessage());
+                return "fallback";
+            });
+
+        // 결과 대기 — 이 시점에서만 블로킹
+        String result = future.get();
+        System.out.println(result); // "processed_USER_DATA"
+    }
+
+    static void simulateDbQuery() {
+        try { Thread.sleep(100); } catch (InterruptedException e) {}
+    }
+}
+```
+
+`supplyAsync`는 ForkJoinPool에서 실행된다. 체이닝된 각 단계는 이전 단계 완료 후 자동으로 트리거된다. 호출 스레드는 `future.get()`을 호출하기 전까지 블록되지 않는다.
+
+### Spring WebFlux / Project Reactor
+
+```java
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.Flux;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+
+@RestController
+@RequestMapping("/api")
+public class ReactiveController {
+
+    private final WebClient webClient = WebClient.create("https://api.example.com");
+
+    @GetMapping("/users/{id}")
+    public Mono<UserDto> getUser(@PathVariable Long id) {
+        // Mono = 0~1개의 비동기 결과
+        // 스레드를 블록하지 않고 이벤트 루프에서 처리
+        return webClient.get()
+            .uri("/users/{id}", id)
+            .retrieve()
+            .bodyToMono(UserDto.class)
+            .map(user -> {
+                user.setDisplayName(user.getName().toUpperCase());
+                return user;
+            })
+            .onErrorReturn(new UserDto("unknown"));
+    }
+
+    @GetMapping("/feed")
+    public Flux<PostDto> getFeed() {
+        // Flux = 0~N개의 비동기 스트림
+        return Flux.range(1, 10)
+            .flatMap(i ->
+                webClient.get()
+                    .uri("/posts/{id}", i)
+                    .retrieve()
+                    .bodyToMono(PostDto.class)
+            )
+            .filter(post -> post.isPublished());
+    }
+}
+```
+
+WebFlux는 Netty 기반으로 동작한다. 스레드를 블록하지 않으므로 적은 수의 스레드로 많은 요청을 처리할 수 있다. `Mono`와 `Flux`는 구독(subscribe)이 일어나기 전까지 실제로 실행되지 않는 지연 평가(lazy evaluation) 구조다.
+
+---
+
+## 4. JavaScript 예시
+
+### 이벤트 루프 구조
+
+JavaScript는 싱글 스레드다. 비동기를 구현하는 핵심은 이벤트 루프다.
+
+```
+┌─────────────────────────┐
+│        Call Stack        │  ← 현재 실행 중인 코드
+└────────────┬────────────┘
+             │ 비어있으면 꺼내옴
+┌────────────▼────────────┐
+│      Microtask Queue     │  ← Promise.then, queueMicrotask (우선순위 높음)
+└────────────┬────────────┘
+             │ 비어있으면
+┌────────────▼────────────┐
+│       Task Queue         │  ← setTimeout, setInterval, I/O 콜백
+└─────────────────────────┘
+```
+
+Call Stack이 비면 이벤트 루프가 먼저 Microtask Queue를 모두 처리하고, 그 다음 Task Queue에서 하나를 꺼낸다.
+
+### setTimeout vs Promise.then 우선순위
+
+```javascript
+console.log('1 - 동기');
+
+setTimeout(() => {
+    console.log('4 - setTimeout (Task Queue)');
+}, 0);
+
+Promise.resolve()
+    .then(() => console.log('3 - Promise.then (Microtask Queue)'));
+
+console.log('2 - 동기');
+
+// 출력 순서:
+// 1 - 동기
+// 2 - 동기
+// 3 - Promise.then (Microtask Queue)
+// 4 - setTimeout (Task Queue)
+```
+
+`setTimeout(..., 0)`은 즉시 실행이 아니다. Task Queue에 들어가므로 Microtask Queue가 전부 비워진 후에 실행된다.
+
+```javascript
+// Microtask는 모두 처리된 후 Task가 실행된다
+Promise.resolve()
+    .then(() => {
+        console.log('microtask 1');
+        return Promise.resolve();
+    })
+    .then(() => console.log('microtask 2'))
+    .then(() => console.log('microtask 3'));
+
+setTimeout(() => console.log('task 1'), 0);
+
+// 출력:
+// microtask 1
+// microtask 2
+// microtask 3
+// task 1
+```
+
+### async/await가 스레드를 점유하지 않는 이유
+
+`async/await`는 Promise의 문법적 설탕이다. `await`는 스레드를 블록하는 것처럼 보이지만 실제로는 그렇지 않다.
+
+```javascript
+async function fetchData() {
+    console.log('fetchData 시작');
+
+    // await는 Promise가 완료될 때까지 이 함수의 실행을 일시 중단한다
+    // 하지만 스레드는 해제되어 이벤트 루프가 다른 작업을 처리할 수 있다
+    const response = await fetch('https://api.example.com/data');
+    const data = await response.json();
+
+    console.log('fetchData 완료');
+    return data;
+}
+
+console.log('before fetchData');
+fetchData(); // async 함수는 Promise를 반환하고 즉시 반환된다
+console.log('after fetchData'); // fetchData가 완료되기 전에 출력된다
+
+// 출력:
+// before fetchData
+// fetchData 시작
+// after fetchData
+// (... 네트워크 응답 후 ...)
+// fetchData 완료
+```
+
+`await fetch(...)`를 만나면 V8 엔진은 해당 함수의 실행 컨텍스트를 저장하고 Call Stack에서 제거한다. IO가 완료되면 저장된 컨텍스트를 Microtask Queue에 넣어 재개한다. 스레드는 그 사이에 다른 작업을 처리한다.
+
+### Promise.all vs 순차 await 성능 차이
+
+```javascript
+// 순차 await — 총 소요 시간: 300ms (100 + 100 + 100)
+async function sequential() {
+    const a = await fetchUser(1);    // 100ms 대기
+    const b = await fetchUser(2);    // 100ms 대기
+    const c = await fetchUser(3);    // 100ms 대기
+    return [a, b, c];
+}
+
+// Promise.all — 총 소요 시간: ~100ms (세 요청이 동시에 시작)
+async function parallel() {
+    const [a, b, c] = await Promise.all([
+        fetchUser(1),
+        fetchUser(2),
+        fetchUser(3),
+    ]);
+    return [a, b, c];
+}
+
+// 실용적인 예시
+async function loadDashboard(userId) {
+    // 독립적인 요청은 동시에 보낸다
+    const [user, posts, notifications] = await Promise.all([
+        fetchUser(userId),
+        fetchPosts(userId),
+        fetchNotifications(userId),
+    ]);
+
+    // 이전 결과에 의존하는 요청은 순차적으로
+    const recommendations = await fetchRecommendations(user.interests);
+
+    return { user, posts, notifications, recommendations };
+}
+```
+
+```javascript
+// Promise.allSettled — 하나가 실패해도 나머지 결과를 받는다
+async function resilientLoad() {
+    const results = await Promise.allSettled([
+        fetchUser(1),
+        fetchUser(2),
+        fetchUser(3),
+    ]);
+
+    return results
+        .filter(r => r.status === 'fulfilled')
+        .map(r => r.value);
+}
+
+// Promise.race — 가장 먼저 완료되는 것만 받는다
+async function withTimeout(promise, ms) {
+    const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout')), ms)
+    );
+    return Promise.race([promise, timeout]);
+}
+```
+
+---
+
+## 5. 실무에서의 선택 기준
+
+### CPU-bound vs IO-bound
+
+```
+CPU-bound 작업 (계산, 이미지 처리, 암호화):
+→ 논블로킹이 도움이 안 된다. CPU가 실제로 바쁜 것이 병목이다.
+→ 멀티 코어를 활용하는 병렬 처리(스레드 풀, Worker Threads)가 필요하다.
+
+IO-bound 작업 (DB 쿼리, HTTP 요청, 파일 읽기):
+→ 대부분의 시간을 IO 완료를 기다리는 데 쓴다.
+→ 논블로킹이 효과적이다. 기다리는 동안 다른 요청을 처리할 수 있다.
+```
+
+### 스레드 풀 방식 vs 이벤트 루프 방식
+
+**Spring MVC (스레드 풀)**
+
+```
+[요청 1] → [Thread-1] → DB 쿼리 대기... → [Thread-1] → 응답
+[요청 2] → [Thread-2] → DB 쿼리 대기... → [Thread-2] → 응답
+[요청 3] → [Thread-3] → DB 쿼리 대기... → [Thread-3] → 응답
+[요청 4] → 스레드 풀이 가득 차면 대기...
+```
+
+스레드 수가 동시 처리 수의 상한이다. 스레드는 메모리(보통 스레드당 ~1MB 스택)를 차지하고, 컨텍스트 스위칭 비용이 있다.
+
+**Spring WebFlux / Node.js (이벤트 루프)**
+
+```
+[요청 1] → DB 쿼리 시작 → 이벤트 루프로 복귀
+[요청 2] → DB 쿼리 시작 → 이벤트 루프로 복귀
+[요청 3] → DB 쿼리 시작 → 이벤트 루프로 복귀
+[요청 1의 DB 완료 이벤트] → 나머지 처리 → 응답
+[요청 2의 DB 완료 이벤트] → 나머지 처리 → 응답
+```
+
+IO를 기다리는 동안 스레드를 점유하지 않는다. 적은 스레드로 많은 동시 요청을 처리한다.
+
+### 언제 무엇을 선택할까
+
+| 상황 | 권장 방식 |
+|---|---|
+| 팀이 블로킹 IO에 익숙하고 단순한 CRUD | Spring MVC + 블로킹 IO |
+| 높은 동시 접속, IO-bound 작업 위주 | Spring WebFlux, Node.js |
+| 실시간 스트리밍, 대량 HTTP 요청 | 비동기 + 논블로킹 필수 |
+| CPU 집약적인 계산 | 멀티스레드 또는 Worker Threads |
+| 외부 API 다수 호출, 팬아웃 패턴 | Promise.all, CompletableFuture |
+
+```java
+// Spring MVC에서도 비동기를 부분적으로 적용할 수 있다
+@Service
+public class UserService {
+
+    @Async // 별도 스레드에서 실행
+    public CompletableFuture<User> findUserAsync(Long id) {
+        User user = userRepository.findById(id).orElseThrow();
+        return CompletableFuture.completedFuture(user);
+    }
+}
+
+@RestController
+public class UserController {
+
+    @GetMapping("/users/{id}")
+    public CompletableFuture<ResponseEntity<User>> getUser(@PathVariable Long id) {
+        return userService.findUserAsync(id)
+            .thenApply(ResponseEntity::ok);
+    }
+}
+```
+
+---
+
+## 정리
+
+- **블로킹/논블로킹**은 제어권을 돌려받는 시점의 문제다.
+- **동기/비동기**는 완료 통보를 어떻게 받는가의 문제다.
+- 두 축은 독립적이며 네 가지로 조합된다.
+- 현실에서 가장 많이 쓰는 조합은 "동기 + 블로킹"(전통적 서버)과 "비동기 + 논블로킹"(이벤트 루프)이다.
+- IO-bound 워크로드에서는 논블로킹이 스레드 수 제약을 극복하는 핵심 수단이 된다.
+- `async/await`는 스레드를 블록하지 않는다. 이벤트 루프를 활용해 싱글 스레드에서 동시성을 구현한다.

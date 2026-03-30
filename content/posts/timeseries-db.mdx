@@ -1,0 +1,496 @@
+---
+title: 시계열 데이터베이스 — 시간이 핵심인 데이터를 다루는 방법
+date: '2026-03-30'
+category: Backend
+tags:
+  - TimescaleDB
+  - InfluxDB
+  - Time Series
+  - PostgreSQL
+  - Database
+  - Monitoring
+summary: >-
+  시계열 DB가 일반 RDBMS와 어떻게 다른지, TimescaleDB의 하이퍼테이블·압축·연속 집계가
+  무엇인지, 실제 모니터링 시스템 구축 예시까지 정리합니다.
+thumbnail: /thumbnails/timeseries-db.svg
+---
+
+## 시계열 데이터란
+
+시계열 데이터(time series data)는 **시간 순서 자체가 의미를 갖는** 데이터다. 값 하나하나보다 "언제 어떻게 변화했는가"가 핵심이다.
+
+대표적인 예시:
+
+- **서버 메트릭** — CPU 사용률, 메모리, 네트워크 I/O (초 단위 수집)
+- **IoT 센서** — 온도, 습도, 진동 (밀리초~분 단위)
+- **애플리케이션 로그** — 요청 레이턴시, 에러율
+- **금융 데이터** — 주가, 거래량 (틱 단위)
+
+이런 데이터는 공통적인 특성을 갖는다.
+
+1. **쓰기가 압도적으로 많다** — 읽기보다 INSERT가 훨씬 잦다.
+2. **최신 데이터가 가장 자주 조회된다** — 어제 데이터보다 지금 데이터가 중요하다.
+3. **오래된 데이터는 낮은 해상도로 충분하다** — 1년 전 CPU 사용률은 1분 평균이면 된다.
+4. **집계 쿼리가 핵심이다** — "지난 1시간 평균 CPU 사용률"이 전형적인 쿼리 패턴이다.
+
+---
+
+## 일반 RDBMS로 시계열 데이터를 저장하면 생기는 문제
+
+PostgreSQL이나 MySQL 같은 RDBMS도 시계열 데이터를 저장할 수 있다. 하지만 규모가 커질수록 문제가 드러난다.
+
+### 1. 시간 범위 쿼리의 인덱스 효율
+
+```sql
+-- 최근 1시간 데이터 조회
+SELECT * FROM metrics
+WHERE time >= NOW() - INTERVAL '1 hour'
+ORDER BY time DESC;
+```
+
+B-tree 인덱스는 범위 스캔에 적합하다. 하지만 테이블 전체가 단일 B-tree로 관리되면, 수억 건이 쌓였을 때 인덱스 깊이가 깊어지고 디스크 I/O가 늘어난다. 데이터가 시간 순으로 쌓이더라도 물리적 저장 위치가 분산되어 있으면 sequential scan 이점을 살리기 어렵다.
+
+### 2. 대용량 INSERT 시 B-tree 재구성 비용
+
+초당 수천 건의 INSERT가 들어오는 상황을 가정하자. B-tree 인덱스는 새 노드가 삽입될 때마다 트리 균형을 유지하기 위해 재구성한다. 이 비용이 누적되면 쓰기 처리량(write throughput)이 눈에 띄게 떨어진다.
+
+```sql
+-- 단순 테스트: 1분간 초당 1000건 INSERT
+-- 일반 RDBMS에서는 인덱스 경합이 발생하기 시작한다
+INSERT INTO metrics (time, device_id, cpu_usage)
+VALUES (NOW(), 'server-01', 72.5);
+```
+
+### 3. 오래된 데이터 정리의 어려움
+
+데이터 보존 기간이 90일이라면, 매일 90일 이전 데이터를 삭제해야 한다.
+
+```sql
+-- DELETE는 느리고 테이블 bloat을 유발한다
+DELETE FROM metrics WHERE time < NOW() - INTERVAL '90 days';
+
+-- VACUUM이 필요하고, 실행 중 부하가 올라간다
+VACUUM ANALYZE metrics;
+```
+
+`DELETE`는 행을 dead tuple로 표시할 뿐 즉시 공간을 회수하지 않는다. 대용량 삭제는 VACUUM 부담으로 이어지고, 운영 중 테이블 락을 유발할 수 있다.
+
+### 4. 집계 쿼리 성능
+
+```sql
+-- 디바이스별 1시간 평균 CPU 사용률
+SELECT
+  date_trunc('hour', time) AS hour,
+  device_id,
+  AVG(cpu_usage) AS avg_cpu
+FROM metrics
+WHERE time >= NOW() - INTERVAL '7 days'
+GROUP BY 1, 2
+ORDER BY 1;
+```
+
+이 쿼리가 수억 건의 행을 스캔한다면, 아무리 인덱스가 있어도 집계 자체가 무겁다. Row-oriented 저장 방식에서는 `cpu_usage` 컬럼 하나를 집계하려 해도 행 전체를 읽어야 한다.
+
+---
+
+## 시계열 DB의 최적화 원리
+
+시계열 DB는 위 문제들을 구조적으로 해결한다.
+
+### 시간 기반 청크 분할 (Chunking)
+
+데이터를 시간 구간별로 물리적으로 분리해 저장한다. 예를 들어 1주일 단위 청크라면:
+
+```
+metrics_2026_03_01  (2026-03-01 ~ 2026-03-07)
+metrics_2026_03_08  (2026-03-08 ~ 2026-03-14)
+metrics_2026_03_22  (2026-03-22 ~ 2026-03-28)
+metrics_2026_03_29  (2026-03-29 ~ 현재)
+```
+
+최근 1시간 쿼리는 **가장 최근 청크만** 스캔하면 된다. 나머지 청크는 완전히 무시된다. 이것을 **청크 제거(chunk pruning)** 라고 한다.
+
+### 컬럼 지향 저장으로 집계 최적화
+
+시계열 DB는 오래된 청크를 컬럼 지향(columnar) 포맷으로 저장하거나 압축한다. `AVG(cpu_usage)`를 계산할 때 `cpu_usage` 컬럼의 데이터만 읽으면 된다. I/O가 극적으로 줄어든다.
+
+### 자동 데이터 만료 (Retention Policy)
+
+보존 기간을 설정하면 오래된 청크를 청크 단위로 통째로 DROP한다. `DELETE`가 아니라 `DROP`이므로 즉각적이고 VACUUM 부담도 없다.
+
+### 다운샘플링
+
+```
+raw data (초 단위)  →  1분 집계  →  1시간 집계  →  1일 집계
+```
+
+시간이 지날수록 낮은 해상도로 저장한다. 스토리지를 아끼면서 장기 트렌드 쿼리도 빠르게 처리한다.
+
+---
+
+## TimescaleDB 심층
+
+TimescaleDB는 **PostgreSQL 확장(extension)** 이다. PostgreSQL 위에서 동작하므로 기존 SQL, 트랜잭션, JOIN, 인덱스가 그대로 작동한다.
+
+### 하이퍼테이블과 청크 자동 관리
+
+일반 테이블을 하이퍼테이블(hypertable)로 변환하면 TimescaleDB가 자동으로 청크를 관리한다.
+
+```sql
+-- 1. 확장 설치
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+
+-- 2. 일반 테이블 생성
+CREATE TABLE metrics (
+  time        TIMESTAMPTZ     NOT NULL,
+  device_id   TEXT            NOT NULL,
+  cpu_usage   DOUBLE PRECISION,
+  memory_usage DOUBLE PRECISION
+);
+
+-- 3. 하이퍼테이블로 변환 (7일 단위 청크)
+SELECT create_hypertable('metrics', 'time', chunk_time_interval => INTERVAL '7 days');
+
+-- 인덱스도 동일하게 생성
+CREATE INDEX ON metrics (device_id, time DESC);
+```
+
+이후부터는 `metrics` 테이블처럼 사용하면 된다. 청크 분리는 TimescaleDB가 내부적으로 처리한다.
+
+### 시간 범위 쿼리
+
+```sql
+-- 최근 1시간 데이터 (청크 제거 자동 적용)
+SELECT time, device_id, cpu_usage
+FROM metrics
+WHERE time >= NOW() - INTERVAL '1 hour'
+ORDER BY time DESC;
+
+-- 특정 디바이스, 최근 24시간
+SELECT time, cpu_usage, memory_usage
+FROM metrics
+WHERE device_id = 'server-01'
+  AND time >= NOW() - INTERVAL '24 hours'
+ORDER BY time;
+```
+
+### 집계 쿼리 — time_bucket
+
+`time_bucket`은 TimescaleDB의 핵심 함수다. `date_trunc`보다 유연하게 시간 버킷을 만들 수 있다.
+
+```sql
+-- 5분 단위 평균 CPU 사용률
+SELECT
+  time_bucket('5 minutes', time) AS bucket,
+  device_id,
+  AVG(cpu_usage)   AS avg_cpu,
+  MAX(cpu_usage)   AS max_cpu,
+  MIN(cpu_usage)   AS min_cpu
+FROM metrics
+WHERE time >= NOW() - INTERVAL '3 hours'
+GROUP BY bucket, device_id
+ORDER BY bucket DESC;
+
+-- 1시간 단위, 95 퍼센타일
+SELECT
+  time_bucket('1 hour', time) AS bucket,
+  device_id,
+  percentile_cont(0.95) WITHIN GROUP (ORDER BY cpu_usage) AS p95_cpu
+FROM metrics
+WHERE time >= NOW() - INTERVAL '24 hours'
+GROUP BY bucket, device_id
+ORDER BY bucket DESC;
+```
+
+### 연속 집계 (Continuous Aggregate)
+
+매번 집계 쿼리를 실행하면 부하가 크다. 연속 집계는 **자동으로 집계 결과를 유지하는 구체화 뷰(materialized view)** 다. 새 데이터가 들어오면 증분(incremental) 방식으로 갱신한다.
+
+```sql
+-- 1시간 단위 집계 뷰 생성
+CREATE MATERIALIZED VIEW metrics_hourly
+WITH (timescaledb.continuous) AS
+SELECT
+  time_bucket('1 hour', time) AS bucket,
+  device_id,
+  AVG(cpu_usage)    AS avg_cpu,
+  MAX(cpu_usage)    AS max_cpu,
+  MIN(memory_usage) AS min_memory,
+  AVG(memory_usage) AS avg_memory
+FROM metrics
+GROUP BY bucket, device_id
+WITH NO DATA;
+
+-- 갱신 정책: 1시간마다 자동 갱신, 최근 2시간 데이터 반영
+SELECT add_continuous_aggregate_policy(
+  'metrics_hourly',
+  start_offset => INTERVAL '3 hours',
+  end_offset   => INTERVAL '1 hour',
+  schedule_interval => INTERVAL '1 hour'
+);
+```
+
+대시보드 쿼리는 이제 `metrics` 대신 `metrics_hourly`를 조회하면 된다.
+
+```sql
+-- 대시보드: 지난 7일 시간별 서버 CPU 추이
+SELECT bucket, device_id, avg_cpu, max_cpu
+FROM metrics_hourly
+WHERE bucket >= NOW() - INTERVAL '7 days'
+ORDER BY bucket DESC;
+```
+
+원본 테이블 수십억 건 대신 집계 뷰를 읽으므로 쿼리 속도가 수십~수백 배 빨라진다.
+
+### 압축 (Compression)
+
+오래된 청크를 컬럼 지향 포맷으로 압축 저장한다. 스토리지 용량을 70~90% 줄일 수 있다.
+
+```sql
+-- 압축 활성화 (device_id로 묶어서 압축)
+ALTER TABLE metrics SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'device_id',
+  timescaledb.compress_orderby   = 'time DESC'
+);
+
+-- 압축 정책: 7일 이상 된 청크를 자동 압축
+SELECT add_compression_policy('metrics', INTERVAL '7 days');
+
+-- 압축된 청크 현황 확인
+SELECT
+  chunk_name,
+  before_compression_total_bytes,
+  after_compression_total_bytes,
+  ROUND(
+    (1 - after_compression_total_bytes::numeric / before_compression_total_bytes) * 100, 1
+  ) AS compression_ratio_pct
+FROM chunk_compression_stats('metrics');
+```
+
+압축된 청크도 일반 SQL로 조회할 수 있다. 쿼리 인터페이스는 동일하다.
+
+### 데이터 보존 정책 (Retention)
+
+```sql
+-- 90일 이전 데이터 자동 삭제
+SELECT add_retention_policy('metrics', INTERVAL '90 days');
+
+-- 정책 확인
+SELECT * FROM timescaledb_information.jobs
+WHERE proc_name = 'policy_retention';
+```
+
+내부적으로 오래된 청크를 `DROP`하므로 `DELETE` + `VACUUM` 없이 즉시 공간이 회수된다.
+
+### PostgreSQL 호환성
+
+TimescaleDB의 가장 큰 장점은 PostgreSQL과 완전 호환된다는 점이다.
+
+```sql
+-- 일반 테이블과 JOIN
+SELECT
+  m.time,
+  m.device_id,
+  m.cpu_usage,
+  d.region,
+  d.instance_type
+FROM metrics m
+JOIN devices d ON m.device_id = d.id
+WHERE m.time >= NOW() - INTERVAL '1 hour'
+  AND d.region = 'ap-northeast-2';
+
+-- 트랜잭션도 그대로
+BEGIN;
+INSERT INTO metrics VALUES (NOW(), 'server-01', 45.2, 62.1);
+INSERT INTO metrics VALUES (NOW(), 'server-02', 38.9, 55.3);
+COMMIT;
+```
+
+PostgreSQL의 인덱스, 트리거, 외래 키, JSONB 컬럼, PostGIS 등을 그대로 쓸 수 있다.
+
+---
+
+## InfluxDB 비교
+
+InfluxDB는 시계열 전용으로 설계된 독립 데이터베이스다. SQL을 쓰지 않고 자체 데이터 모델과 쿼리 언어를 사용한다.
+
+### Line Protocol로 데이터 삽입
+
+```
+# measurement,tag_key=tag_value field_key=field_value timestamp
+cpu,device_id=server-01,region=ap-northeast-2 usage=72.5,memory=65.3 1743292800000000000
+```
+
+HTTP API로 직접 전송한다.
+
+```bash
+curl -X POST "http://localhost:8086/api/v2/write?org=myorg&bucket=metrics&precision=ns" \
+  -H "Authorization: Token ${INFLUX_TOKEN}" \
+  --data-raw 'cpu,device_id=server-01 usage=72.5,memory=65.3 1743292800000000000'
+```
+
+### Flux 쿼리 언어
+
+```flux
+from(bucket: "metrics")
+  |> range(start: -1h)
+  |> filter(fn: (r) => r._measurement == "cpu" and r.device_id == "server-01")
+  |> aggregateWindow(every: 5m, fn: mean, createEmpty: false)
+  |> yield(name: "mean")
+```
+
+### TimescaleDB vs InfluxDB 비교
+
+| 항목 | TimescaleDB | InfluxDB |
+|------|-------------|----------|
+| 기반 | PostgreSQL 확장 | 독립 DB |
+| 쿼리 언어 | SQL (표준) | Flux (전용) |
+| JOIN 지원 | O (완전 지원) | 제한적 |
+| 트랜잭션 | O (ACID) | 제한적 |
+| 스키마 | 명시적 (강타입) | 유연 (tag/field) |
+| 압축률 | 70~90% | 높음 |
+| 수평 확장 | Timescale Cloud / Citus | InfluxDB Clustered |
+| 생태계 | PostgreSQL 전체 | Telegraf, Grafana 특화 |
+| 학습 곡선 | SQL 알면 낮음 | Flux 별도 학습 필요 |
+| 오픈소스 | Apache 2.0 (Community) | MIT (OSS Core) |
+
+PostgreSQL 생태계를 활용하거나 복잡한 JOIN이 필요하다면 TimescaleDB, Telegraf 중심의 메트릭 파이프라인에 빠르게 연동하려면 InfluxDB가 적합하다.
+
+---
+
+## 실전 예시: 서버 모니터링 시스템
+
+### 스키마 설계
+
+```sql
+-- 디바이스 정보 (일반 테이블)
+CREATE TABLE devices (
+  id            TEXT PRIMARY KEY,
+  region        TEXT NOT NULL,
+  instance_type TEXT NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 메트릭 (하이퍼테이블)
+CREATE TABLE metrics (
+  time         TIMESTAMPTZ      NOT NULL,
+  device_id    TEXT             NOT NULL REFERENCES devices(id),
+  cpu_usage    DOUBLE PRECISION,
+  memory_usage DOUBLE PRECISION,
+  disk_read_kb DOUBLE PRECISION,
+  disk_write_kb DOUBLE PRECISION,
+  net_in_kb    DOUBLE PRECISION,
+  net_out_kb   DOUBLE PRECISION
+);
+
+SELECT create_hypertable('metrics', 'time', chunk_time_interval => INTERVAL '1 day');
+CREATE INDEX ON metrics (device_id, time DESC);
+```
+
+### Spring Boot + Micrometer 연동
+
+`application.yml`에 TimescaleDB JDBC URL을 설정한다.
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/monitoring
+    username: app
+    password: ${DB_PASSWORD}
+```
+
+Micrometer `MeterRegistry`를 직접 구현해 배치 INSERT한다.
+
+```java
+@Component
+@RequiredArgsConstructor
+public class TimescaleMetricsExporter {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    @Scheduled(fixedDelay = 10_000)  // 10초마다
+    public void flush(List<MetricSnapshot> snapshots) {
+        String sql = """
+            INSERT INTO metrics (time, device_id, cpu_usage, memory_usage)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
+            """;
+
+        jdbcTemplate.batchUpdate(sql, snapshots, snapshots.size(),
+            (ps, s) -> {
+                ps.setObject(1, s.time());
+                ps.setString(2, s.deviceId());
+                ps.setDouble(3, s.cpuUsage());
+                ps.setDouble(4, s.memoryUsage());
+            });
+    }
+}
+```
+
+배치 INSERT는 단건 INSERT보다 처리량이 수십 배 높다.
+
+### 대시보드 쿼리
+
+```sql
+-- 최근 1시간 CPU 사용률 추이 (5분 단위)
+SELECT
+  time_bucket('5 minutes', time) AS bucket,
+  device_id,
+  ROUND(AVG(cpu_usage)::numeric, 2)  AS avg_cpu,
+  ROUND(MAX(cpu_usage)::numeric, 2)  AS max_cpu
+FROM metrics
+WHERE time >= NOW() - INTERVAL '1 hour'
+GROUP BY bucket, device_id
+ORDER BY bucket DESC, device_id;
+
+-- 현재 시점 디바이스별 리소스 요약 (최근 5분 평균)
+SELECT
+  d.id,
+  d.region,
+  d.instance_type,
+  ROUND(AVG(m.cpu_usage)::numeric, 2)    AS avg_cpu,
+  ROUND(AVG(m.memory_usage)::numeric, 2) AS avg_memory
+FROM metrics m
+JOIN devices d ON m.device_id = d.id
+WHERE m.time >= NOW() - INTERVAL '5 minutes'
+GROUP BY d.id, d.region, d.instance_type
+ORDER BY avg_cpu DESC;
+
+-- CPU 90% 초과 알람 후보 (최근 1분간 지속)
+SELECT
+  device_id,
+  COUNT(*)                                 AS sample_count,
+  ROUND(AVG(cpu_usage)::numeric, 2)        AS avg_cpu,
+  MAX(time)                                AS last_seen
+FROM metrics
+WHERE time >= NOW() - INTERVAL '1 minute'
+  AND cpu_usage > 90
+GROUP BY device_id
+HAVING COUNT(*) >= 3;  -- 3회 이상 초과
+```
+
+---
+
+## 언제 시계열 DB를 선택하는가
+
+모든 시나리오에 시계열 DB가 필요한 건 아니다. 다음 기준으로 판단한다.
+
+**시계열 DB가 필요한 경우:**
+
+- 초당 수백~수천 건 이상의 INSERT가 지속되는 경우
+- 시간 범위 집계(평균, 최대, 백분위)가 핵심 쿼리 패턴인 경우
+- 데이터 보존 기간이 명확하고 자동 삭제가 필요한 경우
+- 스토리지 비용이 문제가 될 만큼 데이터 볼륨이 큰 경우
+
+**일반 RDBMS로 충분한 경우:**
+
+- 시계열 데이터가 부수적이고, 주요 도메인 테이블과 빈번히 JOIN하는 경우
+- 데이터 볼륨이 수백만 건 이하로 작은 경우
+- PostgreSQL에 TimescaleDB 설치가 불가한 제약 환경
+
+TimescaleDB는 PostgreSQL과 완전 호환되므로, 기존 PostgreSQL 환경에 익스텐션 하나만 추가하면 된다. 마이그레이션 부담 없이 시계열 최적화를 얻을 수 있는 현실적인 선택지다.
+
+---
+
+시계열 데이터는 **쌓이는 속도가 빠르고, 시간 기준 집계가 전부다.** 일반 RDBMS가 범용 칼날이라면, 시계열 DB는 그 한 방향을 끝까지 날카롭게 간 도구다. 시스템이 초당 수천 건의 메트릭을 받아야 하는 순간, 그 차이가 곧바로 쿼리 응답 시간과 인프라 비용으로 나타난다.

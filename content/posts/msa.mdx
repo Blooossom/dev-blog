@@ -1,0 +1,401 @@
+---
+title: MSA — 마이크로서비스 아키텍처의 실제
+date: '2026-03-30'
+category: Backend
+tags:
+  - MSA
+  - Microservices
+  - Architecture
+  - Monolith
+  - API Gateway
+  - DDD
+summary: >-
+  모놀리식·SOA와 MSA를 비교하고, 서비스 분리 기준, API 게이트웨이, 서비스 간 통신,
+  분산 트랜잭션, 그리고 MSA가 정말 필요한 시점까지 정리합니다.
+thumbnail: /thumbnails/msa.svg
+---
+
+
+MSA(Microservices Architecture)는 하나의 애플리케이션을 독립적으로 배포 가능한 작은 서비스들로 나누는 아키텍처 스타일이다. 그런데 많은 팀이 MSA를 도입하고 나서 더 느려지고 더 복잡해졌다고 말한다. 도구의 문제가 아니라 **언제, 왜 쓰는지**를 모른 채 적용한 경우가 대부분이다.
+
+## 아키텍처의 발전
+
+### 모놀리식(Monolithic)
+
+모든 기능이 하나의 배포 단위 안에 있다.
+
+```
+[단일 애플리케이션]
+  ├─ 주문 모듈
+  ├─ 결제 모듈
+  ├─ 사용자 모듈
+  ├─ 배송 모듈
+  └─ 알림 모듈
+         │
+    [단일 데이터베이스]
+```
+
+초기에는 개발이 빠르고 운영이 단순하다. 테스트, 배포, 트랜잭션 처리 모두 쉽다.
+
+문제는 팀과 서비스가 커지면서 나타난다.
+
+- **배포 결합**: 알림 버그를 고치려고 전체 앱을 재배포해야 한다
+- **스케일링 한계**: 결제 모듈만 트래픽이 몰려도 전체를 스케일아웃해야 한다
+- **기술 잠금**: 전체가 Java라면 특정 기능에 Python이 유리해도 바꾸기 어렵다
+- **코드 결합**: 팀이 10개가 되면 같은 코드베이스에서 충돌이 잦아진다
+
+### SOA(Service-Oriented Architecture)
+
+모놀리식의 문제를 해결하려다 2000년대에 등장했다. 서비스를 분리하되 **ESB(Enterprise Service Bus)** 라는 중앙 버스를 통해 통신한다.
+
+```
+[주문 서비스]──┐
+[결제 서비스]──┤
+[사용자 서비스]─┤──[ESB]──[클라이언트]
+[배송 서비스]──┤
+[알림 서비스]──┘
+```
+
+서비스는 분리됐지만 ESB가 너무 많은 것을 알았다. 변환, 라우팅, 오케스트레이션 로직이 ESB에 쌓이면서 ESB 자체가 병목이 됐다. "Smart pipes, dumb endpoints" — 파이프가 너무 똑똑해진 것이다.
+
+### MSA
+
+SOA의 교훈을 반영해 "Dumb pipes, smart endpoints"로 뒤집는다. 서비스들이 직접 통신하고, 각 서비스는 자신의 비즈니스 로직만 담당한다.
+
+```
+[주문 서비스] ──HTTP/gRPC──▶ [결제 서비스]
+      │                           │
+      └──Event──▶ [Kafka] ──▶ [알림 서비스]
+      │
+      └──▶ [주문 DB]  (서비스별 독립 DB)
+```
+
+---
+
+## MSA의 핵심 원칙
+
+### 1. 서비스별 독립 데이터베이스
+
+MSA에서 가장 중요하고 가장 지키기 어려운 원칙이다.
+
+```
+❌ 잘못된 MSA: 서비스만 분리하고 DB는 공유
+[주문 서비스] ─┐
+[결제 서비스] ─┼─▶ [공유 DB]
+[배송 서비스] ─┘
+
+✅ 올바른 MSA: 서비스와 DB 모두 분리
+[주문 서비스] ─▶ [주문 DB]
+[결제 서비스] ─▶ [결제 DB]
+[배송 서비스] ─▶ [배송 DB]
+```
+
+DB를 공유하면 서비스 간 결합이 남아있다. 한 서비스가 스키마를 변경하면 다른 서비스가 깨진다. 독립적인 배포가 불가능해진다.
+
+### 2. 독립적인 배포
+
+각 서비스는 다른 서비스와 무관하게 배포될 수 있어야 한다. 주문 서비스 배포가 결제 서비스 재시작을 요구하면 안 된다.
+
+### 3. 서비스 경계 (Bounded Context)
+
+DDD(Domain-Driven Design)의 Bounded Context가 서비스 분리의 기준이 된다. "주문"이라는 개념이 주문 서비스와 배송 서비스에서 다른 의미를 가져도 된다. 서비스 경계 안에서 자체적으로 정의한다.
+
+```java
+// 주문 서비스의 Order
+class Order {
+    OrderId id;
+    CustomerId customerId;
+    List<OrderItem> items;
+    OrderStatus status;   // PENDING, CONFIRMED, SHIPPED, DELIVERED
+    Money totalAmount;
+}
+
+// 배송 서비스의 Order (Shipment로 부르는 경우도 많음)
+class Shipment {
+    ShipmentId id;
+    String orderRef;      // 주문 서비스의 ID를 참조 (외래키 아님)
+    Address destination;
+    TrackingNumber trackingNumber;
+    ShipmentStatus status; // PREPARING, IN_TRANSIT, DELIVERED
+}
+```
+
+---
+
+## 서비스 간 통신
+
+### 동기 통신: REST / gRPC
+
+즉시 응답이 필요한 경우에 사용한다.
+
+```
+주문 서비스 ──HTTP GET /inventory/check──▶ 재고 서비스
+           ◀─── { "available": true } ─────
+```
+
+**REST**: 범용적, 사람이 읽기 쉬움, HTTP 오버헤드 있음
+
+**gRPC**: Protocol Buffers 기반 바이너리, 빠름, 타입 안전, 서비스 간 내부 통신에 적합
+
+```protobuf
+// 재고 서비스 gRPC 정의
+service InventoryService {
+  rpc CheckStock(CheckStockRequest) returns (CheckStockResponse);
+}
+
+message CheckStockRequest {
+  string item_id = 1;
+  int32 quantity = 2;
+}
+
+message CheckStockResponse {
+  bool available = 1;
+  int32 current_stock = 2;
+}
+```
+
+동기 통신의 단점: 호출 체인이 길어지면 장애가 전파된다. 재고 서비스가 느리면 주문 서비스도 느려진다.
+
+### 비동기 통신: 이벤트/메시지
+
+결합을 끊고 장애를 격리한다.
+
+```
+주문 서비스 ──OrderConfirmed event──▶ [Kafka]
+                                          ├──▶ 결제 서비스 (결제 처리)
+                                          ├──▶ 재고 서비스 (재고 감소)
+                                          └──▶ 알림 서비스 (주문 확인 메일)
+```
+
+```java
+// 주문 서비스에서 이벤트 발행
+@Service
+public class OrderService {
+    private final KafkaTemplate<String, OrderEvent> kafka;
+
+    public Order confirmOrder(OrderId orderId) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow();
+        order.confirm();
+        orderRepository.save(order);
+
+        // 이벤트 발행 — 다른 서비스는 이것을 구독
+        kafka.send("order.confirmed", new OrderConfirmedEvent(
+            order.getId().getValue(),
+            order.getCustomerId().getValue(),
+            order.getTotalAmount()
+        ));
+
+        return order;
+    }
+}
+```
+
+```java
+// 알림 서비스에서 이벤트 구독
+@KafkaListener(topics = "order.confirmed")
+public void handleOrderConfirmed(OrderConfirmedEvent event) {
+    notificationService.sendOrderConfirmEmail(
+        event.customerId(),
+        event.orderId()
+    );
+}
+```
+
+주문 서비스는 알림 서비스가 존재하는지도 모른다. 이벤트를 발행하고 끝이다. 알림 서비스가 죽어있어도 주문 확정 자체는 성공한다. Kafka가 메시지를 보관하다가 알림 서비스가 살아나면 처리한다.
+
+---
+
+## API 게이트웨이
+
+클라이언트가 수십 개의 서비스에 직접 요청하면 클라이언트 코드가 복잡해진다. API 게이트웨이는 단일 진입점을 제공한다.
+
+```
+클라이언트
+    │
+    ▼
+[API Gateway]
+    ├──/orders/**    ──▶ [주문 서비스]
+    ├──/payments/**  ──▶ [결제 서비스]
+    ├──/users/**     ──▶ [사용자 서비스]
+    └──/products/**  ──▶ [상품 서비스]
+```
+
+게이트웨이가 담당하는 횡단 관심사:
+
+- **인증/인가**: JWT 검증을 각 서비스가 아닌 게이트웨이에서 처리
+- **Rate Limiting**: 클라이언트별 요청 제한
+- **로드밸런싱**: 서비스 인스턴스 분산
+- **로깅/트레이싱**: 요청에 Correlation ID 부여
+- **응답 집계(BFF)**: 여러 서비스 응답을 합쳐서 클라이언트에 제공
+
+**Spring Cloud Gateway 예시:**
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: order-service
+          uri: lb://order-service   # 서비스 디스커버리 사용
+          predicates:
+            - Path=/orders/**
+          filters:
+            - AuthFilter              # 인증 필터
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+
+        - id: payment-service
+          uri: lb://payment-service
+          predicates:
+            - Path=/payments/**
+          filters:
+            - AuthFilter
+```
+
+---
+
+## 분산 트랜잭션
+
+모놀리식에서는 DB 트랜잭션 하나로 여러 테이블을 원자적으로 업데이트할 수 있었다. MSA에서는 각 서비스가 독립적인 DB를 가지므로 하나의 트랜잭션이 불가능하다.
+
+### 사가 패턴 (Saga Pattern)
+
+각 서비스의 로컬 트랜잭션 시퀀스로 분산 트랜잭션을 구현한다. 중간에 실패하면 보상 트랜잭션(Compensating Transaction)으로 되돌린다.
+
+```
+주문 생성 ──▶ 재고 감소 ──▶ 결제 처리 ──▶ 배송 시작
+     ▲              ▲              ▲
+실패 시:
+배송 취소 ◀── 결제 환불 ◀── 재고 복구 ◀── 주문 취소
+```
+
+**코레오그래피(Choreography)**: 각 서비스가 이벤트를 보고 스스로 다음 단계를 결정.
+
+```
+주문 서비스: OrderCreated 발행
+재고 서비스: OrderCreated 수신 → 재고 감소 → StockReserved 발행
+결제 서비스: StockReserved 수신 → 결제 → PaymentCompleted 발행
+배송 서비스: PaymentCompleted 수신 → 배송 시작
+```
+
+중앙 조정자 없이 이벤트만으로 흐른다. 결합이 낮지만, 전체 흐름을 파악하기 어렵다.
+
+**오케스트레이션(Orchestration)**: 중앙 사가 조정자가 각 서비스에 명령.
+
+```java
+// 주문 사가 오케스트레이터
+@SagaOrchestrator
+public class OrderSaga {
+
+    @StartSaga
+    @SagaEventHandler(associationProperty = "orderId")
+    public void handle(OrderCreatedEvent event) {
+        // 재고 감소 명령
+        commandGateway.send(new ReserveStockCommand(event.orderId(), event.items()));
+    }
+
+    @SagaEventHandler(associationProperty = "orderId")
+    public void handle(StockReservedEvent event) {
+        // 결제 명령
+        commandGateway.send(new ProcessPaymentCommand(event.orderId(), event.amount()));
+    }
+
+    @SagaEventHandler(associationProperty = "orderId")
+    public void handle(StockReservationFailedEvent event) {
+        // 주문 취소 보상 트랜잭션
+        commandGateway.send(new CancelOrderCommand(event.orderId()));
+    }
+}
+```
+
+흐름이 한 곳에 집중되어 파악하기 쉽지만, 오케스트레이터가 비즈니스 로직을 알게 된다.
+
+---
+
+## 서비스 디스커버리와 장애 처리
+
+### 서비스 디스커버리
+
+서비스 인스턴스가 동적으로 생성·삭제되므로 IP를 하드코딩할 수 없다. 서비스 레지스트리에 등록하고 이름으로 찾는다.
+
+```
+주문 서비스 → Eureka에 등록 (order-service: 10.0.0.1:8080)
+결제 서비스 → "order-service"로 요청 → Eureka에서 IP 조회
+```
+
+### 서킷 브레이커 (Circuit Breaker)
+
+호출 대상 서비스가 느리거나 죽었을 때 계속 기다리지 않도록 차단한다. Resilience4j가 Spring Boot에서 많이 쓰인다.
+
+```java
+@CircuitBreaker(name = "paymentService", fallbackMethod = "paymentFallback")
+public PaymentResult processPayment(PaymentRequest request) {
+    return paymentClient.charge(request);
+}
+
+// 서킷이 열렸을 때(결제 서비스 장애) 실행되는 폴백
+public PaymentResult paymentFallback(PaymentRequest request, Exception e) {
+    // 결제를 큐에 넣고 나중에 처리
+    paymentQueue.enqueue(request);
+    return PaymentResult.pending();
+}
+```
+
+```
+CLOSED(정상) → 실패율 50% 초과 → OPEN(차단)
+OPEN → 일정 시간 후 → HALF-OPEN(테스트) → 성공 → CLOSED
+```
+
+---
+
+## 모놀리식 vs SOA vs MSA
+
+| | 모놀리식 | SOA | MSA |
+|---|---|---|---|
+| 배포 단위 | 전체 하나 | 서비스 단위 | 서비스 단위 |
+| DB | 공유 | 공유 가능 | 서비스별 독립 |
+| 통신 | 함수 호출 | ESB | HTTP/gRPC/메시지 |
+| 트랜잭션 | DB 트랜잭션 | XA 트랜잭션 | Saga 패턴 |
+| 팀 구조 | 기능별 팀 | 서비스별 팀 | 서비스별 자율 팀 |
+| 운영 복잡도 | 낮음 | 높음 (ESB) | 매우 높음 |
+| 초기 개발 속도 | 빠름 | 중간 | 느림 |
+| 확장성 | 전체 스케일아웃 | 서비스 단위 | 서비스 단위 |
+
+---
+
+## MSA가 진짜 필요한 시점
+
+MSA는 기술 문제가 아니라 **조직 문제**를 해결하는 아키텍처다.
+
+**Conway's Law**: 시스템의 구조는 그것을 만드는 조직의 커뮤니케이션 구조를 닮는다.
+
+MSA가 적합한 시점:
+- 팀이 여러 개이고, 각 팀이 자신의 서비스를 **독립적으로 배포**해야 할 때
+- 서비스마다 **트래픽 패턴이 달라** 독립적인 스케일링이 필요할 때
+- 일부 기능에 **다른 기술 스택**이 더 적합할 때 (ML 서비스는 Python, 나머지는 Java)
+- 장애가 **전체 서비스에 전파**되지 않아야 할 때
+
+MSA가 맞지 않는 시점:
+- 소규모 팀 (5명 이하), 단일 팀
+- 도메인이 아직 안정되지 않음 (서비스 경계를 잘못 나누면 나중에 더 힘들다)
+- 운영 인프라(Kubernetes, 서비스 메시, 분산 트레이싱)가 갖춰지지 않음
+
+### Modular Monolith — 중간 단계
+
+MSA로 가기 전에 모듈형 모놀리식을 먼저 고려할 수 있다.
+
+```
+[단일 프로세스]
+  ├─ [주문 모듈]  ← 명확한 경계, 공개 API만 노출
+  ├─ [결제 모듈]  ← 내부 구현은 캡슐화
+  └─ [사용자 모듈] ← 모듈 간 직접 DB 접근 금지
+```
+
+배포는 단일 단위지만 코드 경계를 MSA처럼 엄격하게 관리한다. 도메인 경계가 명확해지면 그때 필요한 모듈만 서비스로 분리한다. MSA의 분산 시스템 복잡성 없이 많은 이점을 얻을 수 있다.
+
+---
+
+MSA는 은탄환이 아니다. 모놀리식이 가져오는 고통이 실제로 느껴지기 전에 MSA를 적용하면, 분산 시스템의 복잡함만 얻고 이점은 얻지 못한다. "언제 MSA를 해야 하는가"라는 질문의 답은 결국 "팀과 서비스가 모놀리식의 배포·확장 한계에 부딪혔을 때"다.
