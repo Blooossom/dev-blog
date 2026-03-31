@@ -1,0 +1,299 @@
+---
+title: React Server Components 완벽 정리
+date: '2026-03-31'
+category: Frontend
+tags:
+  - React
+  - RSC
+  - Next.js
+  - Server Components
+summary: >-
+  React Server Components(RSC)는 컴포넌트를 서버에서 렌더링해 번들 크기를 줄이고 데이터 패칭을 단순화하는 패러다임이다.
+  RSC의 동작 원리, 클라이언트 컴포넌트와의 차이, 장단점을 실전 예제와 함께 정리한다.
+thumbnail: /thumbnails/react-server-components.svg
+---
+
+기존 React는 모든 컴포넌트를 클라이언트(브라우저)에서 실행했다. 데이터가 필요하면 클라이언트에서 API를 호출하고, 무거운 라이브러리도 전부 JS 번들에 포함됐다.
+React Server Components(RSC)는 이 패러다임을 뒤집어, 컴포넌트 자체를 서버에서 실행하고 그 결과만 클라이언트로 보낸다.
+
+## RSC란 무엇인가
+
+RSC는 **서버에서만 실행되는 React 컴포넌트**다. 렌더링 결과(React Element Tree)만 클라이언트로 전송되며, 컴포넌트 코드 자체는 브라우저 번들에 포함되지 않는다.
+
+```
+기존 방식
+Client → 서버에서 HTML + JS 번들 수신 → 브라우저에서 Hydration → 렌더링
+
+RSC 방식
+Client → 서버에서 RSC 실행 → RSC Payload(직렬화된 트리) 전송 → 클라이언트 컴포넌트만 Hydration
+```
+
+Next.js App Router 기준으로, `app/` 디렉토리 내 모든 컴포넌트는 **기본적으로 Server Component**다.
+
+---
+
+## Server Component vs Client Component
+
+| 구분 | Server Component | Client Component |
+|------|-----------------|-----------------|
+| 실행 위치 | 서버 | 브라우저 |
+| JS 번들 포함 | X | O |
+| `useState` / `useEffect` | X | O |
+| 이벤트 핸들러 | X | O |
+| DB / 파일시스템 직접 접근 | O | X |
+| 브라우저 API (`window`, `document`) | X | O |
+| 선언 방법 | 기본값 | `'use client'` 명시 |
+
+### Server Component 예시
+
+```tsx
+// app/products/page.tsx (Server Component - 별도 선언 불필요)
+import { db } from '@/lib/db'
+
+export default async function ProductsPage() {
+  // 서버에서 직접 DB 조회 → API 레이어 불필요
+  const products = await db.product.findMany({
+    orderBy: { createdAt: 'desc' },
+  })
+
+  return (
+    <ul>
+      {products.map((product) => (
+        <li key={product.id}>{product.name}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### Client Component 예시
+
+```tsx
+'use client'
+// 인터랙션이 필요한 컴포넌트만 Client Component로 선언
+
+import { useState } from 'react'
+
+export function Counter() {
+  const [count, setCount] = useState(0)
+
+  return (
+    <button onClick={() => setCount(count + 1)}>
+      클릭 수: {count}
+    </button>
+  )
+}
+```
+
+---
+
+## 컴포넌트 합성 패턴
+
+RSC와 Client Component는 **함께 사용**할 수 있다. 핵심 규칙은 하나다.
+
+> **Server Component는 Client Component를 import할 수 있다.**
+> **Client Component는 Server Component를 import할 수 없다. (children으로는 전달 가능)**
+
+```tsx
+// app/dashboard/page.tsx (Server Component)
+import { UserStats } from '@/components/UserStats'     // Server Component
+import { InteractiveChart } from '@/components/Chart'  // Client Component
+
+export default async function DashboardPage() {
+  const stats = await fetchUserStats() // 서버에서 직접 데이터 패칭
+
+  return (
+    <div>
+      <UserStats stats={stats} />
+      <InteractiveChart data={stats.chartData} />
+    </div>
+  )
+}
+```
+
+### children으로 Server Component 전달하기
+
+Client Component 안에서도 Server Component의 결과를 `children`으로 받을 수 있다.
+
+```tsx
+'use client'
+
+// 레이아웃 래퍼 (Client Component)
+export function AnimatedWrapper({ children }: { children: React.ReactNode }) {
+  const [visible, setVisible] = useState(true)
+
+  return (
+    <div style={{ opacity: visible ? 1 : 0 }}>
+      <button onClick={() => setVisible(!visible)}>토글</button>
+      {children} {/* Server Component의 결과물이 여기 들어온다 */}
+    </div>
+  )
+}
+```
+
+```tsx
+// page.tsx (Server Component)
+import { AnimatedWrapper } from '@/components/AnimatedWrapper'
+import { HeavyDataComponent } from '@/components/HeavyDataComponent' // Server Component
+
+export default function Page() {
+  return (
+    <AnimatedWrapper>
+      <HeavyDataComponent /> {/* 서버에서 렌더링된 결과가 전달됨 */}
+    </AnimatedWrapper>
+  )
+}
+```
+
+---
+
+## 데이터 패칭 비교
+
+RSC 이전에는 클라이언트에서 데이터를 요청하는 방식이 일반적이었다.
+
+### 기존 방식 (Client Component)
+
+```tsx
+'use client'
+
+export function ProductList() {
+  const [products, setProducts] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/products')
+      .then((res) => res.json())
+      .then((data) => {
+        setProducts(data)
+        setLoading(false)
+      })
+  }, [])
+
+  if (loading) return <div>로딩 중...</div>
+
+  return (
+    <ul>
+      {products.map((p) => <li key={p.id}>{p.name}</li>)}
+    </ul>
+  )
+}
+```
+
+### RSC 방식
+
+```tsx
+// Server Component - useEffect, useState, API 라우트 전부 불필요
+export async function ProductList() {
+  const products = await fetch('https://api.example.com/products', {
+    next: { revalidate: 60 }, // 60초마다 재검증 (ISR)
+  }).then((res) => res.json())
+
+  return (
+    <ul>
+      {products.map((p: Product) => <li key={p.id}>{p.name}</li>)}
+    </ul>
+  )
+}
+```
+
+코드가 절반 이하로 줄어들고, 로딩 상태 처리도 Next.js의 `loading.tsx`로 위임할 수 있다.
+
+---
+
+## 장점
+
+### 1. 번들 크기 감소
+
+Server Component의 의존성은 JS 번들에 포함되지 않는다.
+무거운 파싱/포매팅 라이브러리를 서버에서만 쓰면 클라이언트 번들에 영향이 없다.
+
+```tsx
+// 이 라이브러리들은 번들에 포함되지 않음
+import { marked } from 'marked'        // 약 45KB
+import { highlight } from 'highlight.js' // 약 200KB
+
+export async function MarkdownPost({ slug }: { slug: string }) {
+  const content = await readFile(`posts/${slug}.md`, 'utf-8')
+  const html = marked(highlight(content))
+  return <div dangerouslySetInnerHTML={{ __html: html }} />
+}
+```
+
+### 2. 데이터 패칭 단순화
+
+DB나 내부 API를 서버에서 직접 호출하므로, 불필요한 API 라우트를 만들 필요가 없다.
+네트워크 왕복도 서버 내부에서 처리되므로 지연이 줄어든다.
+
+### 3. 보안 향상
+
+DB 접속 정보, API 키 등 민감한 정보가 클라이언트로 노출되지 않는다.
+
+```tsx
+// 환경변수가 서버에서만 사용됨 → 브라우저에 절대 노출되지 않음
+const apiKey = process.env.INTERNAL_API_KEY
+
+const data = await fetch('https://internal-api/data', {
+  headers: { Authorization: `Bearer ${apiKey}` },
+})
+```
+
+### 4. 초기 로딩 성능 향상
+
+HTML을 서버에서 완성해서 보내므로 FCP(First Contentful Paint)가 빨라진다.
+클라이언트는 JS를 다운로드하고 실행하기 전에 이미 콘텐츠를 볼 수 있다.
+
+---
+
+## 단점
+
+### 1. 인터랙티브 기능 제한
+
+`useState`, `useEffect`, 이벤트 핸들러를 사용할 수 없다.
+사용자 인터랙션이 필요한 UI는 반드시 Client Component로 분리해야 한다.
+
+### 2. Context API 사용 불가
+
+React Context는 Client Component에서만 동작한다.
+전역 상태가 필요한 경우 설계에 제약이 생긴다.
+
+```tsx
+// ❌ Server Component에서는 동작하지 않음
+const theme = useContext(ThemeContext)
+
+// ✅ props로 전달하거나 Client Component로 분리
+```
+
+### 3. 디버깅 난이도 상승
+
+서버/클라이언트 경계가 명확하지 않으면 에러 메시지가 직관적이지 않다.
+특히 `'use client'` 누락 시 런타임 에러가 발생한다.
+
+### 4. 실시간 데이터에 부적합
+
+RSC는 요청 시점에 렌더링되므로, 실시간으로 변하는 데이터(채팅, 주가 등)에는 적합하지 않다.
+이런 경우 Client Component + WebSocket/SSE 조합을 써야 한다.
+
+### 5. 학습 곡선
+
+서버/클라이언트 컴포넌트 경계를 올바르게 설계하는 것 자체가 새로운 역량을 요구한다.
+기존 SPA 개발 방식과 사고 방식이 많이 다르다.
+
+---
+
+## 언제 무엇을 쓸까
+
+```
+데이터 조회, DB 접근, 민감 정보 처리
+    → Server Component
+
+클릭, 입력, 애니메이션, useState/useEffect
+    → Client Component
+
+둘 다 필요하다면
+    → Server Component가 데이터를 가져와 Client Component에 props로 전달
+```
+
+---
+
+RSC는 "서버에서 할 수 있는 건 서버에서"라는 원칙을 React 컴포넌트 레벨로 끌어내린 아이디어다.
+번들 크기, 보안, 성능 모두 서버 컴포넌트로 얻을 수 있지만, 인터랙션이 필요한 부분은 여전히 클라이언트 컴포넌트가 담당하므로 **경계를 어디에 그을지 설계하는 것**이 RSC 활용의 핵심이다.

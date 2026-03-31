@@ -407,6 +407,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'optimistic-pessimistic-update':  { pattern: 'browser',  colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'kubernetes-basics':              { pattern: 'network',  colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
   'redis-caching-strategy':         { pattern: 'layers',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'react-server-components':        { pattern: 'browser',  colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'spring-boot-4-features':         { pattern: 'spring' },
   'spring-http-clients-comparison': { pattern: 'flow',     colors: { accent: '#6ee7b7' } },
   'tree-shaking':                   { pattern: 'network',  colors: { bg1: '#0f1a2e', bg2: '#1e3460', accent: '#7dd3fc', accent2: '#bae6fd' } },
