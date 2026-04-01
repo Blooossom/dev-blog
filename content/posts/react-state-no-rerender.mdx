@@ -1,0 +1,261 @@
+---
+title: React useState가 바뀌었는데 리렌더가 안 될 때
+date: '2026-04-01'
+category: Frontend
+tags:
+  - React
+  - useState
+  - Rendering
+  - Immutability
+summary: >-
+  setState를 호출했는데 화면이 바뀌지 않는 상황은 대부분 React의 동일성 비교(Object.is) 규칙을 이해하지 못해서 생긴다.
+  리렌더가 일어나지 않는 원인 패턴과 각각의 올바른 해결 방법을 정리한다.
+thumbnail: /thumbnails/react-state-no-rerender.svg
+---
+
+`setState`를 분명히 호출했는데 화면이 그대로인 경험은 React를 쓰다 보면 누구나 한 번씩 마주친다.
+원인은 거의 항상 하나로 귀결된다 — **React는 이전 상태와 새 상태를 `Object.is`로 비교하고, 같으면 리렌더를 건너뛴다.**
+
+## React의 상태 비교 기준: Object.is
+
+```ts
+// React 내부 (단순화)
+function dispatchSetState(fiber, queue, action) {
+  const newState = typeof action === 'function'
+    ? action(currentState)
+    : action
+
+  // 같으면 리렌더 스킵
+  if (Object.is(newState, currentState)) {
+    return
+  }
+
+  scheduleUpdateOnFiber(fiber)
+}
+```
+
+`Object.is`는 원시값은 값 비교, 객체/배열은 **참조(레퍼런스) 비교**를 한다.
+
+```ts
+Object.is(1, 1)         // true  → 리렌더 안 함
+Object.is('a', 'a')     // true  → 리렌더 안 함
+Object.is({}, {})       // false → 리렌더 함 (참조가 다름)
+Object.is(arr, arr)     // true  → 리렌더 안 함 (같은 참조)
+```
+
+---
+
+## 패턴 1: 객체를 직접 수정 후 setState
+
+가장 흔한 실수다. 기존 객체를 수정한 뒤 같은 참조를 setState에 넘기면 React는 변화를 감지하지 못한다.
+
+```tsx
+const [user, setUser] = useState({ name: 'Alice', age: 20 })
+
+// ❌ 기존 객체를 직접 수정
+function handleClick() {
+  user.age = 21          // user 객체 자체를 변경
+  setUser(user)          // 참조가 그대로 → Object.is(user, user) === true → 리렌더 안 함
+}
+
+// ✅ 새 객체를 만들어서 넘기기
+function handleClick() {
+  setUser({ ...user, age: 21 })  // 새 참조 → 리렌더 발생
+}
+```
+
+---
+
+## 패턴 2: 배열을 직접 수정 (push, splice, sort…)
+
+```tsx
+const [items, setItems] = useState<string[]>([])
+
+// ❌ 배열을 직접 변이
+function addItem(item: string) {
+  items.push(item)       // 배열 내용은 바뀌지만 참조는 그대로
+  setItems(items)        // 리렌더 안 함
+}
+
+// ✅ 새 배열 반환
+function addItem(item: string) {
+  setItems([...items, item])         // 추가
+}
+
+function removeItem(index: number) {
+  setItems(items.filter((_, i) => i !== index))  // 삭제
+}
+
+function updateItem(index: number, next: string) {
+  setItems(items.map((v, i) => i === index ? next : v))  // 수정
+}
+```
+
+`push`, `pop`, `splice`, `sort`, `reverse` 등은 모두 원본 배열을 변이시키므로 사용 금지다.
+
+---
+
+## 패턴 3: 중첩 객체를 얕게 복사
+
+스프레드 연산자는 **1단계만** 복사한다. 중첩된 객체는 여전히 같은 참조를 공유한다.
+
+```tsx
+const [state, setState] = useState({
+  user: { name: 'Alice', address: { city: 'Seoul' } }
+})
+
+// ❌ 얕은 복사 — state.user.address는 여전히 같은 참조
+function handleClick() {
+  setState({
+    ...state,
+    user: {
+      ...state.user,
+      address: state.user.address,  // 이 부분을 바꾸지 않으면
+    }
+  })
+  // React 입장: 새 state 객체지만 address가 같으면 하위 컴포넌트 리렌더 안 할 수도 있음
+}
+
+// ✅ 변경되는 중첩 수준까지 전부 새 객체로
+function updateCity(city: string) {
+  setState({
+    ...state,
+    user: {
+      ...state.user,
+      address: { ...state.user.address, city },
+    }
+  })
+}
+```
+
+중첩이 깊다면 [Immer](https://immerjs.github.io/immer/)를 쓰면 훨씬 간결해진다.
+
+```tsx
+import { produce } from 'immer'
+
+function updateCity(city: string) {
+  setState(produce(draft => {
+    draft.user.address.city = city  // 직접 수정처럼 보이지만 내부적으로 새 객체 생성
+  }))
+}
+```
+
+---
+
+## 패턴 4: 같은 원시값으로 setState
+
+값이 실제로 바뀌지 않았다면 리렌더가 일어나지 않는 게 정상이다.
+하지만 이걸 모르면 버그라고 착각하기도 한다.
+
+```tsx
+const [count, setCount] = useState(0)
+
+// count가 이미 0일 때
+setCount(0)  // Object.is(0, 0) === true → 리렌더 안 함 (의도된 동작)
+```
+
+---
+
+## 패턴 5: 클로저가 캡처한 오래된 상태
+
+`useEffect`, 이벤트 핸들러 안의 상태 참조가 오래된 클로저를 보고 있을 때 발생한다.
+리렌더가 안 되는 것처럼 보이지만 실제로는 이전 상태 기준으로 연산이 잘못된 경우다.
+
+```tsx
+const [count, setCount] = useState(0)
+
+// ❌ 클로저가 count=0을 캡처한 채로 고정
+useEffect(() => {
+  const id = setInterval(() => {
+    setCount(count + 1)  // 항상 0 + 1 = 1이 됨
+  }, 1000)
+  return () => clearInterval(id)
+}, [])  // 의존성 배열이 비어 있어 count가 갱신돼도 콜백은 최초 count=0을 봄
+
+// ✅ 함수형 업데이트로 최신 상태 참조
+useEffect(() => {
+  const id = setInterval(() => {
+    setCount(prev => prev + 1)  // 항상 최신 상태 기준 +1
+  }, 1000)
+  return () => clearInterval(id)
+}, [])
+```
+
+---
+
+## 패턴 6: 부모가 리렌더되지 않아 자식도 안 됨
+
+자식 컴포넌트 자체의 상태 변경이 아니라, **props를 통해 받는 값이 바뀌어야 하는데** 부모 상태가 업데이트되지 않은 경우다.
+
+```tsx
+// ❌ 부모 컴포넌트 — items를 외부 변수로 관리
+let items = ['a', 'b']  // React 상태가 아님
+
+function Parent() {
+  const handleAdd = () => {
+    items.push('c')  // React가 모르는 변경 → 부모 리렌더 없음 → 자식도 그대로
+  }
+
+  return <Child items={items} />
+}
+
+// ✅ useState로 관리해야 React가 변경을 인식
+function Parent() {
+  const [items, setItems] = useState(['a', 'b'])
+
+  const handleAdd = () => {
+    setItems([...items, 'c'])
+  }
+
+  return <Child items={items} />
+}
+```
+
+---
+
+## 패턴 7: React.memo가 변경을 막는 경우
+
+`React.memo`는 props가 같으면 리렌더를 건너뛴다.
+객체/함수 props를 매 렌더링마다 새로 생성하면 `memo`가 항상 새 참조를 받아 리렌더가 일어나고,
+반대로 `useMemo`/`useCallback` 없이 복잡한 비교를 기대하면 원하는 시점에 리렌더가 안 될 수 있다.
+
+```tsx
+// ❌ 매 렌더링마다 새 객체 생성 → memo 무력화
+function Parent() {
+  return <MemoChild config={{ theme: 'dark' }} />  // 매번 새 참조
+}
+
+// ✅ useMemo로 참조 안정화
+function Parent() {
+  const config = useMemo(() => ({ theme: 'dark' }), [])
+  return <MemoChild config={config} />
+}
+```
+
+---
+
+## 진단 체크리스트
+
+```
+리렌더가 안 일어난다면 순서대로 확인
+
+1. setState에 넘기는 값이 새 참조인가?
+   → 객체/배열이면 스프레드/map/filter로 새 참조 생성
+
+2. 중첩 객체라면 변경된 수준까지 전부 새 객체로 만들었는가?
+
+3. 배열을 push/splice/sort로 직접 변이하지 않았는가?
+
+4. 함수형 업데이트(prev => ...)를 써야 하는 상황인가?
+   → 이전 상태를 기반으로 새 상태를 계산할 때는 항상 함수형 업데이트
+
+5. React.memo가 변경을 가로막고 있지 않은가?
+
+6. 변경되는 값이 React 상태인가, 일반 변수인가?
+```
+
+---
+
+React가 리렌더를 건너뛰는 것은 버그가 아니라 **의도된 최적화**다.
+"상태가 바뀌었다"는 것을 React에게 알리려면 반드시 새로운 참조나 새로운 원시값을 setState에 넘겨야 한다.
+불변성(Immutability)은 React와의 계약이다.

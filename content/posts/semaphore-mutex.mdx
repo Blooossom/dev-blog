@@ -1,0 +1,345 @@
+---
+title: 세마포어와 뮤텍스 — 동시성 제어의 핵심 도구
+date: '2026-04-01'
+category: Backend
+tags:
+  - Concurrency
+  - Semaphore
+  - Mutex
+  - OS
+  - Java
+  - Thread
+summary: >-
+  뮤텍스와 세마포어는 멀티스레드 환경에서 공유 자원을 보호하는 동시성 제어 메커니즘이다.
+  두 개념의 차이, 동작 원리, 데드락 위험, Java 실전 코드까지 함께 정리한다.
+thumbnail: /thumbnails/semaphore-mutex.svg
+---
+
+멀티스레드 프로그램에서 여러 스레드가 같은 자원에 동시에 접근하면 데이터 일관성이 깨진다.
+뮤텍스와 세마포어는 이 문제를 해결하는 가장 기본적인 동기화 도구다.
+
+## 임계 구역(Critical Section) 문제
+
+두 스레드가 동시에 `count++`를 실행하면 어떻게 될까?
+
+```
+count = 0
+
+Thread A: count 읽기 (0)
+Thread B: count 읽기 (0)       ← A가 쓰기 전에 B도 읽음
+Thread A: count + 1 = 1, 저장
+Thread B: count + 1 = 1, 저장  ← 기대값 2가 아닌 1이 됨
+```
+
+이처럼 결과가 실행 순서에 따라 달라지는 상황을 **Race Condition(경쟁 상태)**라고 한다.
+임계 구역은 한 번에 하나의 스레드만 진입해야 하는 코드 구간이다.
+
+---
+
+## 뮤텍스 (Mutex, Mutual Exclusion)
+
+뮤텍스는 **상호 배제**를 보장하는 잠금 장치다.
+**잠금(lock) / 해제(unlock)** 두 연산만 있으며, **소유권(ownership)** 개념이 있다.
+
+```
+뮤텍스 상태: LOCKED / UNLOCKED
+
+규칙:
+  1. 잠금을 획득한 스레드만 해제할 수 있다 (소유권)
+  2. 한 번에 하나의 스레드만 잠금을 획득할 수 있다
+  3. 잠금 획득 실패 시 블로킹 또는 스핀 대기
+```
+
+```
+Thread A          Thread B
+   │                 │
+lock() 성공 ──────── lock() 시도 → 블로킹
+   │                 │ (대기)
+  [임계 구역]         │
+   │                 │
+unlock() ─────────── lock() 성공
+                     │
+                    [임계 구역]
+                     │
+                  unlock()
+```
+
+### Java에서의 뮤텍스: synchronized
+
+Java의 `synchronized` 키워드는 내장 뮤텍스(Intrinsic Lock, 모니터 락)를 사용한다.
+
+```java
+public class Counter {
+    private int count = 0;
+
+    // 메서드 전체를 임계 구역으로
+    public synchronized void increment() {
+        count++;
+    }
+
+    // 특정 블록만 임계 구역으로
+    public void incrementBlock() {
+        synchronized (this) {
+            count++;
+        }
+    }
+
+    public synchronized int getCount() {
+        return count;
+    }
+}
+```
+
+### Java에서의 뮤텍스: ReentrantLock
+
+`synchronized`보다 세밀한 제어가 필요할 때 사용한다.
+
+```java
+import java.util.concurrent.locks.ReentrantLock;
+
+public class BankAccount {
+    private int balance;
+    private final ReentrantLock lock = new ReentrantLock();
+
+    public void withdraw(int amount) {
+        lock.lock();
+        try {
+            if (balance >= amount) {
+                balance -= amount;
+            }
+        } finally {
+            lock.unlock();  // 예외 발생해도 반드시 해제
+        }
+    }
+
+    // 타임아웃 있는 잠금 시도 — synchronized로는 불가능
+    public boolean tryWithdraw(int amount) throws InterruptedException {
+        if (lock.tryLock(1, TimeUnit.SECONDS)) {
+            try {
+                if (balance >= amount) {
+                    balance -= amount;
+                    return true;
+                }
+                return false;
+            } finally {
+                lock.unlock();
+            }
+        }
+        return false;  // 1초 내 잠금 획득 실패
+    }
+}
+```
+
+**ReentrantLock이 synchronized보다 유용한 경우**
+- `tryLock()`: 타임아웃 지정 가능, 비블로킹 시도
+- `lockInterruptibly()`: 대기 중 인터럽트 허용
+- 공정성(Fairness) 설정: `new ReentrantLock(true)` → 대기 순서대로 잠금 부여
+
+---
+
+## 세마포어 (Semaphore)
+
+세마포어는 **카운터 기반의 신호 메커니즘**이다.
+내부적으로 정수 카운터를 가지며, **P(acquire, 획득) / V(release, 반환)** 두 연산으로 동작한다.
+
+```
+세마포어 S = N (최대 N개 스레드 동시 접근 허용)
+
+acquire():
+  S > 0이면 S-- 후 진행
+  S == 0이면 블로킹 (자원이 반환될 때까지 대기)
+
+release():
+  S++
+  대기 중인 스레드가 있으면 하나 깨움
+```
+
+```
+Semaphore(2) — DB 커넥션 풀 예시
+
+Thread A: acquire() → S=1 → 진행
+Thread B: acquire() → S=0 → 진행
+Thread C: acquire() → S=0 → 블로킹 (대기)
+
+Thread A: release() → S=1 → Thread C 깨움
+Thread C: 진행
+```
+
+### Java에서의 세마포어
+
+```java
+import java.util.concurrent.Semaphore;
+
+// DB 커넥션 풀 시뮬레이션
+public class ConnectionPool {
+    private final Semaphore semaphore;
+    private final Queue<Connection> pool;
+
+    public ConnectionPool(int maxConnections) {
+        this.semaphore = new Semaphore(maxConnections, true); // true: 공정 모드
+        this.pool = new ConcurrentLinkedQueue<>();
+        for (int i = 0; i < maxConnections; i++) {
+            pool.offer(createConnection());
+        }
+    }
+
+    public Connection acquire() throws InterruptedException {
+        semaphore.acquire();  // 허용 수 초과 시 블로킹
+        return pool.poll();
+    }
+
+    public void release(Connection connection) {
+        pool.offer(connection);
+        semaphore.release();  // 대기 중인 스레드 하나 깨움
+    }
+}
+```
+
+```java
+// 동시 요청 수 제한 (Rate Limiting)
+public class ApiRateLimiter {
+    private final Semaphore semaphore = new Semaphore(10); // 동시 10개까지
+
+    public Response handleRequest(Request request) throws InterruptedException {
+        semaphore.acquire();
+        try {
+            return processRequest(request);
+        } finally {
+            semaphore.release();
+        }
+    }
+}
+```
+
+---
+
+## 뮤텍스 vs 세마포어 비교
+
+| 구분 | 뮤텍스 | 세마포어 |
+|------|--------|---------|
+| 허용 동시 접근 수 | 1 | N (설정 가능) |
+| 소유권 | 있음 (잠근 스레드만 해제 가능) | 없음 (다른 스레드가 release 가능) |
+| 주요 용도 | 단일 자원 보호 | 자원 풀 관리, 스레드 간 신호 |
+| 이진 세마포어 | 세마포어(1)와 유사하지만 소유권 차이 존재 | N=1이면 뮤텍스처럼 동작하나 소유권 없음 |
+| Java 구현 | `synchronized`, `ReentrantLock` | `Semaphore` |
+
+**핵심 차이: 소유권**
+
+```java
+// 뮤텍스 — 잠근 스레드만 해제 가능
+ReentrantLock mutex = new ReentrantLock();
+
+// Thread A
+mutex.lock();
+// Thread B가 mutex.unlock() 시도 시 → IllegalMonitorStateException
+
+// 세마포어 — 누구든 release 가능
+Semaphore sem = new Semaphore(0);
+
+// Thread A: 이벤트 기다림
+sem.acquire();
+
+// Thread B: 이벤트 발생 시 신호 보냄
+sem.release();  // Thread A가 획득하지 않았어도 release 가능
+```
+
+이 소유권 특성 때문에 세마포어는 **스레드 간 신호 전달(Signal)**에도 사용할 수 있다.
+(초기값 0으로 설정하면 `acquire`는 `release`가 호출될 때까지 블로킹 → 조건 동기화 패턴)
+
+---
+
+## 데드락 (Deadlock)
+
+뮤텍스를 잘못 사용하면 데드락이 발생한다. 두 스레드가 서로가 가진 잠금을 기다리며 영원히 블로킹되는 상태다.
+
+```
+Thread A: lock(mutex1) 획득 → lock(mutex2) 대기
+Thread B: lock(mutex2) 획득 → lock(mutex1) 대기
+
+→ 둘 다 영원히 대기 (데드락)
+```
+
+### 데드락 발생 4가지 조건 (Coffman 조건)
+
+모두 충족되어야 데드락이 발생한다.
+
+```
+1. 상호 배제(Mutual Exclusion): 자원을 한 번에 하나의 스레드만 사용
+2. 점유와 대기(Hold and Wait): 자원을 가진 채로 다른 자원을 기다림
+3. 비선점(No Preemption): 강제로 자원을 빼앗을 수 없음
+4. 순환 대기(Circular Wait): A→B→C→A 형태의 순환 대기 체인
+```
+
+### 데드락 예방
+
+```java
+// ❌ 데드락 가능 — 잠금 순서가 스레드마다 다름
+void transferAtoB() {
+    synchronized (accountA) {
+        synchronized (accountB) { /* 이체 */ }
+    }
+}
+void transferBtoA() {
+    synchronized (accountB) {   // 반대 순서
+        synchronized (accountA) { /* 이체 */ }
+    }
+}
+
+// ✅ 항상 같은 순서로 잠금 획득 (순환 대기 제거)
+void transfer(Account from, Account to) {
+    Account first  = from.getId() < to.getId() ? from : to;
+    Account second = from.getId() < to.getId() ? to : from;
+
+    synchronized (first) {
+        synchronized (second) { /* 이체 */ }
+    }
+}
+```
+
+```java
+// ✅ tryLock으로 데드락 회피
+boolean transfer(Account from, Account to, int amount) throws InterruptedException {
+    while (true) {
+        if (from.lock.tryLock(50, TimeUnit.MILLISECONDS)) {
+            try {
+                if (to.lock.tryLock(50, TimeUnit.MILLISECONDS)) {
+                    try {
+                        from.balance -= amount;
+                        to.balance += amount;
+                        return true;
+                    } finally {
+                        to.lock.unlock();
+                    }
+                }
+            } finally {
+                from.lock.unlock();
+            }
+        }
+        // 획득 실패 → 짧게 대기 후 재시도 (Livelock 방지를 위해 랜덤 대기도 고려)
+        Thread.sleep(ThreadLocalRandom.current().nextInt(10));
+    }
+}
+```
+
+---
+
+## 실무에서의 선택 기준
+
+```
+단일 공유 자원 보호 (파일, 캐시, 카운터)
+  → synchronized 또는 ReentrantLock
+
+자원 풀 관리 (DB 커넥션, 스레드 풀 슬롯)
+  → Semaphore(N)
+
+스레드 간 이벤트 신호 전달
+  → Semaphore(0) 또는 CountDownLatch / CyclicBarrier
+
+읽기가 많고 쓰기가 적은 자원
+  → ReentrantReadWriteLock (읽기는 동시 허용, 쓰기만 배타)
+```
+
+---
+
+뮤텍스는 "한 번에 하나만"이라는 **배타적 소유권**, 세마포어는 "최대 N개까지"라는 **카운팅 신호**다.
+올바른 동기화 도구를 선택하고, 잠금 순서를 일관되게 유지하는 것이 데드락 없는 동시성 코드의 출발점이다.

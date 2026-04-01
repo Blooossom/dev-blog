@@ -1,0 +1,296 @@
+---
+title: React 메모이제이션 완벽 비교 — memo vs useMemo vs useCallback
+date: '2026-04-01'
+category: Frontend
+tags:
+  - React
+  - memo
+  - useMemo
+  - useCallback
+  - Performance
+  - Memoization
+summary: >-
+  React의 memo, useMemo, useCallback은 모두 불필요한 연산/리렌더를 막는 메모이제이션 도구지만, 목적과 적용 대상이 다르다.
+  각각의 동작 원리, 사용 시점, 남용했을 때의 부작용을 실전 예제와 함께 비교한다.
+thumbnail: /thumbnails/react-memoization.svg
+---
+
+React에서 성능 최적화를 이야기할 때 가장 먼저 나오는 API가 `memo`, `useMemo`, `useCallback`이다.
+셋 다 "메모이제이션"이라는 이름을 달고 있지만, **무엇을** 메모이제이션하는지가 완전히 다르다.
+
+## 세 가지 비교 요약
+
+| API | 메모이제이션 대상 | 목적 |
+|-----|----------------|------|
+| `React.memo` | **컴포넌트** | props가 같으면 리렌더 건너뜀 |
+| `useMemo` | **계산 결과값** | 의존성이 같으면 이전 값 재사용 |
+| `useCallback` | **함수 참조** | 의존성이 같으면 이전 함수 재사용 |
+
+---
+
+## React.memo — 컴포넌트 리렌더 방지
+
+`React.memo`는 **고차 컴포넌트(HOC)**다. 컴포넌트를 감싸면, 부모가 리렌더되더라도 props가 변경되지 않았다면 해당 컴포넌트의 리렌더를 건너뛴다.
+
+```tsx
+// memo 없이
+function Avatar({ name, imageUrl }: { name: string; imageUrl: string }) {
+  console.log('Avatar 렌더링')
+  return <img src={imageUrl} alt={name} />
+}
+
+// 부모가 리렌더될 때마다 Avatar도 무조건 리렌더됨
+```
+
+```tsx
+// memo 적용
+const Avatar = React.memo(function Avatar({
+  name,
+  imageUrl,
+}: {
+  name: string
+  imageUrl: string
+}) {
+  console.log('Avatar 렌더링')
+  return <img src={imageUrl} alt={name} />
+})
+
+// name, imageUrl이 동일하면 부모 리렌더 시에도 Avatar는 건너뜀
+```
+
+### 비교 방식: 얕은 비교(Shallow Equality)
+
+기본적으로 각 prop을 `Object.is`로 비교한다. 객체/배열/함수는 참조가 다르면 다른 값으로 판단한다.
+
+```tsx
+function Parent() {
+  const [count, setCount] = useState(0)
+
+  // ❌ 렌더링마다 새 객체/함수 생성 → Avatar는 매번 리렌더
+  const style = { color: 'red' }
+  const handleClick = () => console.log('clicked')
+
+  return (
+    <>
+      <button onClick={() => setCount(c => c + 1)}>+</button>
+      <Avatar name="Alice" style={style} onClick={handleClick} />
+    </>
+  )
+}
+```
+
+### 커스텀 비교 함수
+
+두 번째 인수로 비교 함수를 넘기면 더 세밀하게 제어할 수 있다.
+
+```tsx
+const Avatar = React.memo(
+  function Avatar({ user }: { user: User }) {
+    return <img src={user.imageUrl} alt={user.name} />
+  },
+  (prevProps, nextProps) => {
+    // true 반환 → 리렌더 건너뜀
+    // false 반환 → 리렌더 수행
+    return prevProps.user.id === nextProps.user.id
+  }
+)
+```
+
+---
+
+## useMemo — 계산 결과값 캐싱
+
+`useMemo`는 **비용이 큰 계산 결과를 캐싱**한다. 의존성 배열의 값이 변경될 때만 재계산한다.
+
+```tsx
+function ProductList({ products, filter }: Props) {
+  // ❌ 매 렌더링마다 전체 필터링 수행
+  const filtered = products.filter(p => p.category === filter)
+
+  // ✅ filter나 products가 바뀔 때만 재계산
+  const filtered = useMemo(
+    () => products.filter(p => p.category === filter),
+    [products, filter]
+  )
+
+  return <ul>{filtered.map(p => <li key={p.id}>{p.name}</li>)}</ul>
+}
+```
+
+### 참조 안정화에도 사용
+
+계산이 가볍더라도 **객체/배열의 참조를 안정시켜 memo 컴포넌트의 리렌더를 막을 때** 사용한다.
+
+```tsx
+function Parent({ userId }: { userId: string }) {
+  // ❌ 렌더링마다 새 객체 → 자식의 memo 무력화
+  const config = { userId, theme: 'dark' }
+
+  // ✅ userId가 바뀔 때만 새 객체 생성
+  const config = useMemo(() => ({ userId, theme: 'dark' }), [userId])
+
+  return <MemoChild config={config} />
+}
+```
+
+---
+
+## useCallback — 함수 참조 안정화
+
+`useCallback`은 **함수 자체를 캐싱**한다. 의존성이 바뀌지 않으면 같은 함수 참조를 반환한다.
+
+```tsx
+// useCallback(fn, deps) === useMemo(() => fn, deps)
+// 둘은 사실상 같다. useCallback은 함수에 특화된 문법적 편의 버전이다.
+```
+
+```tsx
+function TodoList({ todos }: { todos: Todo[] }) {
+  const [text, setText] = useState('')
+
+  // ❌ 렌더링마다 새 함수 생성 → MemoTodoItem의 memo 무력화
+  const handleDelete = (id: string) => {
+    deleteTodo(id)
+  }
+
+  // ✅ 참조 안정화
+  const handleDelete = useCallback((id: string) => {
+    deleteTodo(id)
+  }, [])  // deleteTodo가 안정적이면 빈 배열
+
+  return (
+    <>
+      <input value={text} onChange={e => setText(e.target.value)} />
+      {todos.map(todo => (
+        <MemoTodoItem key={todo.id} todo={todo} onDelete={handleDelete} />
+      ))}
+    </>
+  )
+}
+```
+
+### 이벤트 핸들러에서의 useCallback
+
+단순 이벤트 핸들러에는 `useCallback`이 **불필요**한 경우가 많다.
+
+```tsx
+// ❌ 과도한 useCallback — 의미 없음
+// 이 컴포넌트가 memo로 감싸지지 않았다면 useCallback은 오히려 비용만 추가
+function SimpleButton() {
+  const handleClick = useCallback(() => {
+    console.log('clicked')
+  }, [])
+
+  return <button onClick={handleClick}>클릭</button>
+}
+
+// ✅ memo 자식에게 전달하거나, 의존성으로 사용될 때만 useCallback
+```
+
+---
+
+## 세 가지를 조합하는 전형적인 패턴
+
+```tsx
+// 부모 컴포넌트
+function Dashboard({ userId }: { userId: string }) {
+  const [filter, setFilter] = useState('all')
+
+  // 1. 비용이 큰 데이터 가공 → useMemo
+  const chartData = useMemo(() => buildChartData(userId, filter), [userId, filter])
+
+  // 2. 자식에게 넘길 함수 → useCallback
+  const handleFilterChange = useCallback((next: string) => {
+    setFilter(next)
+  }, [])
+
+  return (
+    <>
+      {/* 3. 자주 리렌더되지 않아야 할 컴포넌트 → memo */}
+      <MemoFilterBar current={filter} onChange={handleFilterChange} />
+      <MemoChart data={chartData} />
+    </>
+  )
+}
+
+const MemoFilterBar = React.memo(FilterBar)
+const MemoChart = React.memo(Chart)
+```
+
+---
+
+## 남용했을 때의 부작용
+
+메모이제이션은 **공짜가 아니다.** 이전 값 저장, 의존성 비교, 클로저 유지에 메모리와 CPU가 소비된다.
+
+```
+useMemo / useCallback 비용:
+  - 의존성 배열 각 항목을 Object.is로 비교
+  - 이전 값을 Fiber 노드의 memoizedState에 보관
+  - 클로저가 외부 변수를 계속 참조
+
+불필요한 경우:
+  - 계산이 매우 단순한 경우 (덧셈, 문자열 연결 등)
+  - 자식 컴포넌트가 memo로 감싸지지 않은 경우
+  - 의존성이 매 렌더링마다 바뀌는 경우
+```
+
+```tsx
+// ❌ 아무 의미 없는 useMemo
+const doubled = useMemo(() => count * 2, [count])
+// ✅ 그냥 인라인으로
+const doubled = count * 2
+
+// ❌ 아무 의미 없는 useCallback (자식이 memo가 아님)
+const handleChange = useCallback((e) => setValue(e.target.value), [])
+// ✅ 그냥 인라인으로
+const handleChange = (e) => setValue(e.target.value)
+```
+
+---
+
+## 사용 시점 판단 기준
+
+```
+React.memo
+  → 부모가 자주 리렌더되고, 해당 컴포넌트의 렌더링 비용이 클 때
+  → props가 원시값 위주이거나, 참조를 안정화했을 때
+
+useMemo
+  → 계산이 O(n) 이상이고, 렌더링마다 실행되는 게 눈에 띄게 느릴 때
+  → memo 자식에게 객체/배열을 props로 전달할 때 참조 안정화 목적
+
+useCallback
+  → memo 자식에게 함수를 props로 전달할 때
+  → useEffect / useMemo의 의존성 배열에 함수를 포함해야 할 때
+```
+
+---
+
+## React Compiler (React 19+)
+
+React 19에서 도입된 **React Compiler**는 빌드 타임에 자동으로 메모이제이션을 삽입한다.
+올바르게 작성된 컴포넌트라면 `memo`, `useMemo`, `useCallback`을 수동으로 쓸 필요가 크게 줄어든다.
+
+```tsx
+// React Compiler 적용 시 — 아래 두 코드는 동일하게 최적화됨
+
+// 최적화 전
+function Component({ items, filter }) {
+  const filtered = items.filter(i => i.type === filter)
+  return <List items={filtered} />
+}
+
+// 컴파일러가 자동으로 아래처럼 변환
+function Component({ items, filter }) {
+  const filtered = useMemo(() => items.filter(i => i.type === filter), [items, filter])
+  return <MemoList items={filtered} />
+}
+```
+
+단, 사이드 이펙트가 있거나 불변성을 위반하는 코드는 컴파일러가 최적화하지 못하므로, 올바른 React 코드 작성이 선행 조건이다.
+
+---
+
+메모이제이션의 핵심은 **"이 컴포넌트/값이 실제로 불필요하게 재계산되고 있는가"를 먼저 측정하고, 그때 적용하는 것**이다.
+프로파일링 없이 습관적으로 붙이는 `useMemo`와 `useCallback`은 코드 복잡도만 높이고 성능 이득은 없는 경우가 많다.

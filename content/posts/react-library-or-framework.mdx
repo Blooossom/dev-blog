@@ -1,0 +1,174 @@
+---
+title: React는 라이브러리인가, 프레임워크인가
+date: '2026-04-01'
+category: Frontend
+tags:
+  - React
+  - Framework
+  - Library
+  - Next.js
+  - Architecture
+summary: >-
+  React는 공식적으로 "라이브러리"라고 소개하지만, 실제 개발 환경에서는 프레임워크에 가까운 경험을 제공한다.
+  라이브러리와 프레임워크의 차이, React가 어디에 속하는지, 그리고 이 구분이 왜 중요한지를 정리한다.
+thumbnail: /thumbnails/react-library-or-framework.svg
+---
+
+React 공식 문서 첫 줄은 오랫동안 "A JavaScript library for building user interfaces"였다.
+그런데 실제로 React로 개발하다 보면 라우팅, 상태 관리, 데이터 패칭, 빌드 파이프라인까지 갖춰야 한다.
+"라이브러리인데 왜 이렇게 할 게 많지?"라는 의문이 생기는 건 당연하다.
+
+## 라이브러리 vs 프레임워크
+
+두 개념의 차이는 **제어의 역전(Inversion of Control)** 여부로 구분한다.
+
+```
+라이브러리: 내 코드가 라이브러리를 호출한다
+            → 내가 주도권을 가짐
+            → "이 기능 써도 되고 안 써도 돼"
+
+프레임워크: 프레임워크가 내 코드를 호출한다
+            → 프레임워크가 주도권을 가짐 (Hollywood Principle: "Don't call us, we'll call you")
+            → "이 구조대로 코드를 작성해야 해"
+```
+
+### 라이브러리 예시 — jQuery
+
+```js
+// 내 코드가 jQuery를 호출. 언제, 어떻게 쓸지는 내가 결정
+$('#btn').on('click', () => {
+  $('#result').text('clicked')
+})
+```
+
+### 프레임워크 예시 — Angular
+
+```ts
+// Angular가 컴포넌트 생명주기를 호출. 내 코드는 그 안을 채움
+@Component({ selector: 'app-root', template: '...' })
+export class AppComponent implements OnInit {
+  ngOnInit() {
+    // Angular가 이 메서드를 호출해줌
+  }
+}
+```
+
+---
+
+## React는 어디에 속하는가
+
+공식적으로 React는 **라이브러리**다. 그 이유는 다음과 같다.
+
+### React가 라이브러리인 근거
+
+**1. UI 렌더링만 담당한다**
+
+React 자체는 `React.createElement`와 `ReactDOM.render`(또는 `createRoot`)로 UI를 그리는 것이 전부다.
+라우팅, 전역 상태 관리, HTTP 요청, 폼 검증 등은 React의 관심사가 아니다.
+
+```tsx
+// React가 실제로 하는 일의 본질
+const element = React.createElement('h1', null, 'Hello')
+ReactDOM.createRoot(document.getElementById('root')).render(element)
+```
+
+**2. 다른 환경에서 자유롭게 사용 가능하다**
+
+React Native(모바일), React Three Fiber(3D), Ink(CLI 터미널) 등 렌더러만 바꾸면 어디서든 쓸 수 있다.
+특정 프레임워크의 구조에 종속되지 않는다.
+
+**3. 애플리케이션 구조를 강제하지 않는다**
+
+파일 구조, 라우팅 방식, 상태 관리 방법을 React가 강제하지 않는다.
+모두 개발자가 선택한다.
+
+---
+
+### React가 프레임워크처럼 느껴지는 이유
+
+**1. 강제되는 사고 방식이 있다**
+
+단방향 데이터 흐름, 불변성, 선언형 UI라는 패러다임을 따르지 않으면 React가 제대로 동작하지 않는다.
+
+```tsx
+// React의 규칙을 어기면 동작하지 않음
+// - 상태를 직접 수정 (state.count++)
+// - 렌더 중 사이드 이펙트 실행
+// - Hook을 조건부로 호출
+```
+
+**2. 생태계가 사실상 표준을 형성했다**
+
+실제 React 개발에는 사실상 "필수" 조합이 생겼다.
+
+```
+라우팅           → React Router / TanStack Router
+서버 상태         → TanStack Query / SWR
+클라이언트 상태   → Zustand / Redux Toolkit / Jotai
+폼               → React Hook Form
+스타일           → Tailwind CSS / styled-components
+```
+
+이 조합이 Angular나 Vue 같은 프레임워크가 내장 제공하는 기능과 사실상 동등하다.
+
+**3. Next.js를 쓰는 순간 프레임워크가 된다**
+
+오늘날 React 개발의 상당수는 Next.js 위에서 이뤄진다.
+Next.js는 파일 기반 라우팅, 레이아웃, 서버 액션, 미들웨어 등 애플리케이션 구조 전반을 규정한다.
+
+```
+app/
+├── layout.tsx       ← Next.js가 이 파일을 루트 레이아웃으로 강제 인식
+├── page.tsx         ← 이 파일이 / 경로의 페이지
+├── (dashboard)/
+│   ├── layout.tsx   ← 중첩 레이아웃
+│   └── page.tsx
+└── api/
+    └── route.ts     ← API 라우트
+```
+
+Next.js는 React 위에 올라간 **프레임워크**다. React가 라이브러리이기 때문에 Next.js 같은 프레임워크가 그 위에 올라설 수 있다.
+
+---
+
+## 비교: React vs Angular vs Vue
+
+| 구분 | React | Angular | Vue |
+|------|-------|---------|-----|
+| 공식 분류 | 라이브러리 | 프레임워크 | 프레임워크 |
+| 라우팅 | 별도 설치 | 내장 | 내장 (Vue Router) |
+| 상태 관리 | 별도 선택 | 내장 (Service + RxJS) | 내장 (Pinia) |
+| HTTP | 별도 선택 | 내장 (HttpClient) | 별도 선택 |
+| 템플릿 문법 | JSX (JS 확장) | HTML 템플릿 + 지시자 | Single File Component |
+| 자유도 | 높음 | 낮음 (구조 강제) | 중간 |
+| 학습 곡선 | 낮음 → 높음 (생태계 선택 포함) | 높음 | 낮음 |
+
+---
+
+## 이 구분이 왜 중요한가
+
+**팀과 프로젝트 규모에 따라 선택이 달라진다**
+
+```
+소규모 팀 / 빠른 프로토타입
+  → React + 최소한의 라이브러리 선택이 자유롭고 빠름
+
+대규모 팀 / 일관성이 중요한 엔터프라이즈
+  → Angular처럼 구조가 강제되는 프레임워크가 유리
+  → 또는 React + Next.js + 정해진 조합으로 "사내 프레임워크화"
+
+풀스택 / SEO / 성능 중요
+  → Next.js, Remix 같은 프레임워크 필수
+```
+
+**"자유도"는 양날의 검이다**
+
+React가 강제하지 않는다는 건, 팀이 직접 결정해야 한다는 뜻이다.
+같은 React 프로젝트도 팀마다 구조가 크게 달라지고, 그로 인한 혼란이 생길 수 있다.
+Angular처럼 구조가 강제되면 자유는 줄지만 팀 간 코드 일관성은 높아진다.
+
+---
+
+React는 **라이브러리다** — UI를 그리는 책임만 가진다.
+하지만 현실에서 React는 Next.js와 생태계 조합을 통해 프레임워크 수준의 개발 경험을 제공한다.
+"라이브러리냐 프레임워크냐"보다 중요한 건, **내 프로젝트에 필요한 제어 수준이 어느 정도인가**를 파악하고 그에 맞는 도구를 선택하는 것이다.
