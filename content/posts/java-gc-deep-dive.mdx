@@ -1,0 +1,378 @@
+---
+title: Java GC 동작 원리 딥다이브
+date: '2026-04-01'
+category: Backend
+tags:
+  - Java
+  - GC
+  - JVM
+  - Performance
+  - G1GC
+  - ZGC
+summary: >-
+  Java GC는 단순히 메모리를 회수하는 것 이상으로, 힙 구조·세대별 가설·GC 알고리즘이 맞물린 정교한 시스템이다.
+  GC의 내부 동작 원리부터 G1GC, ZGC 튜닝까지 깊이 있게 정리한다.
+thumbnail: /thumbnails/java-gc-deep-dive.svg
+---
+
+Java 애플리케이션이 예고 없이 멈추거나, 메모리 사용량이 비정상적으로 치솟는다면 GC를 의심해야 한다.
+GC는 메모리를 자동으로 관리해주지만, 그 내부를 모르면 STW(Stop-The-World) 시간을 줄이거나 힙을 올바르게 튜닝할 수 없다.
+
+## JVM 힙 구조
+
+JVM 힙은 크게 **Young Generation**과 **Old Generation**으로 나뉜다.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                        Heap                              │
+│  ┌─────────────────────────────┐  ┌────────────────────┐ │
+│  │      Young Generation       │  │  Old Generation    │ │
+│  │  ┌────────┐  ┌────┐ ┌────┐  │  │   (Tenured)        │ │
+│  │  │  Eden  │  │ S0 │ │ S1 │  │  │                    │ │
+│  │  └────────┘  └────┘ └────┘  │  │                    │ │
+│  └─────────────────────────────┘  └────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
+
+Eden: 객체가 최초 생성되는 영역
+S0/S1 (Survivor): Minor GC 생존 객체를 교대로 보관
+Old: 오래 살아남은 객체가 승격(Promotion)되는 영역
+```
+
+> **Metaspace (Java 8+)**  
+> Java 7까지의 PermGen이 제거되고 Metaspace로 대체됐다. 클래스 메타데이터를 Native Memory에 저장하며, 기본적으로 크기 제한이 없어 OOM 발생 패턴이 달라졌다.
+
+---
+
+## 세대별 가설 (Generational Hypothesis)
+
+GC 설계의 핵심 전제다.
+
+> **"대부분의 객체는 생성 직후 곧 죽는다(die young)."**
+
+실제 프로그램 분석 결과, 98% 이상의 객체가 Minor GC 한두 번 안에 수거된다.
+이 가설 덕분에 Young 영역을 작게 유지하고 빠르게 수거하는 전략이 유효하다.
+
+---
+
+## GC 종류: Minor GC vs Major GC vs Full GC
+
+| 구분 | 대상 영역 | STW 시간 | 발생 빈도 |
+|------|----------|---------|---------|
+| Minor GC | Young | 짧음 (수ms) | 잦음 |
+| Major GC | Old | 김 (수백ms~초) | 드묾 |
+| Full GC | Young + Old + Metaspace | 가장 김 | 가장 드묾 |
+
+Full GC는 가장 피해야 할 이벤트다. 발생하면 JVM 전체가 멈춘다.
+
+---
+
+## Minor GC 동작 흐름
+
+```
+1. Eden 꽉 참 → Minor GC 트리거
+2. Eden + S0(현재 From) 의 살아있는 객체 탐색
+3. 살아있는 객체 → S1(To)으로 복사, age 1 증가
+4. age >= threshold(기본 15) → Old로 Promotion
+5. Eden + S0 전체 비움 (Copy 방식이므로 단편화 없음)
+6. S0 ↔ S1 역할 교체
+```
+
+```java
+// age 임계값 확인 / 조정
+// -XX:MaxTenuringThreshold=15 (기본값)
+
+// GC 로그 출력 (Java 9+)
+// -Xlog:gc*:file=gc.log:time,uptime:filecount=5,filesize=20m
+```
+
+Minor GC는 **Mark-Copy** 알고리즘을 쓰기 때문에 메모리 단편화가 없고 매우 빠르다.
+
+---
+
+## GC 알고리즘 기초
+
+### Mark-Sweep
+
+```
+1. Mark   : GC Root에서 시작해 참조 가능한 객체 전부 마킹
+2. Sweep  : 마킹되지 않은 객체 메모리 해제
+```
+
+단점: 해제 후 메모리 단편화 발생 → 연속 공간 할당 실패 가능
+
+### Mark-Sweep-Compact
+
+Sweep 후 살아있는 객체를 한쪽으로 모아 단편화 제거.
+단점: Compact 단계에서 객체 주소가 바뀌므로 참조 전부 업데이트 필요 → 느림
+
+### Mark-Copy
+
+Young Gen에서 사용. 살아있는 객체를 다른 영역(Survivor)으로 복사.
+원본 영역 전체를 한 번에 비울 수 있어 단편화 없음.
+
+### Tri-color Marking (G1GC / ZGC 기반)
+
+동시(Concurrent) GC에서 사용하는 핵심 기법.
+
+```
+White  : 아직 방문하지 않은 객체 (수거 후보)
+Gray   : 방문했지만 참조 필드를 아직 스캔하지 않은 객체
+Black  : 방문 완료, 모든 참조 필드 스캔 완료
+
+규칙: Black 객체가 White 객체를 직접 참조하면 안 됨
+      → 위반 시 Write Barrier로 감지 후 보정
+```
+
+---
+
+## GC 컬렉터 종류
+
+### Serial GC
+
+```bash
+-XX:+UseSerialGC
+```
+
+단일 스레드. STW 동안 모든 작업 중단.
+소규모 힙(수백MB), 단일 코어 환경에서만 적합.
+
+---
+
+### Parallel GC (Throughput Collector)
+
+```bash
+-XX:+UseParallelGC          # Java 8 기본값
+-XX:ParallelGCThreads=8
+```
+
+Young/Old GC 모두 멀티스레드로 처리. STW는 여전히 발생하지만 시간이 줄어든다.
+처리량(Throughput)이 중요한 배치 작업에 적합. 응답 지연에 민감한 서비스에는 부적합.
+
+---
+
+### CMS (Concurrent Mark Sweep) — Deprecated
+
+Java 9에서 Deprecated, Java 14에서 제거됐다.
+Old Gen을 애플리케이션 스레드와 동시에 수거하려 했으나 단편화 문제와 Concurrent Mode Failure로 Full GC가 빈번했다.
+
+---
+
+### G1GC (Garbage First GC)
+
+```bash
+-XX:+UseG1GC                 # Java 9+ 기본값
+-XX:MaxGCPauseMillis=200     # 목표 STW 시간 (기본 200ms)
+-XX:G1HeapRegionSize=16m     # Region 크기 (1~32MB, 2의 배수)
+```
+
+#### 핵심 아이디어: Region 기반 힙
+
+힙을 **동일한 크기의 Region**(기본 2048개)으로 나누고, 각 Region에 역할을 동적으로 부여한다.
+
+```
+┌────┬────┬────┬────┬────┬────┬────┬────┐
+│ E  │ E  │ S  │ O  │ O  │ H  │ E  │ O  │
+└────┴────┴────┴────┴────┴────┴────┴────┘
+E: Eden  S: Survivor  O: Old  H: Humongous (대형 객체)
+```
+
+Humongous 객체: Region 크기의 50% 초과 → 별도 Humongous Region에 직접 할당.
+Humongous 객체가 많으면 GC 성능이 저하되므로 `-XX:G1HeapRegionSize`를 늘려야 한다.
+
+#### G1GC 수거 흐름
+
+```
+1. Young-only Phase
+   - Minor GC (Evacuation Pause)
+   - Eden/Survivor Region에서 살아있는 객체를 다른 Region으로 복사 (STW)
+
+2. Concurrent Marking Cycle (Old Gen GC 준비)
+   a. Initial Mark   : GC Root 마킹 (STW, Minor GC와 병행)
+   b. Root Region Scan: Survivor → Old 참조 스캔 (Concurrent)
+   c. Concurrent Mark : 전체 힙 객체 그래프 마킹 (Concurrent)
+   d. Remark         : SATB(Snapshot At The Beginning) 처리 (STW, 짧음)
+   e. Cleanup        : 빈 Region 회수, 수거 우선순위 계산 (STW 일부)
+
+3. Mixed GC Phase
+   - Young Region + 가장 쓰레기 비율이 높은 Old Region 함께 수거
+   - -XX:G1MixedGCCountTarget 횟수만큼 반복
+```
+
+#### SATB (Snapshot At The Beginning)
+
+G1GC가 Concurrent 마킹 중 객체 참조 변경을 추적하는 메커니즘.
+
+```
+마킹 시작 시점의 힙 스냅샷을 기준으로 삼음
+마킹 도중 참조가 끊어진 객체도 이번 사이클에서는 살아있다고 간주
+→ 정확성 보장 대신 일부 garbage가 다음 사이클로 넘어갈 수 있음 (Floating Garbage)
+```
+
+---
+
+### ZGC (Z Garbage Collector)
+
+```bash
+-XX:+UseZGC                  # Java 15+ Production Ready
+-XX:SoftMaxHeapSize=28g      # Soft 힙 상한 (급증 시 초과 허용)
+-XX:ZCollectionInterval=5    # 강제 GC 주기(초), 0이면 비활성
+```
+
+목표: **STW 시간을 1~2ms 이하**로 유지. 수TB 힙도 지원.
+
+#### 핵심 기술: Colored Pointers + Load Barrier
+
+```
+객체 참조(포인터) 자체에 메타데이터 비트를 심는다.
+
+64bit 포인터 구조:
+┌──────────────────────────────────────────────────────┐
+│ 0~41 bit: 실제 주소 (4TB까지)                         │
+│ 42 bit: Finalizable                                   │
+│ 43 bit: Remapped                                      │
+│ 44 bit: Marked1                                       │
+│ 45 bit: Marked0                                       │
+└──────────────────────────────────────────────────────┘
+```
+
+객체에 접근할 때마다 **Load Barrier**가 포인터 색상을 검사한다.
+색상이 잘못됐으면 즉석에서 보정(Remap)하고 올바른 주소를 반환한다.
+이 덕분에 Relocation(객체 이동)을 STW 없이 Concurrent하게 수행할 수 있다.
+
+#### ZGC 수거 흐름
+
+```
+1. Pause Mark Start   (STW, ~1ms)  : GC Root 마킹 시작
+2. Concurrent Mark                 : 힙 전체 마킹
+3. Pause Mark End     (STW, ~1ms)  : 마킹 완료 처리
+4. Concurrent Prepare Relocate     : 수거할 Region 선정
+5. Pause Relocate Start (STW, ~1ms): Relocation 시작 마킹
+6. Concurrent Relocate             : 객체 이동 (Load Barrier가 접근 시 보정)
+```
+
+STW가 3번 발생하지만 각각 1~2ms 수준으로, 힙 크기와 거의 무관하다.
+
+---
+
+## GC 튜닝 실전
+
+### 힙 크기 설정
+
+```bash
+-Xms4g -Xmx4g   # 초기/최대 힙을 동일하게 → GC로 인한 힙 크기 조정 오버헤드 제거
+```
+
+초기와 최대를 다르게 설정하면 JVM이 힙을 늘리거나 줄일 때 Full GC가 발생한다.
+프로덕션에서는 반드시 동일하게 맞춘다.
+
+### G1GC 튜닝 핵심 파라미터
+
+```bash
+# STW 목표 시간 (기본 200ms, 낮출수록 처리량 감소)
+-XX:MaxGCPauseMillis=100
+
+# Old Gen 사용률이 이 값 초과 시 Concurrent Marking 트리거 (기본 45%)
+-XX:InitiatingHeapOccupancyPercent=35
+
+# Mixed GC 수행 횟수 (기본 8)
+-XX:G1MixedGCCountTarget=8
+
+# Survivor 영역 비율 (기본 0, JVM이 자동 조정)
+-XX:G1NewSizePercent=20
+-XX:G1MaxNewSizePercent=40
+
+# Humongous 객체 처리를 위한 Region 크기 확대
+-XX:G1HeapRegionSize=32m
+```
+
+### ZGC 튜닝
+
+ZGC는 의도적으로 튜닝 파라미터를 최소화했다.
+대부분의 경우 아래 두 가지만 설정해도 충분하다.
+
+```bash
+-Xms16g -Xmx16g
+-XX:+UseZGC
+```
+
+ZGC가 제대로 동작하지 않는 주요 원인은 **힙이 너무 작거나 할당 속도가 너무 빠른 경우**다.
+GC가 회수하는 속도보다 객체 할당 속도가 빠르면 "Allocation Stall"이 발생한다.
+
+---
+
+## GC 로그 분석
+
+```bash
+# Java 11+
+-Xlog:gc*:file=/var/log/app/gc.log:time,uptime,pid:filecount=10,filesize=50m
+```
+
+```
+# G1GC 로그 예시
+[2.450s][info][gc] GC(3) Pause Young (Normal) (G1 Evacuation Pause) 512M->134M(2048M) 12.345ms
+[2.450s][info][gc] GC(3) Pause Young (Concurrent Start) (G1 Humongous Allocation) 1024M->280M(2048M) 28.901ms
+[5.123s][info][gc] GC(4) Concurrent Mark Cycle
+[5.890s][info][gc] GC(4) Pause Remark 1200M->1200M(2048M) 3.456ms
+```
+
+주목할 포인트:
+- `Pause` 시간이 목표값을 지속적으로 초과 → `MaxGCPauseMillis` 또는 힙 크기 조정
+- `Humongous Allocation` 빈번 → `G1HeapRegionSize` 증가
+- `Concurrent Mark Cycle` 없이 Full GC 발생 → `IHOP` 값 낮추기
+
+---
+
+## GC 선택 기준
+
+```
+힙 크기가 작다 (< 4GB)  +  처리량 우선
+    → Parallel GC
+
+힙 크기 4~32GB  +  응답 지연 ≤ 200ms
+    → G1GC (기본값)
+
+힙 크기 > 32GB  OR  응답 지연 ≤ 10ms
+    → ZGC
+
+Java 21+ 사용 가능
+    → ZGC (Generational ZGC: -XX:+ZGenerational 활성화 시 처리량도 개선)
+```
+
+---
+
+## 자주 발생하는 GC 문제
+
+### Promotion Failure
+
+Minor GC 시 Old Gen에 공간이 부족해 객체를 Promotion하지 못하는 상황.
+결국 Full GC로 이어진다.
+
+```
+원인: Old Gen 단편화 또는 Old Gen 크기 부족
+해결: 힙 크기 증가, Humongous 객체 줄이기, 조기 Promotion 원인 제거
+```
+
+### Concurrent Mode Failure (G1GC)
+
+Concurrent Marking이 완료되기 전에 Old Gen이 가득 차는 상황.
+Full GC로 폴백된다.
+
+```
+원인: IHOP 값이 너무 높거나, Old Gen 할당 속도가 너무 빠름
+해결: -XX:InitiatingHeapOccupancyPercent 낮추기 (예: 45 → 30)
+```
+
+### Metaspace OOM
+
+클래스 로더 누수, 동적 클래스 생성(Reflection, Proxy, Lambda) 과다 시 발생.
+
+```bash
+# Metaspace 크기 제한 및 확인
+-XX:MaxMetaspaceSize=512m
+-XX:+PrintGCDetails  # Metaspace 사용량 출력
+```
+
+---
+
+GC는 "설정 한 번으로 끝"이 아니라 **애플리케이션 특성에 맞게 지속적으로 관찰하고 조정하는 과정**이다.
+GC 로그를 정기적으로 분석하고, STW 시간과 할당률을 모니터링하는 것이 안정적인 JVM 운영의 시작이다.
