@@ -1,0 +1,357 @@
+---
+title: MCP — Model Context Protocol 완벽 정리
+date: '2026-04-02'
+category: AI
+tags:
+  - MCP
+  - Model Context Protocol
+  - LLM
+  - Claude
+  - AI Agent
+  - Tool Use
+summary: >-
+  MCP(Model Context Protocol)는 LLM이 외부 도구와 데이터 소스를 표준화된 방식으로 연결하는 오픈 프로토콜이다.
+  MCP의 아키텍처, Host·Server·Client 구조, 핵심 기능, 그리고 직접 서버를 만드는 방법까지 정리한다.
+thumbnail: /thumbnails/mcp-model-context-protocol.svg
+---
+
+LLM은 학습 데이터의 한계 때문에 최신 정보를 모르고, 외부 시스템과 직접 상호작용하지 못한다.
+이를 해결하기 위해 각 회사마다 제각각 방식으로 도구를 연결했는데, **MCP(Model Context Protocol)**는 이 연결 방식을 표준화한 오픈 프로토콜이다.
+Anthropic이 2024년 11월에 공개했으며, 현재 Claude, Cursor, Windsurf, Zed 등 주요 AI 도구들이 채택하고 있다.
+
+## MCP가 해결하는 문제
+
+MCP 이전에는 LLM에 외부 도구를 연결하려면 각 애플리케이션마다 독자적인 통합 코드를 작성해야 했다.
+
+```
+MCP 이전:
+Claude ──── 독자 통합 ──── GitHub
+Claude ──── 독자 통합 ──── Slack
+Claude ──── 독자 통합 ──── DB
+Cursor ──── 독자 통합 ──── GitHub   ← 중복 작업
+Cursor ──── 독자 통합 ──── Slack
+
+MCP 이후:
+Claude ─┐
+Cursor ─┤── MCP 표준 ──── GitHub MCP Server
+Zed   ─┘              ├── Slack MCP Server
+                       └── DB MCP Server
+```
+
+도구는 MCP 서버로 한 번만 구현하면, MCP를 지원하는 모든 클라이언트에서 재사용 가능하다.
+
+---
+
+## 아키텍처: Host · Client · Server
+
+MCP는 세 가지 역할로 구성된다.
+
+```
+┌─────────────────────────────────┐
+│           Host (예: Claude)      │
+│  ┌──────────────────────────┐   │
+│  │       MCP Client          │   │
+│  └────────────┬─────────────┘   │
+└───────────────┼─────────────────┘
+                │ MCP Protocol (JSON-RPC 2.0)
+     ┌──────────┼──────────┐
+     ▼          ▼          ▼
+  MCP Server  MCP Server  MCP Server
+  (GitHub)    (Slack)     (DB)
+     │          │          │
+  GitHub API  Slack API   Database
+```
+
+### Host
+
+MCP 클라이언트를 포함하고 LLM을 실행하는 애플리케이션이다.
+Claude Desktop, Cursor, Claude Code 등이 Host다.
+사용자의 허가 정책을 관리하고, 여러 MCP 서버를 동시에 연결한다.
+
+### MCP Client
+
+Host 내부에서 MCP Server와 1:1 세션을 유지하는 컴포넌트다.
+MCP 프로토콜 메시지를 주고받는 실제 통신 담당자다.
+
+### MCP Server
+
+외부 도구나 데이터 소스를 MCP 표준으로 노출하는 경량 프로세스다.
+로컬에서 실행되거나, 원격 HTTP 서버로 배포될 수 있다.
+
+---
+
+## MCP의 세 가지 핵심 기능
+
+### 1. Tools (도구)
+
+LLM이 호출할 수 있는 함수다. 파일 읽기, API 호출, DB 쿼리 등 액션을 실행한다.
+
+```
+LLM: "파일 목록 보여줘"
+  → MCP Client: tools/call { name: "list_files", arguments: { path: "." } }
+  → MCP Server: 파일 시스템 접근 → 결과 반환
+  → LLM: 결과를 바탕으로 응답
+```
+
+Tools는 LLM이 외부 세계에 **행동**을 취할 수 있게 한다.
+
+### 2. Resources (리소스)
+
+파일, DB 레코드, API 응답 같은 **데이터를 컨텍스트로 제공**하는 기능이다.
+LLM이 읽을 수 있는 정보 소스다.
+
+```
+LLM: "현재 열린 파일 내용을 보여줘"
+  → MCP Client: resources/read { uri: "file:///project/main.ts" }
+  → MCP Server: 파일 내용 반환
+  → LLM: 파일 내용을 컨텍스트로 활용
+```
+
+### 3. Prompts (프롬프트)
+
+서버가 정의한 **재사용 가능한 프롬프트 템플릿**이다.
+자주 쓰는 작업 지시를 미리 정의해두고 호출한다.
+
+```
+MCP Server가 제공하는 프롬프트:
+  - "코드 리뷰 요청" 템플릿
+  - "커밋 메시지 작성" 템플릿
+  - "버그 리포트 작성" 템플릿
+```
+
+---
+
+## 통신 프로토콜
+
+MCP는 **JSON-RPC 2.0** 위에서 동작하며, 두 가지 전송 방식을 지원한다.
+
+### Stdio (로컬)
+
+MCP 서버를 자식 프로세스로 실행하고 표준 입출력으로 통신한다.
+로컬에서 실행되는 서버에 적합하다.
+
+```json
+// 요청 (JSON-RPC)
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "read_file",
+    "arguments": { "path": "/project/main.ts" }
+  }
+}
+
+// 응답
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [
+      { "type": "text", "text": "export function main() { ... }" }
+    ]
+  }
+}
+```
+
+### HTTP + SSE (원격)
+
+원격 MCP 서버를 HTTP로 연결한다.
+서버 → 클라이언트 메시지는 SSE(Server-Sent Events)로 스트리밍한다.
+
+---
+
+## MCP 서버 만들기 (TypeScript)
+
+`@modelcontextprotocol/sdk`를 사용해 직접 MCP 서버를 구현할 수 있다.
+
+```typescript
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import fs from "fs/promises";
+import path from "path";
+
+const server = new McpServer({
+  name: "file-manager",
+  version: "1.0.0",
+});
+
+// Tool 등록: 파일 읽기
+server.tool(
+  "read_file",
+  "지정된 경로의 파일 내용을 읽습니다",
+  { path: z.string().describe("읽을 파일 경로") },
+  async ({ path: filePath }) => {
+    const content = await fs.readFile(filePath, "utf-8");
+    return {
+      content: [{ type: "text", text: content }],
+    };
+  }
+);
+
+// Tool 등록: 디렉토리 목록
+server.tool(
+  "list_directory",
+  "디렉토리 내 파일 목록을 반환합니다",
+  { path: z.string().describe("디렉토리 경로") },
+  async ({ path: dirPath }) => {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    const list = entries
+      .map((e) => `${e.isDirectory() ? "[DIR]" : "[FILE]"} ${e.name}`)
+      .join("\n");
+    return {
+      content: [{ type: "text", text: list }],
+    };
+  }
+);
+
+// Resource 등록: 프로젝트 README 노출
+server.resource(
+  "readme",
+  "file:///project/README.md",
+  async (uri) => {
+    const content = await fs.readFile(
+      path.resolve(process.cwd(), "README.md"),
+      "utf-8"
+    );
+    return {
+      contents: [{ uri: uri.href, mimeType: "text/markdown", text: content }],
+    };
+  }
+);
+
+// Stdio 전송으로 서버 시작
+const transport = new StdioServerTransport();
+await server.connect(transport);
+```
+
+### Claude Desktop에 등록
+
+```json
+// ~/Library/Application Support/Claude/claude_desktop_config.json
+{
+  "mcpServers": {
+    "file-manager": {
+      "command": "node",
+      "args": ["/path/to/file-manager/dist/index.js"]
+    }
+  }
+}
+```
+
+---
+
+## MCP 서버 만들기 (Python)
+
+```python
+from mcp.server.fastmcp import FastMCP
+import httpx
+
+mcp = FastMCP("weather-server")
+
+@mcp.tool()
+async def get_weather(city: str) -> str:
+    """도시 이름으로 현재 날씨를 조회합니다."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"https://wttr.in/{city}",
+            params={"format": "3"},
+        )
+        return resp.text
+
+@mcp.tool()
+async def get_forecast(city: str, days: int = 3) -> str:
+    """도시의 N일 예보를 조회합니다."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"https://wttr.in/{city}",
+            params={"format": "j1"},
+        )
+        data = resp.json()
+        forecasts = data["weather"][:days]
+        result = []
+        for f in forecasts:
+            result.append(
+                f"{f['date']}: 최고 {f['maxtempC']}°C / 최저 {f['mintempC']}C"
+            )
+        return "\n".join(result)
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+---
+
+## Sampling — LLM이 LLM을 호출
+
+MCP의 고급 기능 중 하나다. MCP 서버가 Host에게 LLM 호출을 **역으로 요청**할 수 있다.
+서버가 중간 추론이나 텍스트 생성이 필요할 때 사용한다.
+
+```
+일반 흐름:    Host(LLM) → MCP Server → 외부 도구
+Sampling:     MCP Server → Host에게 LLM 호출 요청 → LLM 응답 → MCP Server 계속 처리
+```
+
+서버가 "이 데이터를 요약해줘"라고 LLM에게 요청하고, 그 결과를 받아 다음 처리에 활용하는 구조다.
+
+---
+
+## 주요 MCP 서버 생태계
+
+Anthropic과 커뮤니티가 공개한 MCP 서버들이 빠르게 늘고 있다.
+
+| 서버 | 기능 |
+|------|------|
+| `filesystem` | 로컬 파일 읽기/쓰기 |
+| `github` | 이슈, PR, 코드 검색 |
+| `slack` | 메시지 읽기/전송, 채널 관리 |
+| `postgres` | SQL 쿼리 실행 |
+| `brave-search` | 웹 검색 |
+| `puppeteer` | 브라우저 자동화 |
+| `memory` | 영구 메모리 저장소 |
+| `sequential-thinking` | 단계별 사고 가이드 |
+
+---
+
+## MCP vs Function Calling
+
+OpenAI의 Function Calling과 비교하면 차이가 명확해진다.
+
+| 구분 | Function Calling | MCP |
+|------|-----------------|-----|
+| 표준화 | 없음 (각 LLM 독자 구현) | 오픈 표준 프로토콜 |
+| 재사용 | LLM별로 재구현 필요 | 한 번 만들면 모든 MCP 클라이언트에서 사용 |
+| 데이터 제공 | 없음 (Tool만) | Resources로 컨텍스트 데이터 제공 |
+| 프로세스 모델 | 인프로세스 | 별도 프로세스/서버 |
+| 보안 | 애플리케이션 수준 | 서버별 격리, Host가 권한 관리 |
+
+---
+
+## 보안 고려사항
+
+MCP 서버는 파일 시스템, DB, 외부 API에 접근하므로 보안이 중요하다.
+
+```
+1. 최소 권한 원칙
+   → 서버가 꼭 필요한 리소스에만 접근하도록 범위 제한
+
+2. 사용자 승인
+   → Host는 Tool 실행 전 사용자에게 확인 요청 (민감한 작업)
+
+3. 입력 검증
+   → Tool 인자를 Zod 등으로 엄격하게 검증
+   → 경로 순회(Path Traversal) 등 인젝션 공격 방어
+
+4. 신뢰 경계
+   → 로컬 서버와 원격 서버를 다르게 취급
+   → 원격 서버는 TLS + 인증 필수
+
+5. Prompt Injection 주의
+   → 외부 데이터(웹 페이지, 파일)에 악의적 지시가 포함될 수 있음
+```
+
+---
+
+MCP는 LLM과 외부 세계를 연결하는 **USB-C 같은 표준 인터페이스**를 목표로 한다.
+지금은 로컬 개발 환경 통합이 주된 사용처지만, 원격 MCP 서버와 멀티 에이전트 오케스트레이션으로 발전하면서 AI 에이전트 생태계의 핵심 인프라가 될 가능성이 높다.
