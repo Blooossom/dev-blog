@@ -1,0 +1,578 @@
+---
+title: Spring Cloud Gateway 완벽 정리
+date: '2026-04-02'
+category: Backend
+tags:
+  - Spring
+  - Spring Cloud Gateway
+  - MSA
+  - API Gateway
+  - Reactive
+summary: >-
+  Spring Cloud Gateway는 MSA 환경에서 단일 진입점을 제공하는 API 게이트웨이다.
+  Route·Predicate·Filter 구조, 인증·로드밸런싱·속도 제한 구현까지 실전 코드와 함께 정리한다.
+thumbnail: /thumbnails/spring-cloud-gateway.svg
+---
+
+MSA에서 클라이언트가 각 서비스 주소를 직접 알고 호출하면 서비스 증가에 따라 관리가 불가능해진다.
+**API Gateway**는 모든 외부 요청의 단일 진입점이 되어 라우팅, 인증, 로깅, 속도 제한을 중앙에서 처리한다.
+Spring Cloud Gateway는 Spring WebFlux 기반의 리액티브 API 게이트웨이로, Netty 위에서 논블로킹으로 동작한다.
+
+## 전체 구조
+
+```
+Client
+  │
+  ▼
+┌──────────────────────────────────────────┐
+│           Spring Cloud Gateway            │
+│                                          │
+│  Request → [Predicate] → [Filter Chain] → Proxying
+│                                ↕
+│              GlobalFilter / GatewayFilter │
+└──────────────────────────────────────────┘
+          │           │           │
+     User Service  Order Service  Product Service
+```
+
+요청이 들어오면:
+1. **Route**의 **Predicate**로 어느 서비스로 보낼지 판단
+2. **Filter**에서 전처리(인증, 헤더 추가 등) 수행
+3. 업스트림 서비스로 프록시
+4. **Filter**에서 후처리(응답 변환, 로깅 등) 수행
+
+---
+
+## 의존성 설정
+
+```gradle
+// build.gradle
+dependencies {
+    implementation 'org.springframework.cloud:spring-cloud-starter-gateway'
+    implementation 'org.springframework.cloud:spring-cloud-starter-netflix-eureka-client' // 서비스 디스커버리
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.cloud:spring-cloud-dependencies:2023.0.1"
+    }
+}
+```
+
+> Spring Cloud Gateway는 WebFlux 기반이므로 `spring-boot-starter-web`과 함께 사용하면 충돌이 난다. 반드시 제거해야 한다.
+
+---
+
+## Route · Predicate · Filter
+
+### Route (라우트)
+
+게이트웨이의 기본 단위다. **ID, 목적지 URI, Predicate 목록, Filter 목록**으로 구성된다.
+
+### Predicate (술어)
+
+HTTP 요청의 조건을 정의한다. 조건을 만족하면 해당 Route로 요청이 전달된다.
+
+### Filter (필터)
+
+요청/응답을 가로채 변환한다. 전처리(Pre)와 후처리(Post) 모두 가능하다.
+
+---
+
+## YAML 기반 라우트 설정
+
+```yaml
+# application.yml
+spring:
+  cloud:
+    gateway:
+      routes:
+        # 사용자 서비스
+        - id: user-service
+          uri: lb://USER-SERVICE          # lb:// → 로드밸런서 (Eureka 연동)
+          predicates:
+            - Path=/api/users/**          # 경로 매칭
+          filters:
+            - StripPrefix=1               # /api 제거 후 전달
+
+        # 주문 서비스
+        - id: order-service
+          uri: lb://ORDER-SERVICE
+          predicates:
+            - Path=/api/orders/**
+            - Method=GET,POST             # HTTP 메서드 제한
+          filters:
+            - StripPrefix=1
+            - AddRequestHeader=X-Source, gateway   # 헤더 추가
+
+        # 상품 서비스 (버전별 라우팅)
+        - id: product-service-v2
+          uri: http://product-v2:8080
+          predicates:
+            - Path=/api/products/**
+            - Header=X-API-Version, v2    # 특정 헤더 값일 때만
+          filters:
+            - StripPrefix=1
+
+        # 외부 API 프록시
+        - id: external-api
+          uri: https://api.external.com
+          predicates:
+            - Path=/external/**
+          filters:
+            - RewritePath=/external/(?<segment>.*), /$\{segment}
+```
+
+---
+
+## 내장 Predicate 종류
+
+```yaml
+predicates:
+  - Path=/api/**                         # 경로 패턴
+  - Method=GET,POST                      # HTTP 메서드
+  - Header=X-Request-Id, \d+            # 헤더 존재 + 정규식 값
+  - Query=color, green                   # 쿼리 파라미터
+  - Cookie=session, abc123              # 쿠키
+  - Host=**.example.com                 # 호스트
+  - After=2026-01-01T00:00:00+09:00[Asia/Seoul]   # 시간 이후
+  - Before=2026-12-31T00:00:00+09:00[Asia/Seoul]  # 시간 이전
+  - Between=2026-01-01T00:00:00+09:00[Asia/Seoul],2026-12-31T00:00:00+09:00[Asia/Seoul]
+  - Weight=group1, 8                     # 가중치 기반 라우팅 (A/B 배포)
+  - RemoteAddr=192.168.1.0/24           # IP 대역
+```
+
+---
+
+## 내장 Filter 종류
+
+```yaml
+filters:
+  - StripPrefix=1                        # 경로 앞 N 세그먼트 제거
+  - AddRequestHeader=X-User-Id, user123  # 요청 헤더 추가
+  - AddResponseHeader=X-Gateway, true    # 응답 헤더 추가
+  - RemoveRequestHeader=Cookie           # 요청 헤더 제거
+  - RewritePath=/api/(?<seg>.*), /$\{seg}  # 경로 재작성
+  - RedirectTo=302, https://example.com  # 리다이렉트
+  - SetStatus=404                        # 응답 상태코드 강제 설정
+  - RequestRateLimiter=...               # 속도 제한
+  - CircuitBreaker=...                   # 서킷 브레이커
+  - Retry=...                            # 재시도
+```
+
+---
+
+## Java Config 기반 라우트 설정
+
+YAML보다 동적인 조건이 필요할 때 Java Config를 사용한다.
+
+```java
+@Configuration
+public class GatewayConfig {
+
+    @Bean
+    public RouteLocator customRoutes(RouteLocatorBuilder builder) {
+        return builder.routes()
+            // 사용자 서비스
+            .route("user-service", r -> r
+                .path("/api/users/**")
+                .filters(f -> f
+                    .stripPrefix(1)
+                    .addRequestHeader("X-Source", "gateway")
+                    .addResponseHeader("X-Response-Time",
+                        String.valueOf(System.currentTimeMillis()))
+                )
+                .uri("lb://USER-SERVICE")
+            )
+            // 경로 + 메서드 조합
+            .route("order-create", r -> r
+                .path("/api/orders/**")
+                .and().method(HttpMethod.POST)
+                .filters(f -> f.stripPrefix(1))
+                .uri("lb://ORDER-SERVICE")
+            )
+            // Predicate 직접 작성
+            .route("custom-predicate", r -> r
+                .predicate(exchange -> {
+                    String header = exchange.getRequest()
+                        .getHeaders()
+                        .getFirst("X-Internal");
+                    return "true".equals(header);
+                })
+                .uri("http://internal-service:8080")
+            )
+            .build();
+    }
+}
+```
+
+---
+
+## 커스텀 Global Filter
+
+모든 Route에 공통으로 적용되는 필터다. 로깅, 인증 검사, 요청 ID 주입 등에 사용한다.
+
+```java
+@Component
+@Slf4j
+public class LoggingGlobalFilter implements GlobalFilter, Ordered {
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        ServerHttpRequest request = exchange.getRequest();
+        String requestId = UUID.randomUUID().toString();
+
+        // Pre 처리: 요청 ID 주입, 로깅
+        log.info("[{}] {} {}", requestId, request.getMethod(), request.getURI());
+
+        ServerHttpRequest mutatedRequest = request.mutate()
+            .header("X-Request-Id", requestId)
+            .build();
+
+        long startTime = System.currentTimeMillis();
+
+        return chain.filter(exchange.mutate().request(mutatedRequest).build())
+            .then(Mono.fromRunnable(() -> {
+                // Post 처리: 응답 시간 로깅
+                long duration = System.currentTimeMillis() - startTime;
+                log.info("[{}] {} {}ms",
+                    requestId,
+                    exchange.getResponse().getStatusCode(),
+                    duration);
+            }));
+    }
+
+    @Override
+    public int getOrder() {
+        return -1; // 낮을수록 먼저 실행
+    }
+}
+```
+
+---
+
+## 커스텀 GatewayFilter (특정 Route 전용)
+
+```java
+@Component
+public class AuthGatewayFilterFactory
+        extends AbstractGatewayFilterFactory<AuthGatewayFilterFactory.Config> {
+
+    private final JwtTokenProvider jwtTokenProvider;
+
+    public AuthGatewayFilterFactory(JwtTokenProvider jwtTokenProvider) {
+        super(Config.class);
+        this.jwtTokenProvider = jwtTokenProvider;
+    }
+
+    @Override
+    public GatewayFilter apply(Config config) {
+        return (exchange, chain) -> {
+            ServerHttpRequest request = exchange.getRequest();
+            String token = extractToken(request);
+
+            if (token == null || !jwtTokenProvider.validate(token)) {
+                exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+                return exchange.getResponse().setComplete();
+            }
+
+            // 토큰에서 사용자 정보 추출 후 헤더로 전달
+            String userId = jwtTokenProvider.getUserId(token);
+            ServerHttpRequest mutated = request.mutate()
+                .header("X-User-Id", userId)
+                .build();
+
+            return chain.filter(exchange.mutate().request(mutated).build());
+        };
+    }
+
+    private String extractToken(ServerHttpRequest request) {
+        String auth = request.getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+        if (auth != null && auth.startsWith("Bearer ")) {
+            return auth.substring(7);
+        }
+        return null;
+    }
+
+    @Data
+    public static class Config {
+        private boolean required = true;
+    }
+}
+```
+
+```yaml
+# 특정 Route에만 적용
+routes:
+  - id: protected-service
+    uri: lb://USER-SERVICE
+    predicates:
+      - Path=/api/users/**
+    filters:
+      - Auth   # AuthGatewayFilterFactory 적용
+```
+
+---
+
+## 속도 제한 (Rate Limiting)
+
+Redis를 사용해 IP 또는 사용자별로 요청 수를 제한한다.
+
+```gradle
+implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
+```
+
+```yaml
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+  cloud:
+    gateway:
+      routes:
+        - id: rate-limited-service
+          uri: lb://API-SERVICE
+          predicates:
+            - Path=/api/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10    # 초당 토큰 충전량
+                redis-rate-limiter.burstCapacity: 20    # 최대 버스트
+                redis-rate-limiter.requestedTokens: 1   # 요청당 소비 토큰
+                key-resolver: "#{@userKeyResolver}"     # 제한 단위 (빈 참조)
+```
+
+```java
+@Configuration
+public class RateLimiterConfig {
+
+    // IP 기반 제한
+    @Bean
+    public KeyResolver ipKeyResolver() {
+        return exchange -> Mono.just(
+            exchange.getRequest().getRemoteAddress().getAddress().getHostAddress()
+        );
+    }
+
+    // 사용자 기반 제한 (헤더에서 추출)
+    @Bean
+    public KeyResolver userKeyResolver() {
+        return exchange -> Mono.justOrEmpty(
+            exchange.getRequest().getHeaders().getFirst("X-User-Id")
+        ).defaultIfEmpty("anonymous");
+    }
+}
+```
+
+---
+
+## 서킷 브레이커
+
+Resilience4j와 연동해 업스트림 서비스 장애 시 폴백을 제공한다.
+
+```gradle
+implementation 'org.springframework.cloud:spring-cloud-starter-circuitbreaker-reactor-resilience4j'
+```
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: order-service
+          uri: lb://ORDER-SERVICE
+          predicates:
+            - Path=/api/orders/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: orderCircuitBreaker
+                fallbackUri: forward:/fallback/orders   # 장애 시 이 경로로
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      orderCircuitBreaker:
+        sliding-window-size: 10
+        failure-rate-threshold: 50       # 실패율 50% 초과 시 OPEN
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+```
+
+```java
+@RestController
+public class FallbackController {
+
+    @GetMapping("/fallback/orders")
+    public Mono<ResponseEntity<Map<String, String>>> orderFallback() {
+        return Mono.just(ResponseEntity
+            .status(HttpStatus.SERVICE_UNAVAILABLE)
+            .body(Map.of(
+                "message", "주문 서비스가 일시적으로 사용 불가합니다. 잠시 후 다시 시도해주세요.",
+                "code", "ORDER_SERVICE_UNAVAILABLE"
+            )));
+    }
+}
+```
+
+---
+
+## 재시도 (Retry)
+
+일시적 오류에 자동으로 재시도한다.
+
+```yaml
+filters:
+  - name: Retry
+    args:
+      retries: 3                    # 최대 재시도 횟수
+      statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE
+      methods: GET                  # 재시도할 HTTP 메서드 (멱등성 있는 것만)
+      backoff:
+        firstBackoff: 100ms
+        maxBackoff: 1000ms
+        factor: 2                   # 지수 백오프 (100ms → 200ms → 400ms)
+        basedOnPreviousValue: false
+```
+
+---
+
+## Eureka 서비스 디스커버리 연동
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true             # Eureka 등록 서비스 자동 라우팅
+          lower-case-service-id: true  # 서비스 ID 소문자 처리
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eureka-server:8761/eureka
+```
+
+`lb://서비스명` URI를 사용하면 Eureka에서 인스턴스를 조회해 로드밸런싱한다.
+`discovery.locator.enabled: true`로 설정하면 별도 Route 정의 없이도
+`/서비스명/**` 경로로 자동 라우팅된다.
+
+---
+
+## CORS 설정
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowed-origins:
+              - "https://app.example.com"
+              - "http://localhost:3000"
+            allowed-methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowed-headers: "*"
+            allow-credentials: true
+            max-age: 3600
+```
+
+---
+
+## Actuator로 라우트 모니터링
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: gateway, health, info
+```
+
+```bash
+# 등록된 전체 라우트 확인
+GET /actuator/gateway/routes
+
+# 특정 라우트 확인
+GET /actuator/gateway/routes/{route-id}
+
+# 라우트 캐시 초기화 (동적 변경 후)
+POST /actuator/gateway/refresh
+
+# 글로벌 필터 목록
+GET /actuator/gateway/globalfilters
+
+# 라우트별 필터 목록
+GET /actuator/gateway/routefilters
+```
+
+---
+
+## 전체 설정 예시
+
+```yaml
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowed-origins: "*"
+            allowed-methods: "*"
+            allowed-headers: "*"
+      default-filters:
+        - AddResponseHeader=X-Gateway-Version, 1.0.0
+      routes:
+        - id: user-service
+          uri: lb://USER-SERVICE
+          predicates:
+            - Path=/api/users/**
+          filters:
+            - StripPrefix=1
+            - Auth
+
+        - id: order-service
+          uri: lb://ORDER-SERVICE
+          predicates:
+            - Path=/api/orders/**
+          filters:
+            - StripPrefix=1
+            - Auth
+            - name: CircuitBreaker
+              args:
+                name: orderCB
+                fallbackUri: forward:/fallback/orders
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                key-resolver: "#{@userKeyResolver}"
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eureka:8761/eureka
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: gateway,health
+```
+
+---
+
+Spring Cloud Gateway는 MSA에서 **인증, 라우팅, 속도 제한, 서킷 브레이커**를 각 서비스에 분산시키지 않고 한 곳에서 처리할 수 있게 해준다.
+리액티브 기반이라 높은 동시성을 적은 리소스로 처리하지만, 기존 서블릿 기반 Spring MVC와 함께 사용할 수 없다는 점을 반드시 고려해야 한다.
