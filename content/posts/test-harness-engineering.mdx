@@ -1,0 +1,440 @@
+---
+title: 테스트 하네스 엔지니어링
+date: '2026-04-02'
+category: Backend
+tags:
+  - Testing
+  - Test Harness
+  - TDD
+  - Stub
+  - Mock
+  - Java
+  - Spring
+summary: >-
+  테스트 하네스는 코드를 테스트 가능한 상태로 만들기 위한 모든 인프라의 총칭이다.
+  드라이버, 스텁, 목, 픽스처의 차이부터 Spring 환경에서의 하네스 설계까지 실전 코드와 함께 정리한다.
+thumbnail: /thumbnails/test-harness-engineering.svg
+---
+
+테스트를 작성하다 보면 "이 코드는 도저히 테스트하기가 어렵다"는 벽에 부딪히는 순간이 온다.
+외부 API, DB, 시간, 파일 시스템 등 제어할 수 없는 의존성이 코드 곳곳에 박혀 있기 때문이다.
+**테스트 하네스(Test Harness)**는 이런 코드를 테스트 가능하게 만들기 위한 모든 인프라와 보조 장치의 총칭이다.
+
+## 테스트 하네스란
+
+자동차 업계에서 하네스(Harness)는 수많은 전선을 묶어 제어 가능한 단위로 만드는 배선 묶음을 말한다.
+소프트웨어에서도 같은 의미다. **테스트 대상 코드(SUT: System Under Test)를 격리하고, 원하는 조건에서 실행시키기 위해 주변에 설치하는 모든 장치**를 테스트 하네스라 부른다.
+
+```
+┌──────────────────────────────────────────────┐
+│              Test Harness                    │
+│                                              │
+│  [Test Driver]  →  [SUT]  →  [Stub/Mock]    │
+│       ↑                          ↓           │
+│  [Test Fixture]          [Test Double]       │
+└──────────────────────────────────────────────┘
+```
+
+---
+
+## 하네스의 구성 요소
+
+### Test Driver (테스트 드라이버)
+
+SUT를 호출하는 테스트 코드 자체다. JUnit, TestNG 같은 테스트 프레임워크가 드라이버 역할을 한다.
+
+```java
+@Test
+void 주문_금액이_10만원_이상이면_무료배송() {
+    // Driver: 조건을 설정하고 SUT를 호출
+    Order order = new Order(List.of(new Item("노트북", 150_000)));
+
+    ShippingCalculator sut = new ShippingCalculator();
+    int fee = sut.calculate(order);
+
+    assertThat(fee).isEqualTo(0);
+}
+```
+
+---
+
+### Test Fixture (테스트 픽스처)
+
+테스트가 실행되기 전에 필요한 **사전 상태**를 만드는 장치다. DB 초기 데이터, 파일, 설정값 등이 포함된다.
+
+```java
+@SpringBootTest
+class OrderRepositoryTest {
+
+    @Autowired OrderRepository orderRepository;
+
+    // @BeforeEach: 각 테스트 전 픽스처 설정
+    @BeforeEach
+    void setUp() {
+        orderRepository.deleteAll();
+        orderRepository.saveAll(List.of(
+            new Order("user1", OrderStatus.PAID, 50_000),
+            new Order("user1", OrderStatus.CANCELLED, 30_000),
+            new Order("user2", OrderStatus.PAID, 120_000)
+        ));
+    }
+
+    @Test
+    void 사용자별_결제완료_주문만_조회() {
+        List<Order> result = orderRepository.findByUserIdAndStatus("user1", OrderStatus.PAID);
+        assertThat(result).hasSize(1);
+    }
+}
+```
+
+픽스처 관리 원칙:
+- 테스트 간 상태가 공유되면 순서 의존성이 생긴다 → **각 테스트가 자신의 픽스처를 직접 만들고 정리**
+- `@Transactional` + 롤백으로 DB 상태를 격리하거나 `@BeforeEach`에서 명시적으로 초기화
+
+---
+
+### Test Double (테스트 더블)
+
+실제 의존성을 대체하는 가짜 객체의 총칭이다. 영화의 스턴트 더블처럼, 실제 객체 대신 테스트에서만 쓰인다.
+
+#### Dummy
+
+메서드 시그니처를 맞추기 위해 전달하지만 실제로 사용되지 않는 객체.
+
+```java
+// EmailSender는 이 테스트에서 실제로 호출되지 않음
+EmailSender dummy = mock(EmailSender.class); // 아무것도 설정 안 해도 됨
+UserService sut = new UserService(userRepository, dummy);
+```
+
+#### Stub
+
+호출 시 **미리 정해진 값을 반환**하는 객체. 외부 API, DB 같은 느리거나 비용이 드는 의존성을 대체한다.
+
+```java
+@Test
+void 환율_API_호출_없이_가격_변환_테스트() {
+    // Stub: 항상 1200.0 반환
+    ExchangeRateClient stub = mock(ExchangeRateClient.class);
+    when(stub.getRate("USD", "KRW")).thenReturn(1200.0);
+
+    PriceConverter sut = new PriceConverter(stub);
+    double price = sut.convert(100.0, "USD", "KRW");
+
+    assertThat(price).isEqualTo(120_000.0);
+}
+```
+
+#### Mock
+
+Stub에서 한 발 더 나아가, **호출 여부·횟수·인자까지 검증**하는 객체.
+
+```java
+@Test
+void 주문_완료_시_이메일이_정확히_한_번_전송되어야_한다() {
+    EmailSender mockEmail = mock(EmailSender.class);
+    OrderService sut = new OrderService(orderRepository, mockEmail);
+
+    sut.completeOrder(orderId);
+
+    // 검증: 정확한 인자로 정확히 1번 호출
+    verify(mockEmail, times(1)).send(eq("user@example.com"), contains("주문 완료"));
+}
+```
+
+#### Fake
+
+실제 동작을 단순하게 구현한 객체. 인메모리 DB, 가짜 큐 등이 해당한다.
+
+```java
+// 실제 DB 대신 메모리에 저장하는 Fake Repository
+class FakeUserRepository implements UserRepository {
+    private final Map<Long, User> store = new HashMap<>();
+    private long seq = 0;
+
+    @Override
+    public User save(User user) {
+        user.setId(++seq);
+        store.put(user.getId(), user);
+        return user;
+    }
+
+    @Override
+    public Optional<User> findById(Long id) {
+        return Optional.ofNullable(store.get(id));
+    }
+
+    @Override
+    public List<User> findAll() {
+        return new ArrayList<>(store.values());
+    }
+}
+```
+
+Fake는 Mock보다 신뢰성이 높다. 실제 인터페이스 계약을 구현하기 때문에 Mock처럼 잘못된 설정이 실수를 숨길 위험이 없다.
+
+#### Spy
+
+실제 객체를 감싸 **일부 동작은 실제로, 일부는 스텁으로** 처리하는 객체.
+
+```java
+@Test
+void 실제_서비스_로직은_유지하되_알림만_스텁() {
+    NotificationService realService = new NotificationService(emailSender);
+    NotificationService spy = spy(realService);
+
+    // 실제 send는 실행하되, 외부 전송만 막기
+    doNothing().when(spy).sendExternal(any());
+
+    spy.notifyUser(userId, "메시지");
+
+    verify(spy).sendExternal(any()); // 호출은 됐는지 확인
+}
+```
+
+---
+
+## 테스트 더블 선택 기준
+
+```
+외부 시스템 호출 결과만 제어하면 된다
+    → Stub
+
+호출 여부·횟수·인자까지 검증해야 한다
+    → Mock
+
+Repository처럼 상태가 필요한 의존성
+    → Fake (인메모리 구현)
+
+실제 객체 대부분을 유지하되 일부만 바꾼다
+    → Spy
+
+그냥 컴파일만 통과시키면 된다
+    → Dummy
+```
+
+Mock을 남발하면 테스트가 구현 세부사항에 강하게 결합된다.
+리팩토링 시 내부 호출 순서만 바뀌어도 테스트가 깨진다.
+**가능하면 상태(State) 기반 검증을 우선하고, Mock은 꼭 필요한 경우에만 사용**해야 한다.
+
+---
+
+## 테스트 가능한 설계
+
+하네스를 아무리 잘 만들어도, 코드 자체가 테스트하기 어렵게 설계되어 있으면 한계가 있다.
+
+### 의존성 주입으로 교체 가능하게
+
+```java
+// ❌ 내부에서 직접 생성 — 교체 불가
+public class OrderService {
+    private final EmailSender emailSender = new SmtpEmailSender(); // 하드코딩
+}
+
+// ✅ 생성자 주입 — 테스트에서 Stub/Mock으로 교체 가능
+public class OrderService {
+    private final EmailSender emailSender;
+
+    public OrderService(EmailSender emailSender) {
+        this.emailSender = emailSender;
+    }
+}
+```
+
+### 시간 의존성 추출
+
+```java
+// ❌ LocalDateTime.now() 직접 사용 — 테스트 시점 제어 불가
+public boolean isExpired(LocalDateTime createdAt) {
+    return createdAt.plusDays(7).isBefore(LocalDateTime.now());
+}
+
+// ✅ Clock 주입 — 테스트에서 시간 고정 가능
+public class ExpirationChecker {
+    private final Clock clock;
+
+    public ExpirationChecker(Clock clock) {
+        this.clock = clock;
+    }
+
+    public boolean isExpired(LocalDateTime createdAt) {
+        return createdAt.plusDays(7).isBefore(LocalDateTime.now(clock));
+    }
+}
+
+// 테스트
+@Test
+void 7일_후_만료_확인() {
+    Clock fixedClock = Clock.fixed(
+        Instant.parse("2026-04-10T00:00:00Z"),
+        ZoneOffset.UTC
+    );
+    ExpirationChecker sut = new ExpirationChecker(fixedClock);
+
+    LocalDateTime createdAt = LocalDateTime.parse("2026-04-01T00:00:00");
+    assertThat(sut.isExpired(createdAt)).isTrue();
+}
+```
+
+### 정적 메서드 호출 격리
+
+```java
+// ❌ 정적 메서드 직접 호출 — Mock 불가
+public String generateOrderNumber() {
+    return "ORD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+}
+
+// ✅ ID 생성 전략을 인터페이스로 추출
+public interface IdGenerator {
+    String generate();
+}
+
+public class OrderService {
+    private final IdGenerator idGenerator;
+
+    public String createOrder() {
+        return "ORD-" + idGenerator.generate();
+    }
+}
+
+// 테스트: 고정 ID 반환하는 Stub 사용
+IdGenerator stub = () -> "FIXED01";
+OrderService sut = new OrderService(stub);
+assertThat(sut.createOrder()).isEqualTo("ORD-FIXED01");
+```
+
+---
+
+## Spring 환경에서의 하네스 전략
+
+### @SpringBootTest vs @WebMvcTest vs 단위 테스트
+
+```
+단위 테스트 (순수 Java)
+  - 스프링 컨텍스트 없음 → 가장 빠름
+  - 의존성은 모두 Mock/Stub으로 교체
+  - 비즈니스 로직 검증에 적합
+
+@WebMvcTest
+  - Web 레이어만 로드 (Controller, Filter, Interceptor)
+  - Service, Repository는 @MockBean으로 교체
+  - API 계약 검증에 적합
+
+@SpringBootTest
+  - 전체 컨텍스트 로드 → 느림
+  - 통합 테스트, E2E 테스트에만 사용
+  - DB는 H2 인메모리 또는 Testcontainers로 교체
+```
+
+### @MockBean vs Mockito.mock()
+
+```java
+// @MockBean: 스프링 컨텍스트 내 빈을 Mock으로 교체
+@WebMvcTest(OrderController.class)
+class OrderControllerTest {
+
+    @Autowired MockMvc mockMvc;
+    @MockBean OrderService orderService;  // 컨텍스트의 OrderService를 Mock으로 교체
+
+    @Test
+    void 주문_생성_API() throws Exception {
+        given(orderService.create(any())).willReturn(new OrderResponse(1L, "ORD-001"));
+
+        mockMvc.perform(post("/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"itemId": 1, "quantity": 2}"""))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.orderNumber").value("ORD-001"));
+    }
+}
+```
+
+### Testcontainers로 실제 DB 연동
+
+Fake DB 대신 실제 MySQL/PostgreSQL을 도커로 띄워 테스트한다.
+운영 환경과 가장 가까운 조건에서 검증할 수 있다.
+
+```java
+@SpringBootTest
+@Testcontainers
+class OrderRepositoryIntegrationTest {
+
+    @Container
+    static MySQLContainer<?> mysql = new MySQLContainer<>("mysql:8.0")
+        .withDatabaseName("testdb")
+        .withUsername("test")
+        .withPassword("test");
+
+    @DynamicPropertySource
+    static void properties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", mysql::getJdbcUrl);
+        registry.add("spring.datasource.username", mysql::getUsername);
+        registry.add("spring.datasource.password", mysql::getPassword);
+    }
+
+    @Autowired OrderRepository orderRepository;
+
+    @Test
+    void 주문_저장_및_조회() {
+        Order saved = orderRepository.save(new Order("user1", 50_000));
+        Order found = orderRepository.findById(saved.getId()).orElseThrow();
+        assertThat(found.getUserId()).isEqualTo("user1");
+    }
+}
+```
+
+---
+
+## 테스트 피라미드와 하네스 비용
+
+```
+         /\
+        /E2E\          ← 적게 (비용 높음, 느림)
+       /──────\
+      / 통합 테스트 \   ← 중간
+     /────────────\
+    /   단위 테스트  \  ← 많이 (비용 낮음, 빠름)
+   /────────────────\
+```
+
+하네스가 복잡할수록 유지 비용이 높아진다.
+
+```
+단위 테스트 하네스: Mock/Stub 몇 개 → 비용 낮음
+통합 테스트 하네스: Testcontainers, 픽스처 데이터 → 비용 중간
+E2E 하네스: 전체 환경 구동, 시나리오 관리 → 비용 높음
+```
+
+하네스 설계 원칙:
+- **단위 테스트를 기반으로 많이, E2E는 핵심 시나리오만**
+- 하네스 코드도 프로덕션 코드처럼 리팩토링 대상
+- 중복 픽스처는 빌더 패턴 또는 Object Mother 패턴으로 공통화
+
+```java
+// Object Mother 패턴 — 픽스처 공통화
+public class OrderFixture {
+
+    public static Order defaultOrder() {
+        return Order.builder()
+            .userId("user1")
+            .status(OrderStatus.PAID)
+            .totalAmount(50_000)
+            .build();
+    }
+
+    public static Order cancelledOrder() {
+        return defaultOrder().toBuilder()
+            .status(OrderStatus.CANCELLED)
+            .build();
+    }
+}
+
+// 각 테스트에서 재사용
+Order order = OrderFixture.defaultOrder();
+```
+
+---
+
+테스트 하네스의 완성도는 **테스트 코드가 얼마나 구현 세부사항으로부터 독립적인가**로 판단할 수 있다.
+하네스가 잘 설계될수록 리팩토링 시 테스트가 깨지지 않고, 버그는 놓치지 않는다.
+결국 하네스 엔지니어링은 테스트를 위한 기술이 아니라, **변경에 강한 코드를 만들기 위한 설계 훈련**이다.
