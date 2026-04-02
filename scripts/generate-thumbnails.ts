@@ -418,6 +418,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'semaphore-mutex':                { pattern: 'threads',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'db-replication':                 { pattern: 'network',  colors: { bg1: '#0e1a2e', bg2: '#1a3a5c', accent: '#38bdf8', accent2: '#7dd3fc' } },
   'test-harness-engineering':       { pattern: 'shield',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'git-merge-rebase-pull':          { pattern: 'flow',     colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
   'spring-boot-4-features':         { pattern: 'spring' },
   'spring-http-clients-comparison': { pattern: 'flow',     colors: { accent: '#6ee7b7' } },
   'tree-shaking':                   { pattern: 'network',  colors: { bg1: '#0f1a2e', bg2: '#1e3460', accent: '#7dd3fc', accent2: '#bae6fd' } },

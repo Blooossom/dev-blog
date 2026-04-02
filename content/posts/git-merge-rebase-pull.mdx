@@ -1,0 +1,348 @@
+---
+title: git merge vs rebase vs pull — 차이와 올바른 사용법
+date: '2026-04-02'
+category: General
+tags:
+  - Git
+  - Merge
+  - Rebase
+  - Pull
+  - Workflow
+summary: >-
+  git merge와 rebase는 브랜치를 통합하는 두 가지 방법이지만, 히스토리 모양과 충돌 해결 방식이 완전히 다르다.
+  각 명령의 내부 동작, 언제 무엇을 써야 하는지, 그리고 흔한 실수를 정리한다.
+thumbnail: /thumbnails/git-merge-rebase-pull.svg
+---
+
+팀에서 Git을 쓰다 보면 "merge 써요, rebase 써요?"라는 질문이 반드시 나온다.
+둘 다 브랜치를 합치는 수단이지만, **히스토리를 어떻게 남기느냐**가 완전히 다르다.
+차이를 모르고 쓰면 커밋 히스토리가 엉망이 되거나 남의 커밋이 사라지는 사고가 생긴다.
+
+## 공통 배경: 브랜치가 분기된 상태
+
+```
+main:    A ── B ── C
+                   ↑
+feature:           D ── E
+```
+
+`feature` 브랜치는 `C`에서 분기해 `D`, `E` 커밋이 쌓였다.
+`main`에도 새 커밋이 생길 수 있다.
+
+```
+main:    A ── B ── C ── F ── G
+                   ↑
+feature:           D ── E
+```
+
+이 두 히스토리를 합치는 방법이 `merge`와 `rebase`다.
+
+---
+
+## git merge
+
+두 브랜치의 공통 조상에서 시작해 **양쪽 변경사항을 합친 새 머지 커밋(M)**을 생성한다.
+
+```
+main:    A ── B ── C ── F ── G ── M
+                   ↑              ↑
+feature:           D ── E ────────┘
+```
+
+```bash
+git checkout main
+git merge feature
+```
+
+### Fast-forward merge
+
+`main`에 새 커밋이 없다면(feature가 main 위에 일직선으로 쌓인 경우) 머지 커밋 없이 포인터만 앞으로 이동한다.
+
+```
+# Before
+main:    A ── B ── C
+                   ↑
+feature:           D ── E
+
+# After (fast-forward)
+main:    A ── B ── C ── D ── E
+```
+
+```bash
+git merge feature          # fast-forward 자동 적용
+git merge --no-ff feature  # fast-forward 가능해도 머지 커밋 강제 생성
+```
+
+`--no-ff`를 쓰면 브랜치가 존재했다는 사실이 히스토리에 남는다.
+
+### merge의 특징
+
+**장점**
+- 기존 커밋을 전혀 건드리지 않는다 → 안전하고 이력이 정직하게 보존된다
+- 충돌이 한 번만 발생한다 (머지 커밋 시점)
+
+**단점**
+- 머지 커밋이 쌓이면 히스토리가 복잡한 그물 모양이 된다
+- `git log --oneline`이 지저분해진다
+
+---
+
+## git rebase
+
+`feature` 브랜치의 커밋들을 **`main`의 최신 커밋 위로 재배치**한다.
+기존 커밋을 새 베이스 위에 하나씩 다시 적용해 **새로운 커밋(D', E')을 생성**한다.
+
+```
+# Before
+main:    A ── B ── C ── F ── G
+                   ↑
+feature:           D ── E
+
+# After: git checkout feature && git rebase main
+main:    A ── B ── C ── F ── G
+                               ↑
+feature:                       D' ── E'
+```
+
+```bash
+git checkout feature
+git rebase main
+```
+
+`D`와 `E`는 사라지고 내용은 같지만 **해시가 다른 새 커밋 D', E'**가 생성된다.
+
+### rebase의 특징
+
+**장점**
+- 히스토리가 일직선으로 깔끔해진다
+- `git log`가 읽기 쉬워진다
+- `git bisect`(이진 탐색 디버깅)에 유리하다
+
+**단점**
+- 커밋 해시가 바뀐다 → 이미 push된 브랜치에 rebase하면 팀원과 충돌 발생
+- 커밋이 여러 개면 충돌을 커밋마다 하나씩 해결해야 한다
+
+### rebase 충돌 해결 흐름
+
+```bash
+git rebase main
+
+# 충돌 발생 시
+# 1. 충돌 파일 수정
+# 2. git add <파일>
+# 3. git rebase --continue   ← 다음 커밋으로
+# 또는
+# git rebase --abort         ← rebase 전체 취소
+```
+
+---
+
+## git pull
+
+`git pull`은 단순히 `fetch + merge`의 단축 명령이다.
+
+```bash
+git pull origin main
+# 내부적으로:
+# git fetch origin main
+# git merge origin/main
+```
+
+### pull --rebase
+
+merge 대신 rebase로 통합한다.
+
+```bash
+git pull --rebase origin main
+# 내부적으로:
+# git fetch origin main
+# git rebase origin/main
+```
+
+로컬 커밋이 리모트 뒤에 생겼을 때, merge 커밋 없이 깔끔하게 최신 상태를 따라잡을 수 있다.
+
+```bash
+# 기본 pull 전략을 rebase로 설정
+git config --global pull.rebase true
+```
+
+---
+
+## 세 명령의 히스토리 비교
+
+같은 상황에서 각 전략을 적용했을 때 결과다.
+
+```
+초기 상태:
+main:    A ── B ── C ── F
+                   ↑
+feature:           D ── E
+
+─────────────────────────────────────────────
+git merge feature (from main):
+
+A ── B ── C ── F ── M
+           ╲       ↗
+            D ── E
+→ 머지 커밋(M) 생성, 브랜치 흔적 보존
+
+─────────────────────────────────────────────
+git merge --no-ff feature (from main):
+
+A ── B ── C ── F ── M
+           ╲       ↗
+            D ── E
+→ 동일하지만 fast-forward 방지 명시
+
+─────────────────────────────────────────────
+git rebase main (from feature) 후 merge:
+
+A ── B ── C ── F ── D' ── E'
+→ 일직선 히스토리, 머지 커밋 없음
+```
+
+---
+
+## 황금 규칙: 공유된 브랜치에는 rebase 금지
+
+rebase는 커밋 해시를 바꾼다. 이미 push해서 팀원이 기반으로 삼은 커밋을 rebase하면:
+
+```
+# 팀원 A가 origin/feature의 D, E를 기반으로 작업 중
+# 내가 feature를 rebase → D', E'로 교체
+# git push --force → origin/feature가 D', E'로 바뀜
+
+# 팀원 A: git pull 시 D, E와 D', E'가 중복 등장
+# → 히스토리 꼬임, 혼란
+```
+
+```
+rebase 가능 ✅
+  - 아직 push하지 않은 로컬 브랜치
+  - 나만 쓰는 개인 feature 브랜치 (force push 허용된 경우)
+  - git pull --rebase로 리모트 최신 반영 시
+
+rebase 금지 ❌
+  - 이미 push된 공유 브랜치 (main, develop)
+  - 다른 사람이 기반으로 삼은 브랜치
+```
+
+---
+
+## Interactive Rebase — 커밋 정리
+
+`git rebase -i`를 사용하면 push 전에 커밋 히스토리를 깔끔하게 정리할 수 있다.
+
+```bash
+# 최근 3개 커밋 편집
+git rebase -i HEAD~3
+```
+
+```
+# 편집기에서
+pick a1b2c3 WIP: 작업 중
+pick d4e5f6 오타 수정
+pick g7h8i9 기능 완성
+
+# 명령어 변경
+pick g7h8i9 기능 완성   ← 최종 커밋만 pick
+squash a1b2c3 WIP       ← 앞 커밋과 합치기
+squash d4e5f6 오타 수정 ← 앞 커밋과 합치기
+```
+
+| 명령 | 설명 |
+|------|------|
+| `pick` | 커밋 그대로 유지 |
+| `squash` | 이전 커밋과 합치기 (메시지 편집) |
+| `fixup` | 이전 커밋과 합치기 (메시지 버림) |
+| `reword` | 커밋 메시지만 수정 |
+| `edit` | 커밋 내용 수정 후 재개 |
+| `drop` | 커밋 삭제 |
+
+PR 올리기 전 "WIP", "오타 수정", "리뷰 반영" 커밋들을 의미 있는 단위로 정리할 때 유용하다.
+
+---
+
+## 팀 워크플로우별 전략
+
+### GitHub Flow (소규모 팀, 잦은 배포)
+
+```
+main에서 feature 분기
+→ feature에서 작업
+→ PR 생성
+→ Squash and Merge (또는 Rebase and Merge)
+→ feature 브랜치 삭제
+```
+
+```bash
+# PR 머지 방식 설정
+# GitHub 설정에서 "Squash merging" 또는 "Rebase merging" 선택
+```
+
+### Git Flow (릴리즈 주기가 있는 서비스)
+
+```
+develop ← feature merge (--no-ff)
+release 브랜치 → main merge (--no-ff) + tag
+hotfix → main + develop 동시 merge
+```
+
+main, develop에 직접 push 금지. 항상 PR/MR을 통해 merge.
+
+### Trunk-Based Development (CI/CD 중심)
+
+```
+main ← 짧은 feature 브랜치를 빠르게 merge
+feature 브랜치 수명: 1~2일
+Feature Flag로 미완성 기능 숨기기
+```
+
+---
+
+## 자주 하는 실수 모음
+
+### 실수 1: main에서 직접 rebase
+
+```bash
+# ❌ 절대 금지
+git checkout main
+git rebase feature   # main의 커밋 해시가 전부 바뀜
+git push --force     # 팀원의 로컬 main과 충돌
+```
+
+### 실수 2: pull 없이 push
+
+```bash
+# push 거부됨 → 무작정 force push
+git push --force  # ❌ 팀원 커밋 덮어씀
+
+# 올바른 순서
+git pull --rebase origin main  # 최신 반영
+git push origin main           # 충돌 없이 push
+```
+
+### 실수 3: 머지 충돌 도중 파일을 잘못 해결
+
+충돌 마커(`<<<<<<<`, `=======`, `>>>>>>>`)를 전부 남긴 채 `git add`하는 실수.
+
+```bash
+# 충돌 해결 후 반드시 확인
+grep -r "<<<<<<" .   # 마커가 남아있으면 아직 해결 안 된 것
+
+# 또는 머지 도구 사용
+git mergetool
+```
+
+---
+
+## 한 줄 요약
+
+```
+git merge  : 히스토리를 그대로 보존, 팀 협업 기본값
+git rebase : 히스토리를 정리, 공유 브랜치엔 절대 사용 금지
+git pull   : fetch + merge (--rebase 옵션으로 rebase로 변경 가능)
+```
+
+결국 정답은 **팀의 워크플로우에 맞는 전략을 정하고, 그 규칙을 일관되게 지키는 것**이다.
+어떤 전략을 쓰든 "이미 공유된 커밋의 해시를 바꾸지 않는다"는 원칙만 지키면 대부분의 사고를 막을 수 있다.
