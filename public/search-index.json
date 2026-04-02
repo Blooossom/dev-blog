@@ -195,6 +195,21 @@
     "date": "2026-03-26"
   },
   {
+    "slug": "db-replication",
+    "title": "DB Replication 완벽 정리",
+    "category": "DB",
+    "tags": [
+      "Database",
+      "Replication",
+      "MySQL",
+      "PostgreSQL",
+      "High Availability"
+    ],
+    "summary": "DB Replication은 데이터를 여러 서버에 복제해 가용성과 읽기 성능을 높이는 핵심 기술이다. 복제 방식, 동기/비동기 차이, Replication Lag, 장애 대응까지 실전 중심으로 정리한다.",
+    "body": "단일 DB 서버는 트래픽이 몰리면 병목이 생기고, 장애가 나면 서비스 전체가 멈춘다.\nReplication은 데이터를 여러 서버에 복제해   읽기 성능  과   고가용성 HA   을 동시에 확보하는 가장 일반적인 방법이다.\n\n   Replication 기본 구조\n\n   \n               쓰기\nClient ──────────────→ Primary  Source \n                            │\n                   Binlog/WAL 전송\n                       ┌────┴────┐\n                       ▼         ▼\n                  Replica 1   Replica 2\n                       ↑         ↑\n               읽기    └────┬────┘\nClient ────────────────────┘\n   \n\n-   Primary  Master/Source   : 쓰기 전용. 모든 INSERT/UPDATE/DELETE가 여기서 처리된다.\n-   Replica  Slave/Secondary   : 읽기 전용. Primary의 변경사항을 복제해 읽기 부하를 분산한다.\n\n---\n\n   복제 방식: 바이너리 로그 기반\n\nMySQL을 기준으로, Primary는 모든 변경 이벤트를   Binary Log Binlog   에 기록한다.\nReplica는 이 Binlog를 읽어 동일한 연산을 재실행한다.\n\n   \nPrimary: SQL 실행 → Binlog 기록\n             │\n         IO Thread  Replica \n             │ Binlog 가져오기\n             ▼\n        Relay Log  Replica \n             │\n         SQL Thread  Replica \n             │ Relay Log 재실행\n             ▼\n        Replica 데이터 반영\n   \n\n    Statement-based vs Row-based\n\n| 방식 | 설명 | 장점 | 단점 |\n|------|------|------|------|\n| Statement-based | SQL 문장 자체를 복제 | 로그 크기 작음 |  NOW   ,  RAND    등 비결정적 함수에서 불일치 가능 |\n| Row-based | 변경된 행 데이터를 복제 | 정확성 보장 | 대량 UPDATE 시 로그 크기 증가 |\n| Mixed | 상황에 따라 자동 선택 | 균형 | 예측 어려움 |\n\n현대 MySQL/PostgreSQL은 기본적으로   Row-based   복제를 권장한다.\n\n---\n\n   동기 vs 비동기 복제\n\n복제 방식에서 가장 중요한 트레이드오프다.\n\n    비동기 복제  Asynchronous \n\nMySQL의 기본 방식이다.\n\n   \nClient → Primary: 커밋 완료 → 즉시 응답\n                     │\n                 백그라운드로 Replica에 Binlog 전송 \n                     ▼\n              Replica: 나중에 반영\n   \n\n  장점  : 쓰기 지연 없음, Primary 성능에 영향 없음\n\n  단점  : Primary 장애 시 아직 복제되지 않은 데이터 유실 가능 →   RPO   0  \n\n   \nPrimary 장애 직전 상태:\n  Primary:  트랜잭션 1000번까지 커밋\n  Replica:  트랜잭션 997번까지만 반영\n  → 3개 트랜잭션 유실 위험\n   \n\n    반동기 복제  Semi-synchronous \n\nMySQL의  rpl semi sync  플러그인으로 활성화한다.\n\n   \nClient → Primary: 커밋\n            │\n         Binlog 전송 → Replica: ACK 응답\n            │  적어도 1개 Replica가 수신 확인 \n            ▼\n         Client에 응답 반환\n   \n\n  장점  : 적어도 1개 Replica에 데이터 도달 보장 → 유실 위험 최소화\n\n  단점  : Replica ACK 대기 시간만큼 쓰기 지연 발생\n\n   sql\n-- MySQL 반동기 복제 활성화\nINSTALL PLUGIN rpl semi sync source SONAME 'semisync source.so';\nSET GLOBAL rpl semi sync source enabled = 1;\nSET GLOBAL rpl semi sync source timeout = 1000; -- 1초 타임아웃\n   \n\n    동기 복제  Synchronous \n\n모든 Replica에 반영 확인 후 커밋 완료. PostgreSQL의   Synchronous Standby  가 이 방식이다.\n\n   sql\n-- PostgreSQL 동기 복제 설정  postgresql.conf \nsynchronous commit = on\nsynchronous standby names = 'FIRST 1  replica1, replica2 '\n   \n\n  장점  : 데이터 무손실 RPO = 0  보장\n\n  단점  : 모든 Replica가 응답해야 하므로 쓰기 성능 저하, Replica 장애 시 Primary도 블로킹\n\n---\n\n   Replication Lag\n\n비동기 복제에서 Replica가 Primary를 따라가지 못하는 지연 현상이다.\n\n   \nPrimary:   트랜잭션 1000   트랜잭션 1001  ...  트랜잭션 2000 \nReplica:   트랜잭션 1000  ...  트랜잭션 1500 \n                                              ↑\n                                   Lag = 500 트랜잭션\n   \n\n    Lag 발생 원인\n\n-   대량 쓰기 배치 작업  : Primary에 수백만 건 INSERT 시 Replica가 따라오지 못함\n-   단일 스레드 복제  : MySQL 5.6 이전은 SQL Thread가 단일 스레드 → 병렬 처리 불가\n-   네트워크 지연  : Primary↔Replica 간 대역폭 부족\n-   Replica 서버 스펙 부족  : CPU/IO 성능이 Primary보다 낮을 때\n\n    Lag 측정\n\n   sql\n-- MySQL\nSHOW REPLICA STATUS\\G\n-- Seconds Behind Source 값 확인\n\n-- PostgreSQL\nSELECT\n  client addr,\n  state,\n  sent lsn,\n  write lsn,\n  flush lsn,\n  replay lsn,\n   sent lsn - replay lsn  AS replication lag bytes\nFROM pg stat replication;\n   \n\n    Lag 해결 방법\n\n   sql\n-- MySQL 8.0+ 병렬 복제 활성화\nSET GLOBAL replica parallel workers = 8;\nSET GLOBAL replica parallel type = 'LOGICAL CLOCK';\n   \n\n애플리케이션 레벨에서는   읽기 전략  을 통해 Lag 영향을 최소화한다.\n\n   java\n// 직접 쓴 데이터를 바로 읽어야 할 때 → Primary에서 읽기\n@Transactional readOnly = false \npublic User createUser CreateUserRequest request  {\n    return userRepository.save new User request  ;\n}\n\n// 방금 생성한 사용자 정보 즉시 조회 → Replica Lag 회피\n@Transactional readOnly = false   // Primary 라우팅\npublic UserResponse getCreatedUser Long id  {\n    return userRepository.findById id \n        .map UserResponse::from \n        .orElseThrow  ;\n}\n\n// 일반 조회 → Replica\n@Transactional readOnly = true    // Replica 라우팅\npublic List<UserResponse  listUsers   {\n    return userRepository.findAll  .stream  \n        .map UserResponse::from \n        .toList  ;\n}\n   \n\n---\n\n   Spring에서 Primary/Replica 라우팅\n\nSpring의  AbstractRoutingDataSource 로 트랜잭션 읽기/쓰기 여부에 따라 DB를 자동 선택할 수 있다.\n\n   java\npublic class ReplicationRoutingDataSource extends AbstractRoutingDataSource {\n\n    @Override\n    protected Object determineCurrentLookupKey   {\n        boolean isReadOnly = TransactionSynchronizationManager.isCurrentTransactionReadOnly  ;\n        return isReadOnly ? \"replica\" : \"primary\";\n    }\n}\n   \n\n   java\n@Configuration\npublic class DataSourceConfig {\n\n    @Bean\n    public DataSource dataSource \n        @Qualifier \"primaryDataSource\"  DataSource primary,\n        @Qualifier \"replicaDataSource\"  DataSource replica\n      {\n        ReplicationRoutingDataSource routing = new ReplicationRoutingDataSource  ;\n        routing.setTargetDataSources Map.of \n            \"primary\", primary,\n            \"replica\", replica\n          ;\n        routing.setDefaultTargetDataSource primary ;\n        return new LazyConnectionDataSourceProxy routing ;\n    }\n}\n   \n\n   yaml\n  application.yml\ndatasource:\n  primary:\n    url: jdbc:mysql://primary-host:3306/mydb\n    username: root\n    password: secret\n  replica:\n    url: jdbc:mysql://replica-host:3306/mydb\n    username: root\n    password: secret\n   \n\n LazyConnectionDataSourceProxy 를 반드시 감싸야 한다. 없으면 트랜잭션 시작 시점이 아닌 커넥션 획득 시점에 라우팅이 결정돼  readOnly  여부를 읽지 못한다.\n\n---\n\n   Failover와 High Availability\n\nPrimary 장애 시 Replica를 새로운 Primary로 승격시키는 절차가   Failover  다.\n\n    수동 Failover  MySQL \n\n   sql\n-- 1. Replica를 새 Primary로 승격\nSTOP REPLICA;\nRESET REPLICA ALL;\n\n-- 2. 쓰기 허용\nSET GLOBAL read only = OFF;\n\n-- 3. 나머지 Replica들을 새 Primary로 재연결\nCHANGE REPLICATION SOURCE TO\n  SOURCE HOST = 'new-primary-host',\n  SOURCE PORT = 3306,\n  SOURCE AUTO POSITION = 1;\nSTART REPLICA;\n   \n\n    자동 Failover 도구\n\n| 도구 | 설명 |\n|------|------|\n|   MHA    MySQL HA  | MySQL 전통적 HA 솔루션, Failover 15~30초 |\n|   Orchestrator   | 토폴로지 시각화 + 자동 Failover |\n|   ProxySQL   | DB 프록시. Primary/Replica 자동 라우팅 + 헬스체크 |\n|   AWS RDS Multi-AZ   | 관리형 동기 복제 + 자동 Failover  ~60초  |\n|   Patroni    PostgreSQL  | etcd/ZooKeeper 기반 자동 Failover |\n\n    ProxySQL 라우팅 예시\n\n   sql\n-- ProxySQL에서 Primary/Replica 자동 분기\n-- 읽기 쿼리 → Replica 그룹\nINSERT INTO mysql query rules  rule id, active, match pattern, destination hostgroup \nVALUES  1, 1, '^SELECT', 2 ;  -- hostgroup 2 = Replica\n\n-- 쓰기 쿼리 → Primary 그룹\nINSERT INTO mysql query rules  rule id, active, match pattern, destination hostgroup \nVALUES  2, 1, '. ', 1 ;  -- hostgroup 1 = Primary\n\nLOAD MYSQL QUERY RULES TO RUNTIME;\nSAVE MYSQL QUERY RULES TO DISK;\n   \n\n---\n\n   GTID 기반 복제  MySQL 5.6+ \n\n전통적인 Binlog 위치 파일명 + 오프셋  기반 복제는 Failover 후 수동으로 복제 위치를 맞춰야 해서 오류가 잦다.\n\n  GTID Global Transaction Identifier   는 각 트랜잭션에 전역 고유 ID를 부여한다.\n\n   \nGTID = server uuid:transaction id\n예: 3E11FA47-71CA-11E1-9E33-C80AA9429562:1-100\n   \n\n   sql\n-- GTID 복제 설정  my.cnf \n mysqld \ngtid mode = ON\nenforce gtid consistency = ON\n\n-- Replica 설정\nCHANGE REPLICATION SOURCE TO\n  SOURCE HOST = 'primary-host',\n  SOURCE AUTO POSITION = 1;  -- GTID 기반 자동 위치 추적\nSTART REPLICA;\n   \n\nFailover 후에도 각 Replica가 자신이 처리한 GTID 집합을 알고 있어, 새 Primary 연결 시 자동으로 누락된 트랜잭션부터 재시작한다.\n\n---\n\n   복제 토폴로지 패턴\n\n    Single Primary + Multiple Replica  가장 일반적 \n\n   \nPrimary\n├── Replica 1  읽기 \n├── Replica 2  읽기 \n└── Replica 3  백업 전용 \n   \n\n    Cascaded Replication\n\nReplica가 또 다른 Replica의 Primary가 되는 체인 구조.\nPrimary 부하를 분산할 수 있지만 Lag가 누적된다.\n\n   \nPrimary → Replica 1 → Replica 2 → Replica 3\n   \n\n    Multi-Primary  Group Replication \n\n모든 노드에서 쓰기 가능. Paxos 기반 합의로 충돌을 해결한다.\nMySQL Group Replication, Galera Cluster가 대표적이다.\n\n   \nPrimary 1 ←→ Primary 2 ←→ Primary 3\n 모든 노드 쓰기 가능, 합의 필요 \n   \n\n단점: 쓰기 충돌 발생 시 롤백, 합의 오버헤드로 단일 Primary보다 쓰기 성능 낮음.\n\n---\n\n   운영 시 체크포인트\n\n   \n1. Replication Lag 모니터링\n   → Seconds Behind Source / pg stat replication 를 Grafana 등에 연동\n\n2. 읽기/쓰기 라우팅 정책 명확히 정의\n   → 읽기 전용: @Transactional readOnly = true  철저히 지키기\n\n3. Failover 절차 문서화 + 정기 훈련\n   → Chaos Engineering: 의도적으로 Primary 내리고 복구 시간 측정\n\n4. Replica에서의 DDL 처리 주의\n   → 대형 테이블 ALTER TABLE은 Lag를 폭발적으로 증가시킴\n   → pt-online-schema-change 또는 gh-ost 사용 권장\n\n5. Replica 지연 허용 범위 설정\n   → Lag   N초 시 알람, 읽기 트래픽을 Primary로 일시 전환\n   \n\n---\n\nReplication의 핵심은   \"어디서 읽고, 어디서 쓸지\"의 경계를 명확히 하고, Lag와 Failover 시나리오를 항상 대비하는 것  이다.\n동기/비동기 방식의 트레이드오프를 이해하고 서비스 RPO/RTO 요구사항에 맞는 복제 전략을 선택해야 한다.",
+    "date": "2026-04-02"
+  },
+  {
     "slug": "ddd-bounded-context",
     "title": "DDD의 Bounded Context — 경계를 설계한다는 것",
     "category": "Backend",
@@ -310,7 +325,7 @@
   {
     "slug": "forward-reverse-proxy",
     "title": "포워드 프록시와 리버스 프록시 — 중간자의 역할",
-    "category": "Backend",
+    "category": "Network",
     "tags": [
       "Proxy",
       "Nginx",
@@ -410,7 +425,7 @@
   {
     "slug": "http-status-code",
     "title": "HTTP 상태 코드 완전 정복",
-    "category": "Backend",
+    "category": "Network",
     "tags": [
       "HTTP",
       "Status Code",
@@ -710,7 +725,7 @@
   {
     "slug": "redis-caching-strategy",
     "title": "Redis 캐싱 전략 완벽 정리",
-    "category": "Backend",
+    "category": "DB",
     "tags": [
       "Redis",
       "Cache",
@@ -818,7 +833,7 @@
   {
     "slug": "sse",
     "title": "SSE — 서버에서 클라이언트로 단방향 스트리밍",
-    "category": "Backend",
+    "category": "Network",
     "tags": [
       "SSE",
       "Server-Sent Events",
@@ -867,7 +882,7 @@
   {
     "slug": "tcp-handshake",
     "title": "TCP 3-way Handshake — 연결이 맺어지는 과정",
-    "category": "Backend",
+    "category": "Network",
     "tags": [
       "TCP",
       "Network",
@@ -898,7 +913,7 @@
   {
     "slug": "timeseries-db",
     "title": "시계열 데이터베이스 — 시간이 핵심인 데이터를 다루는 방법",
-    "category": "Backend",
+    "category": "DB",
     "tags": [
       "TimescaleDB",
       "InfluxDB",
@@ -914,7 +929,7 @@
   {
     "slug": "transaction-boundary",
     "title": "트랜잭션 경계를 잘 잡아야 하는 이유",
-    "category": "Backend",
+    "category": "DB",
     "tags": [
       "Transaction",
       "Spring",

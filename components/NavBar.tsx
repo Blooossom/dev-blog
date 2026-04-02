@@ -8,6 +8,8 @@ const CATEGORIES = [
   { href: '/categories/frontend', label: 'Frontend' },
   { href: '/categories/backend', label: 'Backend' },
   { href: '/categories/devops', label: 'DevOps' },
+  { href: '/categories/db', label: 'DB' },
+  { href: '/categories/network', label: 'Network' },
   { href: '/categories/ai', label: 'AI' },
   { href: '/categories/general', label: 'General' },
 ]
