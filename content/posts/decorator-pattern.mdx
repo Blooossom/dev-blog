@@ -1,0 +1,268 @@
+---
+title: 데코레이터 패턴 — 기능을 동적으로 확장하는 구조
+date: '2026-04-04'
+category: Architecture
+tags:
+  - 디자인 패턴
+  - 데코레이터 패턴
+  - Java
+  - Spring
+  - GoF
+summary: >-
+  데코레이터 패턴은 상속 없이 객체에 기능을 동적으로 추가하는 구조 패턴이다. GoF 패턴의 핵심 개념부터 Java 표준 라이브러리와 Spring AOP에서의 실제 적용 사례까지 정리한다.
+thumbnail: /thumbnails/decorator-pattern.svg
+---
+
+새로운 기능이 필요할 때마다 클래스를 상속해 확장하면, 기능 조합의 수만큼 서브클래스가 폭발적으로 늘어난다. 데코레이터 패턴은 **객체를 감싸는(wrapping) 방식으로 기능을 동적으로 추가**해 이 문제를 해결한다.
+
+## 패턴 구조
+
+데코레이터 패턴의 참여자는 네 가지다.
+
+```
+        ┌──────────────┐
+        │  Component   │  (인터페이스 또는 추상 클래스)
+        │  + operation()│
+        └──────┬───────┘
+               │
+       ┌───────┴────────┐
+       │                │
+┌──────┴──────┐  ┌──────┴──────────────┐
+│ConcreteComp │  │    Decorator        │  (추상 데코레이터)
+│+ operation()│  │- component: Component│
+└─────────────┘  │+ operation()        │
+                 └──────┬──────────────┘
+                        │
+               ┌────────┴────────┐
+               │                 │
+        ┌──────┴──────┐  ┌──────┴──────┐
+        │ConcreteDecA │  │ConcreteDecB │
+        │+ operation()│  │+ operation()│
+        └─────────────┘  └─────────────┘
+```
+
+- **Component**: 기본 동작을 정의하는 인터페이스
+- **ConcreteComponent**: 실제 핵심 기능을 구현한 클래스
+- **Decorator**: Component를 구현하면서, Component를 내부에 보유
+- **ConcreteDecorator**: 기능을 추가하는 구체 데코레이터
+
+---
+
+## 기본 예시 — 커피 주문
+
+커피에 우유, 시럽, 휘핑크림을 얹는 상황을 데코레이터 패턴으로 구현해보자.
+
+```java
+// Component
+interface Coffee {
+    String getDescription();
+    int getPrice();
+}
+
+// ConcreteComponent
+class Espresso implements Coffee {
+    @Override
+    public String getDescription() { return "에스프레소"; }
+
+    @Override
+    public int getPrice() { return 2000; }
+}
+
+// Decorator (추상)
+abstract class CoffeeDecorator implements Coffee {
+    protected final Coffee coffee;
+
+    CoffeeDecorator(Coffee coffee) {
+        this.coffee = coffee;
+    }
+}
+
+// ConcreteDecorator A
+class MilkDecorator extends CoffeeDecorator {
+    MilkDecorator(Coffee coffee) { super(coffee); }
+
+    @Override
+    public String getDescription() {
+        return coffee.getDescription() + ", 우유";
+    }
+
+    @Override
+    public int getPrice() { return coffee.getPrice() + 500; }
+}
+
+// ConcreteDecorator B
+class WhipDecorator extends CoffeeDecorator {
+    WhipDecorator(Coffee coffee) { super(coffee); }
+
+    @Override
+    public String getDescription() {
+        return coffee.getDescription() + ", 휘핑크림";
+    }
+
+    @Override
+    public int getPrice() { return coffee.getPrice() + 800; }
+}
+```
+
+```java
+// 사용
+Coffee order = new Espresso();
+order = new MilkDecorator(order);
+order = new WhipDecorator(order);
+order = new MilkDecorator(order);   // 우유 두 번도 가능
+
+System.out.println(order.getDescription()); // 에스프레소, 우유, 휘핑크림, 우유
+System.out.println(order.getPrice());       // 3800
+```
+
+상속을 전혀 사용하지 않고도 조합이 자유롭다. 새로운 옵션이 생기면 데코레이터 클래스 하나만 추가하면 된다.
+
+---
+
+## 상속과 데코레이터 패턴 비교
+
+커피에 우유·시럽·휘핑크림 세 가지 옵션이 있고 복수 선택이 가능한 경우를 상속으로 구현하면:
+
+```
+Espresso
+├── EspressoWithMilk
+├── EspressoWithSyrup
+├── EspressoWithWhip
+├── EspressoWithMilkAndSyrup
+├── EspressoWithMilkAndWhip
+├── EspressoWithSyrupAndWhip
+└── EspressoWithMilkAndSyrupAndWhip
+```
+
+옵션 3개만으로 클래스가 7개다. 옵션이 늘어날수록 조합은 기하급수적으로 증가한다.
+
+데코레이터 패턴은 옵션 하나당 클래스 하나만 추가하면 된다.
+
+---
+
+## Java 표준 라이브러리의 데코레이터 패턴
+
+Java I/O 스트림이 대표적인 사례다.
+
+```java
+// 겹겹이 감싸는 구조가 바로 데코레이터 패턴
+InputStream raw     = new FileInputStream("data.txt");      // ConcreteComponent
+InputStream buffered = new BufferedInputStream(raw);         // Decorator — 버퍼링 추가
+InputStream data    = new DataInputStream(buffered);         // Decorator — 기본형 읽기 추가
+
+int value = data.readInt();  // 파일에서 버퍼링된 방식으로 int 읽기
+```
+
+`InputStream`이 Component, `FileInputStream`이 ConcreteComponent, `BufferedInputStream`과 `DataInputStream`이 ConcreteDecorator다.
+
+---
+
+## Spring AOP — 데코레이터 패턴의 응용
+
+Spring의 `@Transactional`, `@Cacheable`, `@Async` 어노테이션은 내부적으로 프록시(데코레이터)를 생성해 동작한다.
+
+```java
+@Service
+public class OrderService {
+
+    @Transactional
+    public void placeOrder(Order order) {
+        // 핵심 비즈니스 로직만 작성
+        orderRepository.save(order);
+        paymentService.charge(order);
+    }
+}
+```
+
+Spring이 런타임에 만드는 프록시는 개념적으로 이렇게 동작한다.
+
+```java
+// Spring이 내부적으로 생성하는 프록시 (개념적 표현)
+class OrderServiceProxy extends OrderService {
+
+    @Override
+    public void placeOrder(Order order) {
+        TransactionStatus tx = transactionManager.getTransaction(...);
+        try {
+            super.placeOrder(order);  // 원본 메서드 실행
+            transactionManager.commit(tx);
+        } catch (Exception e) {
+            transactionManager.rollback(tx);
+            throw e;
+        }
+    }
+}
+```
+
+`@Cacheable`도 마찬가지다. 캐시 확인 → 캐시 히트 시 반환 → 미스 시 원본 실행 → 결과 저장의 흐름을 프록시가 처리한다.
+
+---
+
+## 데코레이터 직접 구현 예시 — 로깅
+
+```java
+// Component
+interface UserRepository {
+    User findById(Long id);
+    void save(User user);
+}
+
+// ConcreteComponent
+@Repository
+class UserRepositoryImpl implements UserRepository {
+    @Override
+    public User findById(Long id) { /* DB 조회 */ }
+
+    @Override
+    public void save(User user) { /* DB 저장 */ }
+}
+
+// Decorator — 로깅 추가
+class LoggingUserRepository implements UserRepository {
+    private final UserRepository delegate;
+    private final Logger log = LoggerFactory.getLogger(getClass());
+
+    LoggingUserRepository(UserRepository delegate) {
+        this.delegate = delegate;
+    }
+
+    @Override
+    public User findById(Long id) {
+        log.info("findById 호출: id={}", id);
+        long start = System.currentTimeMillis();
+        User result = delegate.findById(id);
+        log.info("findById 완료: {}ms", System.currentTimeMillis() - start);
+        return result;
+    }
+
+    @Override
+    public void save(User user) {
+        log.info("save 호출: user={}", user.getId());
+        delegate.save(user);
+    }
+}
+```
+
+```java
+// 조합
+UserRepository repo = new LoggingUserRepository(new UserRepositoryImpl());
+```
+
+핵심 로직(`UserRepositoryImpl`)에 로깅 코드가 한 줄도 없다. 로깅을 제거하거나 교체하려면 데코레이터만 바꾸면 된다.
+
+---
+
+## 패턴 적용 기준
+
+**데코레이터 패턴이 적합한 경우:**
+- 런타임에 조합이 결정되는 기능 확장이 필요할 때
+- 상속을 사용하면 서브클래스가 폭발적으로 늘어날 때
+- 기존 클래스를 수정하지 않고 기능을 추가해야 할 때 (개방-폐쇄 원칙)
+
+**주의할 점:**
+- 데코레이터를 여러 겹 쌓으면 디버깅 시 실행 흐름을 추적하기 어려울 수 있다
+- 특정 ConcreteComponent 타입에 의존하는 코드에는 사용하기 어렵다
+
+---
+
+데코레이터 패턴의 핵심은 **같은 인터페이스를 구현하는 래퍼 객체로 기능을 추가**하는 것이다. 이 구조 덕분에 호출하는 쪽은 데코레이터가 추가됐는지 전혀 모른 채 동일한 방식으로 사용할 수 있다.

