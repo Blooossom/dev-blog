@@ -1,0 +1,340 @@
+---
+title: React에서 axios vs fetch 완벽 비교
+date: '2026-04-04'
+category: Frontend
+tags:
+  - React
+  - axios
+  - fetch
+  - HTTP
+  - TypeScript
+summary: >-
+  React 프로젝트에서 HTTP 요청 시 axios와 native fetch API 중 무엇을 선택해야 할까. 두 방식의 차이를 실전 코드와 함께 비교하고 상황별 선택 기준을 정리한다.
+thumbnail: /thumbnails/axios-vs-fetch.svg
+---
+
+React 프로젝트를 시작할 때 "HTTP 요청은 axios로 해야 하나, fetch로 해야 하나"라는 질문은 반복적으로 등장한다. 둘 다 HTTP 요청을 보내는 도구지만, 철학과 편의성에서 차이가 있다.
+
+## 기본 사용법 비교
+
+같은 GET 요청을 두 방식으로 작성해보면 차이가 바로 보인다.
+
+### fetch
+
+```typescript
+const fetchUser = async (id: number) => {
+  const response = await fetch(`/api/users/${id}`)
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`)
+  }
+
+  const data = await response.json()
+  return data
+}
+```
+
+### axios
+
+```typescript
+import axios from 'axios'
+
+const fetchUser = async (id: number) => {
+  const { data } = await axios.get(`/api/users/${id}`)
+  return data
+}
+```
+
+첫 번째 차이가 바로 보인다. **fetch는 HTTP 에러(4xx, 5xx)를 예외로 던지지 않는다.** 응답이 오기만 하면 `ok: false`이더라도 resolve된다. 반면 axios는 2xx가 아닌 응답을 자동으로 에러로 처리한다.
+
+---
+
+## 주요 차이점 정리
+
+### 1. 에러 처리
+
+```typescript
+// fetch — 4xx/5xx를 직접 처리해야 함
+try {
+  const response = await fetch('/api/data')
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`)
+  }
+  const data = await response.json()
+} catch (err) {
+  // 네트워크 에러만 여기 도달
+  console.error(err)
+}
+
+// axios — 4xx/5xx가 자동으로 catch로 전달됨
+try {
+  const { data } = await axios.get('/api/data')
+} catch (err) {
+  if (axios.isAxiosError(err)) {
+    console.error(err.response?.status)   // 400, 404, 500 ...
+    console.error(err.response?.data)     // 서버 응답 바디
+  }
+}
+```
+
+### 2. 요청 바디 직렬화
+
+```typescript
+// fetch — JSON.stringify 직접 호출
+await fetch('/api/users', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ name: 'Alice', age: 30 }),
+})
+
+// axios — 자동 직렬화, Content-Type 자동 설정
+await axios.post('/api/users', { name: 'Alice', age: 30 })
+```
+
+### 3. 인터셉터
+
+axios의 가장 강력한 기능 중 하나다. 모든 요청/응답을 일괄 처리할 수 있다.
+
+```typescript
+// axios 인터셉터
+const apiClient = axios.create({
+  baseURL: 'https://api.example.com',
+  timeout: 5000,
+})
+
+// 요청 인터셉터 — 모든 요청에 인증 토큰 자동 첨부
+apiClient.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// 응답 인터셉터 — 401 시 토큰 갱신 후 재시도
+apiClient.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 401) {
+      const newToken = await refreshToken()
+      error.config.headers.Authorization = `Bearer ${newToken}`
+      return apiClient(error.config)  // 원래 요청 재시도
+    }
+    return Promise.reject(error)
+  }
+)
+```
+
+fetch에서 같은 동작을 구현하려면 래퍼 함수를 직접 만들어야 한다.
+
+### 4. 요청 취소
+
+```typescript
+// fetch — AbortController 사용
+const controller = new AbortController()
+
+useEffect(() => {
+  const loadData = async () => {
+    try {
+      const response = await fetch('/api/data', {
+        signal: controller.signal,
+      })
+      const data = await response.json()
+      setData(data)
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return
+    }
+  }
+
+  loadData()
+  return () => controller.abort()
+}, [])
+
+// axios — CancelToken 또는 AbortController 모두 지원
+useEffect(() => {
+  const controller = new AbortController()
+
+  axios.get('/api/data', { signal: controller.signal })
+    .then(({ data }) => setData(data))
+    .catch((err) => {
+      if (axios.isCancel(err)) return
+    })
+
+  return () => controller.abort()
+}, [])
+```
+
+### 5. 타임아웃
+
+```typescript
+// fetch — 기본 타임아웃 없음, AbortController로 직접 구현
+const timeout = (ms: number) => new Promise((_, reject) =>
+  setTimeout(() => reject(new Error('Timeout')), ms)
+)
+
+const response = await Promise.race([
+  fetch('/api/data'),
+  timeout(5000),
+])
+
+// axios — 옵션 하나로 설정
+const { data } = await axios.get('/api/data', { timeout: 5000 })
+// 또는 인스턴스에서 전역 설정
+const api = axios.create({ timeout: 5000 })
+```
+
+### 6. 업로드 진행률
+
+```typescript
+// fetch — 진행률 추적 불가
+// axios — onUploadProgress 지원
+await axios.post('/api/upload', formData, {
+  onUploadProgress: (progressEvent) => {
+    const percent = Math.round(
+      (progressEvent.loaded * 100) / (progressEvent.total ?? 1)
+    )
+    setProgress(percent)
+  },
+})
+```
+
+---
+
+## 한눈에 보는 비교표
+
+| 기능 | fetch | axios |
+|------|-------|-------|
+| 번들 크기 | 0 KB (브라우저 내장) | ~13 KB |
+| HTTP 에러 자동 처리 | ❌ 직접 처리 | ✅ 자동 |
+| JSON 자동 직렬화 | ❌ 직접 작성 | ✅ 자동 |
+| 인터셉터 | ❌ | ✅ |
+| 타임아웃 | ❌ 직접 구현 | ✅ 옵션 |
+| 요청 취소 | ✅ AbortController | ✅ AbortController |
+| 업로드 진행률 | ❌ | ✅ |
+| 브라우저 지원 | Chrome 42+, Node 18+ | 모든 환경 |
+| TypeScript 타입 | 내장 | 내장 |
+
+---
+
+## React 프로젝트에서 실전 패턴
+
+### fetch + 커스텀 훅
+
+```typescript
+// hooks/useFetch.ts
+function useFetch<T>(url: string) {
+  const [data, setData] = useState<T | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<Error | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    const load = async () => {
+      try {
+        const res = await fetch(url, { signal: controller.signal })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        setData(await res.json())
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        setError(err as Error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    load()
+    return () => controller.abort()
+  }, [url])
+
+  return { data, loading, error }
+}
+```
+
+### axios + 인스턴스 패턴
+
+```typescript
+// lib/apiClient.ts
+const apiClient = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL,
+  timeout: 10_000,
+  headers: { 'Content-Type': 'application/json' },
+})
+
+apiClient.interceptors.request.use((config) => {
+  const token = sessionStorage.getItem('accessToken')
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+apiClient.interceptors.response.use(
+  (res) => res,
+  (err: AxiosError) => {
+    if (err.response?.status === 403) {
+      window.location.href = '/login'
+    }
+    return Promise.reject(err)
+  }
+)
+
+export default apiClient
+```
+
+```typescript
+// 사용하는 곳
+const getUser = (id: number) =>
+  apiClient.get<User>(`/users/${id}`).then((res) => res.data)
+```
+
+---
+
+## TanStack Query(React Query)와 조합
+
+실무에서는 fetch나 axios 단독보다 **TanStack Query와 함께 사용**하는 패턴이 일반적이다.
+
+```typescript
+// axios + TanStack Query
+const useUser = (id: number) =>
+  useQuery({
+    queryKey: ['user', id],
+    queryFn: () => apiClient.get<User>(`/users/${id}`).then((r) => r.data),
+  })
+
+// fetch + TanStack Query
+const useUser = (id: number) =>
+  useQuery({
+    queryKey: ['user', id],
+    queryFn: async () => {
+      const res = await fetch(`/api/users/${id}`)
+      if (!res.ok) throw new Error('Failed to fetch')
+      return res.json() as Promise<User>
+    },
+  })
+```
+
+TanStack Query를 쓴다면 캐싱·재시도·로딩 상태 관리는 라이브러리가 해결해주므로 axios의 편의 기능 필요성이 줄어든다.
+
+---
+
+## 선택 기준
+
+```
+프로젝트 규모가 작고 외부 API 호출이 단순하다
+  → fetch로 충분하다
+
+인터셉터로 공통 인증/에러 처리가 필요하다
+  → axios가 유리하다
+
+번들 사이즈가 매우 중요한 환경 (모바일 웹, 임베디드)
+  → fetch 사용 또는 ky 같은 경량 대안 고려
+
+파일 업로드 진행률 표시가 필요하다
+  → axios 선택
+
+Next.js App Router에서 서버 컴포넌트로 데이터를 fetch한다
+  → 브라우저 내장 fetch가 서버 환경에서 더 자연스럽다
+```
+
+---
+
+fetch는 브라우저 표준이고 axios는 편의 기능을 갖춘 래퍼다. **단순한 요청이라면 fetch**, **공통 처리가 많고 팀 규모가 크다면 axios**가 실용적인 선택이다. 어느 쪽을 쓰더라도 TanStack Query 같은 서버 상태 관리 라이브러리와 조합하면 중복 코드를 크게 줄일 수 있다.
