@@ -1,0 +1,341 @@
+---
+title: 팩토리 메서드 패턴 — 객체 생성을 서브클래스에 위임하기
+date: '2026-04-05'
+category: Architecture
+tags:
+  - 디자인 패턴
+  - 팩토리 메서드 패턴
+  - Java
+  - Spring
+  - GoF
+summary: >-
+  팩토리 메서드 패턴은 객체 생성 로직을 서브클래스에 위임해 생성 코드와 사용 코드를 분리하는 생성 패턴이다. 단순 팩토리와의 차이, Spring에서의 적용 사례까지 정리한다.
+thumbnail: /thumbnails/factory-method-pattern.svg
+---
+
+`new Foo()`는 단순해 보이지만, 생성할 타입이 런타임에 결정되거나 생성 로직이 복잡해지면 문제가 된다. 팩토리 메서드 패턴은 **객체를 생성하는 책임을 서브클래스에 위임**해, 호출하는 쪽이 구체 타입을 몰라도 되게 만든다.
+
+## 패턴 구조
+
+```
+        ┌──────────────────────────────┐
+        │         Creator              │  (추상 클래스)
+        │  + someOperation()           │
+        │  + createProduct(): Product  │  ← 팩토리 메서드 (추상)
+        └──────────────┬───────────────┘
+                       │
+          ┌────────────┴────────────┐
+          │                         │
+┌─────────┴──────────┐   ┌─────────┴──────────┐
+│  ConcreteCreatorA  │   │  ConcreteCreatorB  │
+│ + createProduct()  │   │ + createProduct()  │
+└─────────┬──────────┘   └─────────┬──────────┘
+          │ 생성                     │ 생성
+          ▼                         ▼
+┌─────────────────┐       ┌─────────────────┐
+│ ConcreteProductA│       │ ConcreteProductB│
+└─────────────────┘       └─────────────────┘
+          │                         │
+          └────────────┬────────────┘
+                       ▼
+               ┌───────────────┐
+               │    Product    │  (인터페이스)
+               └───────────────┘
+```
+
+- **Product**: 생성될 객체의 인터페이스
+- **Creator**: 팩토리 메서드를 선언하는 추상 클래스. 팩토리 메서드를 호출해 제품을 사용하는 로직을 담는다
+- **ConcreteCreator**: 팩토리 메서드를 구현해 특정 Product를 반환
+- **ConcreteProduct**: Product를 구현한 실제 객체
+
+---
+
+## 단순 팩토리와의 차이
+
+팩토리 메서드 패턴을 배우기 전에 **단순 팩토리(Simple Factory)**와 혼동하는 경우가 많다.
+
+### 단순 팩토리
+
+```java
+// if-else로 타입을 분기해 객체를 생성 — GoF 패턴이 아님
+class NotificationFactory {
+    static Notification create(String type) {
+        return switch (type) {
+            case "EMAIL" -> new EmailNotification();
+            case "SMS"   -> new SmsNotification();
+            case "PUSH"  -> new PushNotification();
+            default      -> throw new IllegalArgumentException(type);
+        };
+    }
+}
+```
+
+새 타입이 추가될 때마다 팩토리 클래스를 수정해야 한다. **개방-폐쇄 원칙(OCP)** 위반이다.
+
+### 팩토리 메서드 패턴
+
+```java
+// 서브클래스가 생성 책임을 가짐 — 팩토리 클래스 수정 없이 확장 가능
+abstract class NotificationSender {
+    // 팩토리 메서드
+    protected abstract Notification createNotification();
+
+    // 팩토리 메서드를 사용하는 공통 로직
+    public void send(String message) {
+        Notification notification = createNotification();
+        notification.prepare(message);
+        notification.deliver();
+    }
+}
+```
+
+새 타입이 생기면 `NotificationSender`의 서브클래스만 추가하면 된다.
+
+---
+
+## 전체 예시 — 알림 발송 시스템
+
+```java
+// Product
+interface Notification {
+    void prepare(String message);
+    void deliver();
+}
+
+// ConcreteProduct A
+class EmailNotification implements Notification {
+    private String message;
+
+    @Override
+    public void prepare(String message) {
+        this.message = "[Email] " + message;
+    }
+
+    @Override
+    public void deliver() {
+        System.out.println("이메일 발송: " + message);
+    }
+}
+
+// ConcreteProduct B
+class SmsNotification implements Notification {
+    private String message;
+
+    @Override
+    public void prepare(String message) {
+        this.message = "[SMS] " + message;
+    }
+
+    @Override
+    public void deliver() {
+        System.out.println("SMS 발송: " + message);
+    }
+}
+
+// ConcreteProduct C
+class PushNotification implements Notification {
+    private String message;
+
+    @Override
+    public void prepare(String message) {
+        this.message = "[Push] " + message;
+    }
+
+    @Override
+    public void deliver() {
+        System.out.println("푸시 알림 발송: " + message);
+    }
+}
+```
+
+```java
+// Creator
+abstract class NotificationSender {
+    // 팩토리 메서드 — 서브클래스가 구현
+    protected abstract Notification createNotification();
+
+    // 팩토리 메서드를 호출해 작업 수행 — 공통 흐름
+    public void send(String message) {
+        Notification notification = createNotification();
+        notification.prepare(message);
+        notification.deliver();
+    }
+}
+
+// ConcreteCreator A
+class EmailSender extends NotificationSender {
+    @Override
+    protected Notification createNotification() {
+        return new EmailNotification();
+    }
+}
+
+// ConcreteCreator B
+class SmsSender extends NotificationSender {
+    @Override
+    protected Notification createNotification() {
+        return new SmsNotification();
+    }
+}
+
+// ConcreteCreator C
+class PushSender extends NotificationSender {
+    @Override
+    protected Notification createNotification() {
+        return new PushNotification();
+    }
+}
+```
+
+```java
+// 사용
+List<NotificationSender> senders = List.of(
+    new EmailSender(),
+    new SmsSender(),
+    new PushSender()
+);
+
+for (NotificationSender sender : senders) {
+    sender.send("서버 장애 발생!");
+}
+
+// 출력:
+// 이메일 발송: [Email] 서버 장애 발생!
+// SMS 발송: [SMS] 서버 장애 발생!
+// 푸시 알림 발송: [Push] 서버 장애 발생!
+```
+
+호출하는 쪽은 `NotificationSender`만 알면 된다. `EmailNotification`, `SmsNotification`의 존재를 몰라도 된다.
+
+---
+
+## 매개변수를 받는 변형
+
+팩토리 메서드가 파라미터를 받아 생성 방식을 결정할 수도 있다.
+
+```java
+abstract class DialogCreator {
+    // 파라미터를 받는 팩토리 메서드
+    protected abstract Button createButton(String label, ButtonStyle style);
+
+    public void renderDialog() {
+        Button okBtn     = createButton("확인", ButtonStyle.PRIMARY);
+        Button cancelBtn = createButton("취소", ButtonStyle.SECONDARY);
+        okBtn.render();
+        cancelBtn.render();
+    }
+}
+
+class WebDialogCreator extends DialogCreator {
+    @Override
+    protected Button createButton(String label, ButtonStyle style) {
+        return new HtmlButton(label, style);
+    }
+}
+
+class MobileDialogCreator extends DialogCreator {
+    @Override
+    protected Button createButton(String label, ButtonStyle style) {
+        return new NativeButton(label, style);
+    }
+}
+```
+
+---
+
+## Spring에서의 팩토리 메서드 패턴
+
+Spring은 팩토리 메서드 패턴을 여러 곳에서 활용한다.
+
+### BeanFactory / ApplicationContext
+
+`ApplicationContext` 자체가 빈 생성을 담당하는 팩토리다.
+
+```java
+// getBean() — 타입에 맞는 객체를 생성/반환하는 팩토리 메서드
+ApplicationContext ctx = new AnnotationConfigApplicationContext(AppConfig.class);
+UserService userService = ctx.getBean(UserService.class);
+```
+
+### @Bean 메서드
+
+`@Configuration` 클래스의 `@Bean` 메서드가 팩토리 메서드 역할을 한다.
+
+```java
+@Configuration
+public class DataSourceConfig {
+
+    // 팩토리 메서드 — 환경에 따라 다른 DataSource 반환
+    @Bean
+    @Profile("production")
+    public DataSource productionDataSource() {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(System.getenv("DB_URL"));
+        return new HikariDataSource(config);
+    }
+
+    @Bean
+    @Profile("test")
+    public DataSource testDataSource() {
+        return new EmbeddedDatabaseBuilder()
+            .setType(EmbeddedDatabaseType.H2)
+            .build();
+    }
+}
+```
+
+호출하는 쪽은 `DataSource` 인터페이스만 의존하며, 실제 구현체가 `HikariDataSource`인지 `EmbeddedDatabase`인지 모른다.
+
+### FactoryBean
+
+Spring의 `FactoryBean<T>` 인터페이스는 팩토리 메서드 패턴을 직접 구현한 추상화다.
+
+```java
+public class ConnectionPoolFactoryBean implements FactoryBean<DataSource> {
+
+    @Override
+    public DataSource getObject() {
+        // 복잡한 생성 로직
+        HikariConfig config = new HikariConfig();
+        config.setMaximumPoolSize(10);
+        return new HikariDataSource(config);
+    }
+
+    @Override
+    public Class<?> getObjectType() {
+        return DataSource.class;
+    }
+}
+```
+
+---
+
+## 추상 팩토리 패턴과의 차이
+
+팩토리 메서드와 추상 팩토리는 자주 혼동된다.
+
+| 구분 | 팩토리 메서드 | 추상 팩토리 |
+|------|-------------|------------|
+| 목적 | 단일 제품 생성을 서브클래스에 위임 | 관련된 제품군 전체를 생성 |
+| 구조 | 상속 기반 (서브클래스가 결정) | 구성(composition) 기반 (팩토리 객체를 주입) |
+| 메서드 수 | 팩토리 메서드 1개 | 여러 개의 팩토리 메서드 묶음 |
+| 확장 방식 | 새 Creator 서브클래스 추가 | 새 팩토리 구현체 추가 |
+
+팩토리 메서드 패턴이 "버튼 하나를 만드는 방법"이라면, 추상 팩토리 패턴은 "버튼·체크박스·입력창을 하나의 UI 테마로 묶어 만드는 방법"에 가깝다.
+
+---
+
+## 패턴 적용 기준
+
+**팩토리 메서드 패턴이 적합한 경우:**
+- 생성할 객체의 타입을 미리 알 수 없고, 서브클래스가 결정해야 할 때
+- 생성 로직을 재사용 가능한 공통 흐름에서 분리하고 싶을 때
+- 새로운 제품 타입 추가 시 기존 코드를 수정하지 않으려 할 때 (OCP)
+
+**주의할 점:**
+- 제품 타입이 늘어날 때마다 Creator 서브클래스도 함께 늘어난다
+- 단순한 생성 분기라면 단순 팩토리나 `switch` 표현식으로 충분할 수 있다
+
+---
+
+팩토리 메서드 패턴의 핵심은 **"어떤 객체를 만들지"를 호출하는 쪽이 아니라 서브클래스가 결정**하게 만드는 것이다. 이 구조 덕분에 새로운 제품 타입이 추가되어도 기존 Creator 코드는 전혀 바뀌지 않는다.

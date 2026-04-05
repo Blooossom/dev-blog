@@ -1,0 +1,228 @@
+---
+title: DB 커넥션 풀 — 동작 원리와 HikariCP 설정
+date: '2026-04-05'
+category: Backend
+tags:
+  - 커넥션 풀
+  - HikariCP
+  - Spring Boot
+  - JPA
+  - 성능
+summary: >-
+  DB 커넥션을 매 요청마다 새로 맺으면 TCP 핸드셰이크와 인증 비용이 반복된다. 커넥션 풀이 이 비용을 없애는 원리와 Spring Boot 기본값인 HikariCP의 핵심 설정을 정리한다.
+thumbnail: /thumbnails/db-connection-pool.svg
+---
+
+DB에 쿼리 하나를 실행하려면 TCP 연결, 인증, 세션 초기화 과정이 필요하다. 이 과정이 요청마다 반복되면 네트워크 왕복 시간이 수십 ms씩 쌓인다. 커넥션 풀은 커넥션을 미리 만들어 두고 재사용함으로써 이 비용을 없앤다.
+
+## 커넥션 없이 매번 연결한다면
+
+```
+요청마다:
+1. TCP 3-way 핸드셰이크        ~1ms
+2. DB 인증 및 세션 초기화       ~2-5ms
+3. 쿼리 실행                   ~1ms
+4. TCP 연결 종료               ~1ms
+                              ────────
+총 비용                        ~5-8ms (쿼리 자체보다 연결 비용이 더 큼)
+```
+
+초당 1,000 요청이 들어오는 서비스라면 연결 생성에만 초당 5,000~8,000ms를 소비하게 된다.
+
+---
+
+## 커넥션 풀의 동작 원리
+
+```
+애플리케이션 시작 시:
+  풀이 커넥션 N개를 미리 생성해 대기열에 보관
+
+요청 처리 시:
+  ┌────────────────┐
+  │   요청 도착    │
+  └───────┬────────┘
+          ↓
+  풀에 유휴 커넥션이 있는가?
+   ├─ 있음 → 커넥션 대출(borrow)
+   └─ 없음 → 풀 크기 < 최대값? → 새 커넥션 생성
+              풀이 가득 참   → 타임아웃까지 대기
+
+  쿼리 실행 후:
+  커넥션을 닫지 않고 풀에 반납(return)
+  → 다음 요청이 재사용
+```
+
+풀은 커넥션 자체를 닫지 않는다. `connection.close()`를 호출해도 실제 TCP 연결은 유지되고, 풀의 대기열로 돌아간다.
+
+---
+
+## HikariCP
+
+Spring Boot 2.x 이후 기본 커넥션 풀 구현체다. 가장 빠른 Java 커넥션 풀로 알려져 있으며, 설계 목표가 "불필요한 코드 없음, 최소 오버헤드"다.
+
+### 핵심 설정 (application.yml)
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/mydb
+    username: user
+    password: secret
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10        # 풀의 최대 커넥션 수
+      minimum-idle: 5              # 유지할 최소 유휴 커넥션 수
+      connection-timeout: 30000    # 커넥션 대출 대기 최대 시간 (ms)
+      idle-timeout: 600000         # 유휴 커넥션 제거까지의 시간 (ms, 10분)
+      max-lifetime: 1800000        # 커넥션 최대 수명 (ms, 30분)
+      keepalive-time: 30000        # DB 커넥션 유지용 핑 주기 (ms)
+```
+
+### 각 설정의 의미
+
+**maximum-pool-size**
+
+풀이 생성할 수 있는 최대 커넥션 수다. 모든 커넥션이 사용 중일 때 새 요청은 `connection-timeout`까지 대기한다.
+
+적절한 값은 공식이 있다.
+
+```
+최적 풀 크기 = CPU 코어 수 * 2 + 유효 스핀들 수(SSD면 1)
+```
+
+HikariCP 공식 문서의 권장값은 **코어 수 × 2 + 1** 정도로, 일반적으로 10~20이면 충분하다. 무조건 크게 설정한다고 성능이 좋아지지 않는다. 커넥션이 많아질수록 DB 서버의 메모리와 스레드 비용이 증가하고, 컨텍스트 스위칭이 많아져 오히려 느려진다.
+
+**connection-timeout**
+
+풀에서 커넥션을 빌리기 위해 기다리는 최대 시간이다. 이 시간이 지나도 커넥션을 받지 못하면 `SQLTransientConnectionException`이 발생한다. 기본값 30초는 대부분의 웹 요청에서 너무 길다. 5~10초로 낮추는 편이 빠른 장애 감지에 유리하다.
+
+**max-lifetime**
+
+커넥션의 최대 수명이다. DB 서버가 커넥션을 강제로 끊기 전에 풀이 먼저 교체하도록 DB의 `wait_timeout`보다 짧게 설정해야 한다.
+
+```
+max-lifetime < DB wait_timeout
+예: MySQL wait_timeout = 28800s (8h)
+    max-lifetime = 1800000ms (30min)
+```
+
+**keepalive-time**
+
+유휴 커넥션에 주기적으로 핑(`SELECT 1`)을 보내 커넥션이 죽지 않게 유지한다. 방화벽이 유휴 TCP 연결을 강제 종료하는 환경에서 필수다.
+
+---
+
+## 커넥션 풀 고갈 — 흔한 장애 원인
+
+풀의 모든 커넥션이 사용 중이고 새 요청이 계속 들어오면 **커넥션 풀 고갈**이 발생한다.
+
+```
+증상:
+HikariPool-1 - Connection is not available, request timed out after 30000ms
+```
+
+### 주요 원인
+
+**1. 트랜잭션 안에서 외부 API 호출**
+
+```java
+@Transactional
+public void processOrder(Long orderId) {
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    // 커넥션을 쥔 채로 외부 API 호출 (수 초 소요)
+    PaymentResult result = paymentClient.pay(order.getAmount()); // 위험!
+    order.complete(result.getTransactionId());
+}
+```
+
+트랜잭션이 열려 있는 동안 커넥션이 반납되지 않는다. 외부 API 응답이 느리면 커넥션이 수 초씩 묶인다.
+
+```java
+// 개선: 외부 API를 트랜잭션 밖으로 분리
+public void processOrder(Long orderId) {
+    PaymentResult result = paymentClient.pay(amount); // 트랜잭션 밖
+    completeOrder(orderId, result.getTransactionId()); // @Transactional
+}
+
+@Transactional
+public void completeOrder(Long orderId, String txId) {
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    order.complete(txId);
+}
+```
+
+**2. 커넥션 반납 누락 (JDBC 직접 사용 시)**
+
+```java
+// 위험: 예외 발생 시 커넥션이 반납되지 않음
+Connection conn = dataSource.getConnection();
+Statement stmt = conn.createStatement();
+stmt.executeQuery("SELECT ...");
+conn.close(); // 예외 발생 시 실행 안 됨
+
+// 안전: try-with-resources
+try (Connection conn = dataSource.getConnection();
+     Statement stmt = conn.createStatement()) {
+    stmt.executeQuery("SELECT ...");
+}
+```
+
+**3. 풀 크기 대비 동시 요청 초과**
+
+서비스 트래픽이 예상을 초과하거나, 배치 작업과 웹 요청이 같은 풀을 공유할 때 발생한다. 배치와 웹 서버는 별도의 DataSource를 사용하도록 분리하는 것이 좋다.
+
+---
+
+## 모니터링
+
+HikariCP는 Micrometer와 통합되어 Prometheus/Grafana로 풀 상태를 모니터링할 수 있다.
+
+```yaml
+# application.yml
+management:
+  metrics:
+    enable:
+      hikaricp: true
+```
+
+주요 메트릭:
+
+| 메트릭 | 설명 |
+|--------|------|
+| `hikaricp_connections_active` | 현재 사용 중인 커넥션 수 |
+| `hikaricp_connections_idle` | 유휴 커넥션 수 |
+| `hikaricp_connections_pending` | 커넥션 대기 중인 스레드 수 |
+| `hikaricp_connections_timeout_total` | 타임아웃 발생 횟수 |
+| `hikaricp_connection_acquisition_ms` | 커넥션 획득 소요 시간 |
+
+`pending`이 0보다 크거나 `timeout_total`이 증가하고 있다면 풀 크기 확대 또는 쿼리 최적화가 필요하다.
+
+---
+
+## Spring Boot에서의 설정 확인
+
+```java
+@Component
+public class DataSourceInfo {
+    private final DataSource dataSource;
+
+    public DataSourceInfo(DataSource dataSource) {
+        this.dataSource = dataSource;
+    }
+
+    @PostConstruct
+    public void printPoolInfo() {
+        if (dataSource instanceof HikariDataSource hikari) {
+            HikariPoolMXBean pool = hikari.getHikariPoolMXBean();
+            log.info("풀 크기: {}", hikari.getMaximumPoolSize());
+            log.info("활성 커넥션: {}", pool.getActiveConnections());
+            log.info("유휴 커넥션: {}", pool.getIdleConnections());
+            log.info("대기 스레드: {}", pool.getThreadsAwaitingConnection());
+        }
+    }
+}
+```
+
+---
+
+커넥션 풀의 핵심은 **연결 비용을 선불로 지불하고 반복 사용**하는 것이다. `maximum-pool-size`를 무작정 크게 잡는 것보다 트랜잭션 범위를 좁히고, 커넥션을 점유하는 외부 I/O를 제거하는 것이 실질적인 성능 개선에 더 효과적이다.
