@@ -1,0 +1,372 @@
+---
+title: Orval — OpenAPI 스펙으로 API 클라이언트 자동 생성하기
+date: '2026-04-05'
+category: Frontend
+tags:
+  - Orval
+  - OpenAPI
+  - TypeScript
+  - React Query
+  - API 자동화
+summary: >-
+  Orval은 OpenAPI 스펙을 읽어 TypeScript 타입, axios 클라이언트, React Query 훅까지 자동으로 생성해주는 코드 생성 도구다. 수동 API 클라이언트 작성과 타입 불일치 문제를 근본적으로 없앤다.
+thumbnail: /thumbnails/orval.svg
+---
+
+프론트엔드 개발에서 반복되는 작업 중 하나가 백엔드 API에 맞춰 TypeScript 타입을 정의하고, axios 함수를 작성하고, React Query 훅을 붙이는 것이다. 백엔드 스펙이 바뀌면 이 과정을 다시 반복해야 하고, 타입이 어긋나도 런타임 전까지 알기 어렵다. Orval은 **OpenAPI 스펙을 단일 진실의 원천(Single Source of Truth)으로 삼아** 이 모든 코드를 자동 생성한다.
+
+## Orval이 생성하는 것
+
+OpenAPI 스펙(`swagger.json` 또는 `openapi.yaml`)을 입력으로 받아 다음을 생성한다.
+
+```
+OpenAPI 스펙
+    ↓
+┌─────────────────────────────────────┐
+│              Orval                  │
+├─────────────────────────────────────┤
+│ TypeScript 타입 (Request/Response)  │
+│ axios 클라이언트 함수               │
+│ React Query 훅 (useQuery/useMutation│
+│ Zod 유효성 검사 스키마 (옵션)        │
+│ MSW mock 핸들러 (옵션)              │
+└─────────────────────────────────────┘
+```
+
+---
+
+## 설치 및 기본 설정
+
+```bash
+npm install -D orval
+npm install axios @tanstack/react-query
+```
+
+프로젝트 루트에 `orval.config.ts`를 작성한다.
+
+```typescript
+// orval.config.ts
+import { defineConfig } from 'orval'
+
+export default defineConfig({
+  petstore: {
+    input: {
+      target: './openapi.yaml',         // OpenAPI 스펙 경로 또는 URL
+    },
+    output: {
+      mode: 'tags-split',               // 태그별로 파일 분리
+      target: './src/api/generated',    // 생성 파일 경로
+      schemas: './src/api/model',       // 타입 파일 경로
+      client: 'react-query',            // 생성할 클라이언트 종류
+      httpClient: 'axios',
+      override: {
+        mutator: {
+          path: './src/api/mutator/customAxios.ts',  // 커스텀 axios 인스턴스
+          name: 'customAxios',
+        },
+      },
+    },
+  },
+})
+```
+
+```bash
+# 코드 생성 실행
+npx orval
+```
+
+---
+
+## 커스텀 axios 인스턴스 연결
+
+Orval이 생성한 함수들이 사용할 axios 인스턴스를 직접 정의할 수 있다. 인터셉터, 베이스 URL, 인증 헤더 등을 한 곳에서 관리한다.
+
+```typescript
+// src/api/mutator/customAxios.ts
+import axios, { AxiosRequestConfig } from 'axios'
+
+const axiosInstance = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL,
+  timeout: 10_000,
+})
+
+axiosInstance.interceptors.request.use((config) => {
+  const token = sessionStorage.getItem('accessToken')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+axiosInstance.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401) {
+      window.location.href = '/login'
+    }
+    return Promise.reject(err)
+  }
+)
+
+// Orval이 이 함수를 호출한다
+export const customAxios = <T>(config: AxiosRequestConfig): Promise<T> => {
+  return axiosInstance(config).then((res) => res.data)
+}
+```
+
+---
+
+## 생성된 코드 살펴보기
+
+아래와 같은 OpenAPI 스펙이 있다고 가정하자.
+
+```yaml
+# openapi.yaml
+paths:
+  /users/{id}:
+    get:
+      tags: [Users]
+      operationId: getUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+
+  /users:
+    post:
+      tags: [Users]
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+
+    CreateUserRequest:
+      type: object
+      required: [name, email]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+```
+
+Orval이 생성하는 파일은 다음과 같다.
+
+### 타입 파일 (자동 생성)
+
+```typescript
+// src/api/model/user.ts
+export interface User {
+  id?: number
+  name?: string
+  email?: string
+}
+
+export interface CreateUserRequest {
+  name: string
+  email: string
+}
+```
+
+### React Query 훅 (자동 생성)
+
+```typescript
+// src/api/generated/users.ts
+import { useQuery, useMutation } from '@tanstack/react-query'
+import type { UseQueryOptions, UseMutationOptions } from '@tanstack/react-query'
+import { customAxios } from '../mutator/customAxios'
+import type { User, CreateUserRequest } from '../model'
+
+// GET /users/{id}
+export const getUser = (id: number) =>
+  customAxios<User>({ url: `/users/${id}`, method: 'GET' })
+
+export const getGetUserQueryKey = (id: number) => [`/users/${id}`] as const
+
+export const useGetUser = <TData = User>(
+  id: number,
+  options?: UseQueryOptions<User, unknown, TData>
+) => {
+  return useQuery({
+    queryKey: getGetUserQueryKey(id),
+    queryFn: () => getUser(id),
+    enabled: !!id,
+    ...options,
+  })
+}
+
+// POST /users
+export const createUser = (createUserRequest: CreateUserRequest) =>
+  customAxios<User>({ url: `/users`, method: 'POST', data: createUserRequest })
+
+export const useCreateUser = (
+  options?: UseMutationOptions<User, unknown, CreateUserRequest>
+) => {
+  return useMutation({
+    mutationFn: createUser,
+    ...options,
+  })
+}
+```
+
+---
+
+## 실제 사용 — 컴포넌트에서 활용
+
+```tsx
+// UserProfile.tsx
+import { useGetUser } from '@/api/generated/users'
+
+interface Props {
+  userId: number
+}
+
+export function UserProfile({ userId }: Props) {
+  const { data: user, isLoading, error } = useGetUser(userId)
+
+  if (isLoading) return <div>로딩 중...</div>
+  if (error)    return <div>오류 발생</div>
+
+  return (
+    <div>
+      <h1>{user?.name}</h1>
+      <p>{user?.email}</p>
+    </div>
+  )
+}
+```
+
+```tsx
+// CreateUserForm.tsx
+import { useCreateUser } from '@/api/generated/users'
+
+export function CreateUserForm() {
+  const { mutate: createUser, isPending } = useCreateUser({
+    onSuccess: (newUser) => {
+      console.log('생성 완료:', newUser.id)
+    },
+  })
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const form = new FormData(e.currentTarget)
+    createUser({
+      name: form.get('name') as string,
+      email: form.get('email') as string,
+    })
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input name="name" placeholder="이름" />
+      <input name="email" placeholder="이메일" />
+      <button type="submit" disabled={isPending}>
+        {isPending ? '생성 중...' : '생성'}
+      </button>
+    </form>
+  )
+}
+```
+
+타입, 함수, 훅 모두 자동 생성된 것을 그대로 사용한다. 백엔드 스펙이 바뀌면 `npx orval`을 다시 실행하면 TypeScript 컴파일러가 타입 불일치를 즉시 알려준다.
+
+---
+
+## MSW mock 자동 생성
+
+`@mswjs/msw` 와 함께 사용하면 API 모킹 핸들러도 자동 생성된다. 백엔드 없이 프론트엔드 개발을 진행할 때 유용하다.
+
+```typescript
+// orval.config.ts — mock 추가
+export default defineConfig({
+  petstore: {
+    input: { target: './openapi.yaml' },
+    output: {
+      target: './src/api/generated',
+      client: 'react-query',
+    },
+  },
+  petstoreMock: {
+    input: { target: './openapi.yaml' },
+    output: {
+      target: './src/api/mocks',
+      client: 'msw',                  // MSW 핸들러 생성
+    },
+  },
+})
+```
+
+```typescript
+// 자동 생성된 MSW 핸들러 (개념적 예시)
+// src/api/mocks/users.ts
+import { http, HttpResponse } from 'msw'
+
+export const usersHandlers = [
+  http.get('/users/:id', () => {
+    return HttpResponse.json({ id: 1, name: 'Alice', email: 'alice@example.com' })
+  }),
+  http.post('/users', () => {
+    return HttpResponse.json({ id: 2, name: 'Bob', email: 'bob@example.com' }, { status: 201 })
+  }),
+]
+```
+
+---
+
+## package.json 스크립트 등록
+
+```json
+{
+  "scripts": {
+    "api:generate": "orval",
+    "api:generate:watch": "orval --watch"
+  }
+}
+```
+
+`--watch` 옵션을 사용하면 OpenAPI 파일이 변경될 때마다 자동으로 재생성한다.
+
+---
+
+## 수동 작성 대비 Orval의 이점
+
+| 항목 | 수동 작성 | Orval |
+|------|---------|-------|
+| 타입 정의 | 매번 직접 작성 | 자동 생성 |
+| API 함수 | 매번 직접 작성 | 자동 생성 |
+| React Query 훅 | 매번 직접 작성 | 자동 생성 |
+| 스펙 변경 반영 | 수동으로 전파 | 재생성 후 컴파일러가 감지 |
+| 타입 불일치 | 런타임에 발견 | 빌드 타임에 발견 |
+
+---
+
+Orval의 핵심 가치는 **백엔드와 프론트엔드 사이의 계약(OpenAPI 스펙)을 코드로 자동 변환**한다는 것이다. API 클라이언트를 손으로 유지보수하는 시간을 없애고, 타입 안전성을 빌드 타임에 보장한다.

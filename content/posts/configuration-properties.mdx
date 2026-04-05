@@ -1,0 +1,339 @@
+---
+title: Spring Boot @ConfigurationProperties — 타입 안전한 설정 바인딩
+date: '2026-04-05'
+category: Backend
+tags:
+  - Spring Boot
+  - ConfigurationProperties
+  - 설정 관리
+  - Java
+summary: >-
+  @ConfigurationProperties는 application.yml의 설정값을 Java 객체에 타입 안전하게 바인딩하는 방법이다. @Value와의 차이, 유효성 검증, 중첩 구조 처리까지 정리한다.
+thumbnail: /thumbnails/configuration-properties.svg
+---
+
+`application.yml`에 설정이 많아지면 `@Value("${some.long.property.path}")`를 여러 클래스에 흩뿌리게 된다. 오타가 나도 컴파일 타임에 알 수 없고, 관련 설정이 어디에 있는지 파악하기 어렵다. `@ConfigurationProperties`는 설정 묶음을 하나의 클래스로 응집시키는 방법이다.
+
+## @Value와 @ConfigurationProperties 비교
+
+```yaml
+# application.yml
+app:
+  mail:
+    host: smtp.example.com
+    port: 587
+    username: user@example.com
+    timeout: 5000
+```
+
+### @Value 방식
+
+```java
+@Service
+public class MailService {
+    @Value("${app.mail.host}")
+    private String host;
+
+    @Value("${app.mail.port}")
+    private int port;
+
+    @Value("${app.mail.username}")
+    private String username;
+
+    @Value("${app.mail.timeout}")
+    private int timeout;
+}
+```
+
+- 설정 키를 문자열로 직접 작성해 오타 위험이 있다
+- 각 필드를 개별적으로 주입하므로 설정이 늘어날수록 코드가 길어진다
+- 테스트에서 주입하기 번거롭다
+
+### @ConfigurationProperties 방식
+
+```java
+@ConfigurationProperties(prefix = "app.mail")
+public class MailProperties {
+    private String host;
+    private int port;
+    private String username;
+    private int timeout;
+
+    // getter, setter (또는 record)
+}
+```
+
+```java
+@Service
+@RequiredArgsConstructor
+public class MailService {
+    private final MailProperties mailProperties;
+
+    public void send(String to, String subject, String body) {
+        // mailProperties.getHost(), mailProperties.getPort() 등으로 접근
+    }
+}
+```
+
+관련 설정이 하나의 객체로 묶이고, IDE 자동완성과 타입 검사가 적용된다.
+
+---
+
+## 설정 방법
+
+### 1. 의존성 추가 (메타데이터 자동완성용)
+
+```xml
+<!-- pom.xml -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-configuration-processor</artifactId>
+    <optional>true</optional>
+</dependency>
+```
+
+이 의존성을 추가하면 IDE에서 `application.yml` 작성 시 자동완성과 문서가 제공된다.
+
+### 2. 클래스 작성
+
+```java
+@ConfigurationProperties(prefix = "app.mail")
+@Validated   // 유효성 검증 활성화
+public class MailProperties {
+
+    @NotBlank
+    private String host;
+
+    @Min(1) @Max(65535)
+    private int port = 587;   // 기본값 설정 가능
+
+    @NotBlank
+    private String username;
+
+    @Positive
+    private int timeout = 5000;
+
+    // Lombok 사용 시 @Getter @Setter
+    // 또는 직접 getter/setter 작성
+}
+```
+
+### 3. 빈 등록
+
+Spring Boot 3.x / 2.2 이상에서는 `@ConfigurationPropertiesScan` 또는 `@EnableConfigurationProperties`로 등록한다.
+
+```java
+// 방법 A: @ConfigurationPropertiesScan (패키지 자동 스캔)
+@SpringBootApplication
+@ConfigurationPropertiesScan
+public class Application { ... }
+
+// 방법 B: @EnableConfigurationProperties (명시적 등록)
+@SpringBootApplication
+@EnableConfigurationProperties(MailProperties.class)
+public class Application { ... }
+
+// 방법 C: 클래스에 @Component 추가
+@ConfigurationProperties(prefix = "app.mail")
+@Component
+public class MailProperties { ... }
+```
+
+---
+
+## Record를 사용한 불변 설정 (Spring Boot 2.6+)
+
+Java Record와 결합하면 불변 설정 객체를 간결하게 정의할 수 있다.
+
+```java
+@ConfigurationProperties(prefix = "app.mail")
+public record MailProperties(
+    @NotBlank String host,
+    @Min(1) @Max(65535) int port,
+    @NotBlank String username,
+    @Positive int timeout
+) {
+    // setter 없이 생성자 바인딩
+}
+```
+
+Record는 setter가 없으므로 **생성자 바인딩**으로 동작한다. 설정이 한 번 주입되면 변경되지 않아 안전하다.
+
+---
+
+## 중첩 구조 바인딩
+
+복잡한 설정 계층도 자연스럽게 표현된다.
+
+```yaml
+# application.yml
+app:
+  database:
+    primary:
+      url: jdbc:mysql://primary:3306/mydb
+      username: primary_user
+      pool:
+        max-size: 20
+        timeout: 30000
+    replica:
+      url: jdbc:mysql://replica:3306/mydb
+      username: replica_user
+      pool:
+        max-size: 10
+        timeout: 30000
+```
+
+```java
+@ConfigurationProperties(prefix = "app.database")
+public class DatabaseProperties {
+    private DataSourceConfig primary;
+    private DataSourceConfig replica;
+
+    public record DataSourceConfig(
+        String url,
+        String username,
+        PoolConfig pool
+    ) {}
+
+    public record PoolConfig(
+        int maxSize,
+        int timeout
+    ) {}
+
+    // getter/setter for primary, replica
+}
+```
+
+```java
+@Service
+@RequiredArgsConstructor
+public class DataSourceRouter {
+    private final DatabaseProperties databaseProperties;
+
+    public String getPrimaryUrl() {
+        return databaseProperties.getPrimary().url();
+    }
+}
+```
+
+---
+
+## 리스트와 맵 바인딩
+
+```yaml
+app:
+  cors:
+    allowed-origins:
+      - https://example.com
+      - https://admin.example.com
+  feature-flags:
+    new-ui: true
+    dark-mode: false
+```
+
+```java
+@ConfigurationProperties(prefix = "app")
+public class AppProperties {
+    private List<String> cors = new ArrayList<>();  // 리스트
+    private Map<String, Boolean> featureFlags = new HashMap<>();  // 맵
+
+    // getter/setter
+}
+```
+
+```java
+appProperties.getCors().contains("https://example.com")    // true
+appProperties.getFeatureFlags().get("new-ui")              // true
+```
+
+---
+
+## 유효성 검증 (@Validated)
+
+`@Validated`와 Bean Validation 어노테이션을 함께 사용하면 **애플리케이션 시작 시점에** 설정값이 유효하지 않으면 즉시 실패한다. 잘못된 설정으로 운영 환경에 배포됐다가 나중에 문제를 발견하는 상황을 방지한다.
+
+```java
+@ConfigurationProperties(prefix = "app.jwt")
+@Validated
+public class JwtProperties {
+
+    @NotBlank(message = "JWT secret은 비어있을 수 없습니다")
+    @Size(min = 32, message = "JWT secret은 최소 32자 이상이어야 합니다")
+    private String secret;
+
+    @Positive(message = "만료 시간은 양수여야 합니다")
+    private long expirationMs;
+
+    // getter/setter
+}
+```
+
+```
+# secret이 비어있으면 시작 시 다음 오류 발생:
+Binding validation errors on app.jwt
+   - Field error in object 'app.jwt' on field 'secret':
+     JWT secret은 비어있을 수 없습니다
+```
+
+---
+
+## 환경별 설정 분리
+
+```yaml
+# application.yml (공통)
+app:
+  mail:
+    timeout: 5000
+
+# application-prod.yml (운영)
+app:
+  mail:
+    host: smtp.real.com
+    port: 587
+
+# application-local.yml (로컬)
+app:
+  mail:
+    host: localhost
+    port: 1025   # MailHog
+```
+
+`@ConfigurationProperties`는 Spring의 프로파일 병합을 그대로 따르므로 별도 작업 없이 환경별로 다른 값이 주입된다.
+
+---
+
+## 테스트에서 활용
+
+`@ConfigurationPropertiesTest`를 사용하면 스프링 컨텍스트 전체를 띄우지 않고 설정 바인딩만 테스트할 수 있다.
+
+```java
+@ConfigurationPropertiesTest
+@EnableConfigurationProperties(MailProperties.class)
+class MailPropertiesTest {
+
+    @Autowired
+    private MailProperties mailProperties;
+
+    @Test
+    void shouldBindPropertiesCorrectly() {
+        assertThat(mailProperties.getHost()).isEqualTo("smtp.example.com")
+        assertThat(mailProperties.getPort()).isEqualTo(587)
+    }
+}
+```
+
+---
+
+## @Value vs @ConfigurationProperties 선택 기준
+
+| 상황 | 권장 방식 |
+|------|---------|
+| 단일 값 1~2개만 필요 | `@Value` |
+| 관련 설정이 3개 이상 묶임 | `@ConfigurationProperties` |
+| 중첩 구조, 리스트, 맵 | `@ConfigurationProperties` |
+| 유효성 검증이 필요 | `@ConfigurationProperties` + `@Validated` |
+| 불변 설정 객체가 필요 | `@ConfigurationProperties` + Record |
+
+---
+
+`@ConfigurationProperties`의 핵심 가치는 **설정을 타입 안전한 객체로 응집**시키는 것이다. `@Validated`로 잘못된 설정을 시작 시점에 차단하고, Record로 불변성을 보장하면 설정 관련 버그의 대부분을 사전에 제거할 수 있다.
