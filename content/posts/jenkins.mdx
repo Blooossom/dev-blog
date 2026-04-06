@@ -1,0 +1,319 @@
+---
+title: Jenkins — 파이프라인 구성과 실전 활용
+date: '2026-04-06'
+category: DevOps
+tags:
+  - Jenkins
+  - CI/CD
+  - Pipeline
+  - DevOps
+  - 자동화
+summary: >-
+  Jenkins는 가장 널리 쓰이는 오픈소스 CI/CD 자동화 서버다. 기본 개념부터 Declarative Pipeline 문법, 실전 빌드·배포 파이프라인 구성까지 정리한다.
+thumbnail: /thumbnails/jenkins.svg
+---
+
+Jenkins는 2004년 Sun Microsystems에서 Hudson이라는 이름으로 시작된 오픈소스 자동화 서버다. GitHub Actions, GitLab CI 같은 최신 도구가 등장했지만, 온프레미스 환경이나 세밀한 커스터마이징이 필요한 기업에서 여전히 가장 많이 쓰인다. 플러그인 생태계가 방대하고, 어떤 언어·빌드 도구·배포 환경과도 연동할 수 있다.
+
+## 핵심 구조
+
+```
+┌─────────────────────────────────────────────┐
+│                Jenkins Master               │
+│  - 잡(Job) 스케줄링 및 관리                  │
+│  - 파이프라인 정의 및 실행                    │
+│  - 플러그인 관리                             │
+└────────────────┬────────────────────────────┘
+                 │  작업 위임
+    ┌────────────┼────────────┐
+    ▼            ▼            ▼
+┌────────┐  ┌────────┐  ┌────────┐
+│ Agent1 │  │ Agent2 │  │ Agent3 │
+│(Linux) │  │(Docker)│  │(macOS) │
+└────────┘  └────────┘  └────────┘
+```
+
+- **Master (Controller)**: 파이프라인 정의, 에이전트 조정, 결과 집계
+- **Agent (Node)**: 실제 빌드·테스트·배포 작업 실행. Docker 컨테이너로 띄울 수도 있다
+- **Job / Pipeline**: 자동화할 작업의 단위
+- **Plugin**: 기능 확장. Git, Docker, Slack 알림, AWS 배포 등 2,000개 이상 존재
+
+---
+
+## Pipeline 종류
+
+### Freestyle Job
+
+UI로 설정하는 전통적인 방식이다. 단순한 작업에 적합하지만 코드로 관리되지 않아 재현이 어렵다.
+
+### Pipeline (Jenkinsfile)
+
+파이프라인을 **코드(Groovy DSL)**로 정의해 Git 저장소에 함께 관리한다. 팀원 모두가 파이프라인 변경 이력을 추적할 수 있다.
+
+```
+저장소 루트
+├── src/
+├── Dockerfile
+├── Jenkinsfile   ← 파이프라인 정의
+└── ...
+```
+
+Jenkinsfile에는 두 가지 문법이 있다.
+
+| 문법 | 특징 |
+|------|------|
+| Declarative | 구조화된 블록, 가독성 높음, 권장 |
+| Scripted | Groovy 코드 직접 작성, 자유도 높음 |
+
+---
+
+## Declarative Pipeline 문법
+
+### 기본 구조
+
+```groovy
+pipeline {
+    agent any   // 어느 에이전트에서든 실행
+
+    environment {
+        APP_NAME = 'my-app'
+        DOCKER_REGISTRY = 'registry.example.com'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/org/repo.git'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh './gradlew build -x test'
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh './gradlew test'
+            }
+            post {
+                always {
+                    // 테스트 결과를 Jenkins UI에 표시
+                    junit 'build/test-results/**/*.xml'
+                }
+            }
+        }
+
+        stage('Docker Build & Push') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-credentials',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                        docker login ${DOCKER_REGISTRY} -u ${DOCKER_USER} -p ${DOCKER_PASS}
+                        docker build -t ${DOCKER_REGISTRY}/${APP_NAME}:${BUILD_NUMBER} .
+                        docker push ${DOCKER_REGISTRY}/${APP_NAME}:${BUILD_NUMBER}
+                    """
+                }
+            }
+        }
+
+        stage('Deploy') {
+            when {
+                branch 'main'   // main 브랜치일 때만 배포
+            }
+            steps {
+                sshagent(['deploy-ssh-key']) {
+                    sh """
+                        ssh user@prod-server '
+                            docker pull ${DOCKER_REGISTRY}/${APP_NAME}:${BUILD_NUMBER}
+                            docker stop ${APP_NAME} || true
+                            docker rm ${APP_NAME} || true
+                            docker run -d --name ${APP_NAME} -p 8080:8080 \
+                                ${DOCKER_REGISTRY}/${APP_NAME}:${BUILD_NUMBER}
+                        '
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend channel: '#deployments', message: "✅ ${APP_NAME} 배포 성공 (${BUILD_NUMBER})"
+        }
+        failure {
+            slackSend channel: '#deployments', message: "❌ ${APP_NAME} 빌드 실패 — ${BUILD_URL}"
+        }
+    }
+}
+```
+
+### 병렬 실행
+
+여러 작업을 동시에 실행해 파이프라인 시간을 단축한다.
+
+```groovy
+stage('Test') {
+    parallel {
+        stage('Unit Test') {
+            steps {
+                sh './gradlew test'
+            }
+        }
+        stage('Integration Test') {
+            steps {
+                sh './gradlew integrationTest'
+            }
+        }
+        stage('Static Analysis') {
+            steps {
+                sh './gradlew sonarqube'
+            }
+        }
+    }
+}
+```
+
+### Docker 에이전트
+
+빌드 환경을 Docker 이미지로 지정하면 에이전트에 JDK, Node.js 등을 직접 설치할 필요가 없다.
+
+```groovy
+pipeline {
+    agent {
+        docker {
+            image 'gradle:8-jdk21'
+            args '-v $HOME/.gradle:/root/.gradle'  // 캐시 마운트
+        }
+    }
+
+    stages {
+        stage('Build') {
+            steps {
+                sh 'gradle build'
+            }
+        }
+    }
+}
+```
+
+스테이지마다 다른 이미지를 사용할 수도 있다.
+
+```groovy
+stages {
+    stage('Backend Build') {
+        agent { docker { image 'gradle:8-jdk21' } }
+        steps { sh 'gradle build' }
+    }
+
+    stage('Frontend Build') {
+        agent { docker { image 'node:20' } }
+        steps {
+            sh 'npm ci'
+            sh 'npm run build'
+        }
+    }
+}
+```
+
+---
+
+## Credentials 관리
+
+비밀번호, API 키, SSH 키 같은 민감 정보는 Jenkins Credentials Store에 저장하고 파이프라인에서 참조한다. Jenkinsfile에 직접 하드코딩하지 않는다.
+
+```groovy
+// Secret Text
+withCredentials([string(credentialsId: 'aws-secret-key', variable: 'AWS_SECRET')]) {
+    sh 'aws s3 cp dist/ s3://my-bucket/ --recursive'
+}
+
+// Username/Password
+withCredentials([usernamePassword(
+    credentialsId: 'db-credentials',
+    usernameVariable: 'DB_USER',
+    passwordVariable: 'DB_PASS'
+)]) {
+    sh 'flyway -url=jdbc:postgresql://db:5432/mydb -user=${DB_USER} -password=${DB_PASS} migrate'
+}
+
+// SSH Key
+sshagent(['deploy-key']) {
+    sh 'ssh user@server "systemctl restart myapp"'
+}
+```
+
+---
+
+## 공유 라이브러리
+
+여러 파이프라인에서 공통으로 쓰는 함수를 별도 저장소로 분리해 재사용한다.
+
+```
+jenkins-shared-library/
+└── vars/
+    ├── dockerBuild.groovy
+    ├── deployToKubernetes.groovy
+    └── slackNotify.groovy
+```
+
+```groovy
+// vars/slackNotify.groovy
+def call(String message, String channel = '#ci-cd') {
+    slackSend channel: channel, message: message
+}
+```
+
+```groovy
+// Jenkinsfile에서 사용
+@Library('jenkins-shared-library') _
+
+pipeline {
+    stages {
+        stage('Deploy') {
+            steps {
+                deployToKubernetes(image: 'my-app', tag: BUILD_NUMBER)
+            }
+        }
+    }
+    post {
+        failure {
+            slackNotify("빌드 실패: ${JOB_NAME} #${BUILD_NUMBER}")
+        }
+    }
+}
+```
+
+---
+
+## 유용한 내장 환경 변수
+
+| 변수 | 설명 |
+|------|------|
+| `BUILD_NUMBER` | 현재 빌드 번호 |
+| `BUILD_URL` | 현재 빌드 Jenkins URL |
+| `JOB_NAME` | 잡 이름 |
+| `BRANCH_NAME` | 현재 브랜치 (Multibranch Pipeline) |
+| `GIT_COMMIT` | 현재 커밋 해시 |
+| `WORKSPACE` | 빌드 작업 디렉터리 경로 |
+
+---
+
+## GitHub Actions와 비교
+
+| 항목 | Jenkins | GitHub Actions |
+|------|---------|----------------|
+| 인프라 | 직접 서버 운영 | 완전 관리형 (SaaS) |
+| 커스터마이징 | 플러그인으로 무한 확장 | 액션 마켓플레이스 |
+| 온프레미스 | ✅ 가능 | 제한적 (self-hosted runner) |
+| 초기 설정 비용 | 높음 | 낮음 |
+| 비용 | 서버 비용만 | 빌드 시간 과금 (무료 할당 존재) |
+| 적합한 환경 | 기업 내부망, 복잡한 파이프라인 | GitHub 기반 오픈소스, 스타트업 |
+
+---
+
+Jenkins 파이프라인의 핵심은 **Jenkinsfile을 코드로 관리**하는 것이다. 파이프라인 정의가 저장소에 들어가면 변경 이력이 남고, 리뷰가 가능해지며, 새 환경에서도 동일한 파이프라인을 즉시 재현할 수 있다.

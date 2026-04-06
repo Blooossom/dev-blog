@@ -1,0 +1,248 @@
+---
+title: Kafka — 분산 이벤트 스트리밍 플랫폼의 동작 원리
+date: '2026-04-06'
+category: Backend
+tags:
+  - Kafka
+  - 메시지 큐
+  - 이벤트 스트리밍
+  - MSA
+  - Spring Boot
+summary: >-
+  Kafka는 초당 수백만 건의 이벤트를 처리하는 분산 스트리밍 플랫폼이다. 토픽, 파티션, 컨슈머 그룹의 동작 원리와 Spring Boot 연동 방법을 정리한다.
+thumbnail: /thumbnails/kafka.svg
+---
+
+RabbitMQ 같은 전통적인 메시지 큐는 메시지를 소비하면 삭제한다. Kafka는 다르다. **이벤트를 로그처럼 저장하고 여러 Consumer가 독립적으로 읽을 수 있다.** LinkedIn에서 자사 데이터 파이프라인을 위해 만들었으며, 이제는 이벤트 스트리밍의 사실상 표준이다.
+
+## Kafka가 해결하는 문제
+
+```
+전통적인 메시지 큐:
+  Producer → [Queue] → Consumer A
+                       (메시지 삭제)  ← Consumer B는 이미 사라진 메시지를 받을 수 없음
+
+Kafka:
+  Producer → [Topic (Offset 0,1,2...)] → Consumer A (offset 2까지 읽음)
+                                       → Consumer B (offset 1까지 읽음)
+                                       → Consumer C (처음부터 다시 읽기 가능)
+```
+
+각 Consumer는 자신이 어디까지 읽었는지(offset)를 독립적으로 관리한다.
+
+---
+
+## 핵심 구성 요소
+
+### Topic과 Partition
+
+**Topic**은 메시지를 분류하는 카테고리다. 이메일 큐, 주문 이벤트 등 목적별로 토픽을 나눈다.
+
+**Partition**은 토픽을 물리적으로 분할한 단위다. 각 파티션은 독립적으로 병렬 처리되며, 파티션 내에서만 순서가 보장된다.
+
+```
+Topic: order-events (파티션 3개)
+
+Partition 0: [주문1] [주문4] [주문7] ...
+Partition 1: [주문2] [주문5] [주문8] ...
+Partition 2: [주문3] [주문6] [주문9] ...
+```
+
+메시지는 **키(Key)** 기반으로 파티션에 할당된다. 키가 같으면 항상 같은 파티션에 들어가므로, 같은 사용자의 이벤트를 순서대로 처리할 수 있다.
+
+### Broker와 Cluster
+
+Kafka는 여러 Broker(서버)가 클러스터를 이룬다. 각 파티션은 여러 Broker에 복제(Replication)되어 장애 시에도 데이터가 손실되지 않는다.
+
+```
+Cluster
+├── Broker 1: Partition 0 (Leader), Partition 2 (Replica)
+├── Broker 2: Partition 1 (Leader), Partition 0 (Replica)
+└── Broker 3: Partition 2 (Leader), Partition 1 (Replica)
+```
+
+### Consumer Group
+
+같은 Consumer Group에 속한 Consumer들은 토픽의 파티션을 나눠서 처리한다. 파티션 수가 Consumer 수의 상한이 된다.
+
+```
+Topic: order-events (파티션 3개)
+Consumer Group: order-processor
+
+Consumer 1 ← Partition 0
+Consumer 2 ← Partition 1
+Consumer 3 ← Partition 2
+
+(Consumer가 파티션보다 많으면 일부 Consumer는 유휴 상태)
+```
+
+다른 Consumer Group은 같은 토픽을 독립적으로 읽는다.
+
+```
+order-events 토픽
+  ├── Group: notification-service (처음부터 읽음)
+  ├── Group: analytics-service    (자체 offset 관리)
+  └── Group: audit-service        (자체 offset 관리)
+```
+
+### Offset
+
+Consumer가 파티션에서 어디까지 읽었는지를 나타내는 숫자다. Kafka는 이 offset을 내부 토픽(`__consumer_offsets`)에 저장한다.
+
+```
+Partition 0: [msg0] [msg1] [msg2] [msg3] [msg4]
+                                    ↑
+                              현재 offset (3)
+                              다음엔 msg3부터 읽음
+```
+
+Consumer가 재시작되어도 마지막 offset부터 이어서 읽는다.
+
+---
+
+## 메시지 전달 보장 수준
+
+| 수준 | 설명 | 사용 시점 |
+|------|------|---------|
+| At-most-once | 최대 1회 전달, 유실 가능 | 로그처럼 일부 유실 허용 |
+| At-least-once | 최소 1회 전달, 중복 가능 | 대부분의 경우 (멱등 처리 필요) |
+| Exactly-once | 정확히 1회 전달 | 금융 거래 등 중복 불허 환경 |
+
+---
+
+## Spring Boot + Kafka
+
+```yaml
+# application.yml
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: order-service
+      auto-offset-reset: earliest        # 처음부터 읽기
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.example.dto
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+```
+
+### Producer
+
+```java
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+    private final KafkaTemplate<String, OrderCreatedEvent> kafkaTemplate;
+
+    @Transactional
+    public void placeOrder(Order order) {
+        orderRepository.save(order);
+
+        OrderCreatedEvent event = new OrderCreatedEvent(
+            order.getId(),
+            order.getCustomerEmail(),
+            order.getTotalAmount()
+        );
+
+        // 키: 같은 customerId는 같은 파티션에 → 순서 보장
+        kafkaTemplate.send("order-events", order.getCustomerId().toString(), event);
+    }
+}
+```
+
+### Consumer
+
+```java
+@Component
+@RequiredArgsConstructor
+public class OrderEventConsumer {
+    private final NotificationService notificationService;
+
+    @KafkaListener(
+        topics = "order-events",
+        groupId = "notification-service",
+        concurrency = "3"   // 파티션 수만큼 병렬 처리
+    )
+    public void handleOrderCreated(
+        OrderCreatedEvent event,
+        @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
+        @Header(KafkaHeaders.OFFSET) long offset
+    ) {
+        log.info("파티션 {}, offset {}: 주문 처리 - {}", partition, offset, event.orderId());
+        notificationService.sendConfirmation(event.customerEmail(), event.orderId());
+    }
+}
+```
+
+### 토픽 설정
+
+```java
+@Configuration
+public class KafkaTopicConfig {
+
+    @Bean
+    public NewTopic orderEventsTopic() {
+        return TopicBuilder.name("order-events")
+            .partitions(3)        // 파티션 수 = 최대 병렬 처리 수
+            .replicas(2)          // 복제본 수 (브로커 수 이하여야 함)
+            .build();
+    }
+}
+```
+
+---
+
+## 자주 발생하는 문제
+
+### Consumer Lag
+
+Producer가 메시지를 생산하는 속도를 Consumer가 따라가지 못할 때 발생한다. 파티션을 늘리거나 Consumer를 추가해 해결한다.
+
+```
+모니터링:
+kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+  --describe --group order-service
+
+GROUP           TOPIC       PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG
+order-service   order-events    0          1000            5000          4000  ← 지연 발생
+```
+
+### 중복 처리
+
+`at-least-once` 전달 보장에서 Consumer가 메시지를 처리했지만 offset을 커밋하기 전에 재시작되면 같은 메시지를 다시 처리한다. 처리 로직을 **멱등(idempotent)**하게 만들어야 한다.
+
+```java
+// 멱등 처리 예시: 이미 처리된 이벤트 ID를 DB에 기록
+public void handleOrderCreated(OrderCreatedEvent event) {
+    if (processedEventRepository.existsById(event.eventId())) {
+        return;  // 이미 처리됨 — 건너뜀
+    }
+    notificationService.sendConfirmation(event.customerEmail(), event.orderId());
+    processedEventRepository.save(new ProcessedEvent(event.eventId()));
+}
+```
+
+---
+
+## Kafka vs RabbitMQ 선택 기준
+
+```
+이런 경우 Kafka:
+  - 초당 수십만 건 이상의 처리량이 필요하다
+  - 여러 Consumer가 같은 이벤트를 각자 처리해야 한다 (Pub/Sub)
+  - 과거 이벤트를 다시 읽거나 재처리해야 한다
+  - 이벤트 소싱, CQRS 아키텍처를 구축한다
+
+이런 경우 RabbitMQ:
+  - 복잡한 라우팅 규칙이 필요하다 (Exchange, Binding)
+  - 메시지 하나를 딱 하나의 Worker만 처리하면 된다
+  - 실패 시 DLQ 기반의 재처리 흐름을 구성한다
+  - 상대적으로 낮은 처리량이면 충분하다
+```
+
+---
+
+Kafka의 핵심 설계 원칙은 **이벤트를 삭제하지 않고 로그처럼 보존**하는 것이다. 파티션으로 처리량을 수평 확장하고, Consumer Group으로 독립적인 소비자를 여럿 붙일 수 있어 대규모 분산 시스템의 데이터 파이프라인에 적합하다.

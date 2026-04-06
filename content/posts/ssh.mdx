@@ -1,0 +1,254 @@
+---
+title: SSH — 동작 원리와 키 기반 인증
+date: '2026-04-06'
+category: DevOps
+tags:
+  - SSH
+  - 보안
+  - 네트워크
+  - 암호화
+  - DevOps
+summary: >-
+  SSH는 네트워크를 통해 원격 서버에 안전하게 접속하기 위한 프로토콜이다. 비밀번호 인증과 공개키 인증의 차이, 내부 핸드셰이크 과정, 터널링까지 정리한다.
+thumbnail: /thumbnails/ssh.svg
+---
+
+서버에 원격으로 접속해야 할 때 예전에는 Telnet을 사용했다. Telnet은 모든 데이터를 평문으로 전송해 도청이 가능했다. SSH(Secure Shell)는 이를 대체하기 위해 1995년 등장했으며, **암호화된 채널 위에서 원격 명령 실행, 파일 전송, 포트 포워딩**을 제공한다.
+
+## SSH 연결의 동작 과정
+
+SSH 연결은 크게 두 단계로 이루어진다.
+
+```
+1단계: 암호화 채널 수립 (Transport Layer)
+2단계: 사용자 인증 (Authentication)
+```
+
+### 1단계 — 암호화 채널 수립
+
+```
+Client                          Server
+  │                               │
+  │──── TCP 연결 (포트 22) ───────▶│
+  │                               │
+  │◀─── 서버 공개키 + 지원 알고리즘 ─│
+  │                               │
+  │  서버 공개키 검증               │
+  │  (known_hosts 파일 확인)        │
+  │                               │
+  │──── 세션 키 협상 (DH) ─────────▶│
+  │◀──────────────────────────────│
+  │                               │
+  │   이후 모든 통신: 세션 키로 암호화  │
+```
+
+처음 서버에 접속하면 "Are you sure you want to continue connecting?" 메시지가 뜬다. 서버 공개키를 `~/.ssh/known_hosts`에 등록하는 과정이다. 이후 접속 시 키가 달라지면 경고를 표시해 중간자 공격(MITM)을 감지한다.
+
+### 2단계 — 사용자 인증
+
+암호화 채널이 만들어진 후 신원을 확인한다. 두 가지 방식이 있다.
+
+---
+
+## 비밀번호 인증 vs 공개키 인증
+
+### 비밀번호 인증
+
+```
+Client → (암호화 채널 위에서) → 비밀번호 전송 → Server 검증
+```
+
+단순하지만 무차별 대입 공격(Brute Force)에 취약하고, 비밀번호를 기억해야 한다. 프로덕션 서버에서는 권장하지 않는다.
+
+### 공개키 인증
+
+수학적 키 쌍을 이용한다. **비밀 키는 클라이언트에만 보관**하고, **공개 키는 서버에 등록**한다.
+
+```
+키 쌍 생성:
+  비밀 키 (~/.ssh/id_rsa 또는 id_ed25519)  ← 절대 외부로 노출 금지
+  공개 키 (~/.ssh/id_rsa.pub)               ← 서버에 등록
+
+인증 과정:
+Client                              Server
+  │                                   │
+  │──── "이 공개키로 인증하겠습니다" ──▶│
+  │                                   │ authorized_keys에 있는지 확인
+  │◀─── 랜덤 챌린지 (암호화됨) ─────── │
+  │                                   │
+  │ 비밀 키로 챌린지 서명               │
+  │──── 서명 전송 ─────────────────▶  │
+  │                                   │ 공개 키로 서명 검증
+  │◀─── 인증 성공 ─────────────────── │
+```
+
+비밀번호를 전송하지 않으므로 탈취 위험이 없다. 비밀 키가 유출되지 않는 한 이론상 무한 대입 공격도 무의미하다.
+
+---
+
+## 키 생성 및 등록
+
+### 키 생성
+
+```bash
+# Ed25519 알고리즘 권장 (RSA보다 짧고 빠르며 더 안전)
+ssh-keygen -t ed25519 -C "your-email@example.com"
+
+# 생성된 파일
+~/.ssh/id_ed25519      # 비밀 키 (chmod 600 유지 필수)
+~/.ssh/id_ed25519.pub  # 공개 키
+```
+
+키 생성 시 **패스프레이즈(passphrase)**를 설정하면 비밀 키 파일이 탈취되어도 추가 보호가 된다.
+
+### 서버에 공개 키 등록
+
+```bash
+# ssh-copy-id 사용 (권장)
+ssh-copy-id -i ~/.ssh/id_ed25519.pub user@server
+
+# 수동 등록
+cat ~/.ssh/id_ed25519.pub | ssh user@server "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+```
+
+서버의 `~/.ssh/authorized_keys` 파일에 공개 키가 한 줄씩 등록된다.
+
+```bash
+# authorized_keys 권한 설정 (필수)
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/authorized_keys
+```
+
+---
+
+## SSH 설정 파일 (~/.ssh/config)
+
+여러 서버를 관리할 때 접속 정보를 파일에 저장해두면 편리하다.
+
+```
+# ~/.ssh/config
+
+# 개발 서버
+Host dev
+    HostName 192.168.1.100
+    User ubuntu
+    IdentityFile ~/.ssh/id_ed25519
+    Port 22
+
+# 프로덕션 서버
+Host prod
+    HostName prod.example.com
+    User deploy
+    IdentityFile ~/.ssh/prod_key
+    Port 2222
+
+# GitHub
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/github_key
+```
+
+```bash
+# 설정 후 단축 접속
+ssh dev    # ssh ubuntu@192.168.1.100 와 동일
+ssh prod   # ssh -p 2222 deploy@prod.example.com 와 동일
+```
+
+---
+
+## SSH 주요 활용
+
+### 포트 포워딩 (터널링)
+
+**로컬 포워딩** — 로컬 포트를 원격 포트로 연결한다. 방화벽으로 막힌 DB에 로컬에서 접근할 때 사용한다.
+
+```bash
+# 로컬 5432 → 원격 서버를 통해 DB 서버 5432로 연결
+ssh -L 5432:db-server:5432 user@bastion-server
+
+# 이후 로컬에서 DB 접속
+psql -h localhost -p 5432 -U postgres
+```
+
+```
+로컬 머신 :5432  →  Bastion Server  →  DB Server :5432
+(직접 접근 불가)   (SSH 터널)
+```
+
+**리모트 포워딩** — 원격 서버의 포트를 로컬로 연결한다. 외부에서 로컬 개발 서버에 접근할 때 사용한다.
+
+```bash
+# 원격 서버의 8080 → 로컬 3000
+ssh -R 8080:localhost:3000 user@public-server
+```
+
+**동적 포워딩 (SOCKS 프록시)**
+
+```bash
+# 로컬 SOCKS 프록시 생성
+ssh -D 1080 user@server
+# 브라우저 SOCKS 프록시 설정 후 서버 내부 네트워크를 통해 인터넷 접속
+```
+
+### SCP — 파일 전송
+
+```bash
+# 로컬 → 원격
+scp ./app.jar user@server:/opt/app/
+
+# 원격 → 로컬
+scp user@server:/var/log/app.log ./
+
+# 디렉터리 복사
+scp -r ./dist/ user@server:/var/www/html/
+
+# SSH config 사용
+scp ./app.jar prod:/opt/app/
+```
+
+### SSH 에이전트
+
+여러 서버를 이동하거나 패스프레이즈 입력을 줄일 때 사용한다.
+
+```bash
+# 에이전트 시작 및 키 등록
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+
+# 에이전트 포워딩 — A 서버에서 B 서버로 접속할 때 로컬 키 사용
+ssh -A user@server-a
+# server-a에서
+ssh user@server-b   # 로컬 비밀 키 사용 가능
+```
+
+---
+
+## 서버 보안 강화
+
+```bash
+# /etc/ssh/sshd_config
+PermitRootLogin no          # root 직접 로그인 금지
+PasswordAuthentication no   # 비밀번호 인증 비활성화 (키 인증만 허용)
+PubkeyAuthentication yes    # 공개키 인증 활성화
+Port 2222                   # 기본 포트 변경 (자동 스캔 방지)
+AllowUsers deploy ubuntu    # 허용할 사용자만 명시
+MaxAuthTries 3              # 인증 시도 횟수 제한
+
+# 설정 적용
+systemctl restart sshd
+```
+
+---
+
+## 알고리즘 비교
+
+| 알고리즘 | 키 길이 | 특징 |
+|---------|--------|------|
+| RSA | 2048~4096 bit | 오래된 표준, 호환성 높음 |
+| ECDSA | 256~521 bit | RSA보다 짧은 키로 동급 보안 |
+| Ed25519 | 256 bit | 현재 권장, 빠르고 안전함 |
+
+---
+
+SSH의 보안 핵심은 **비밀 키를 외부에 절대 노출하지 않는 것**이다. 공개키 인증을 기본으로 설정하고, 비밀번호 인증을 비활성화하면 자동화된 공격의 대부분을 차단할 수 있다.

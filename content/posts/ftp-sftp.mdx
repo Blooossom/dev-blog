@@ -1,0 +1,200 @@
+---
+title: FTP와 SFTP — 파일 전송 프로토콜 비교
+date: '2026-04-06'
+category: DevOps
+tags:
+  - FTP
+  - SFTP
+  - 네트워크
+  - 보안
+  - 파일 전송
+summary: >-
+  FTP는 가장 오래된 파일 전송 프로토콜이고 SFTP는 SSH 위에서 동작하는 안전한 대안이다. 두 프로토콜의 동작 방식과 차이, 실무에서의 선택 기준을 정리한다.
+thumbnail: /thumbnails/ftp-sftp.svg
+---
+
+서버에 파일을 올리고 내려받는 방법은 여러 가지가 있다. 그 중 가장 오랫동안 사용된 것이 FTP이고, 보안 문제로 인해 현재 실무에서는 SFTP 또는 SCP가 대부분을 대체했다. 두 프로토콜이 어떻게 다른지 구조부터 살펴본다.
+
+## FTP (File Transfer Protocol)
+
+1971년에 등장한 파일 전송 표준 프로토콜이다. **제어 채널과 데이터 채널을 분리**하는 구조가 특징이다.
+
+### 포트 구조
+
+```
+FTP 클라이언트          FTP 서버
+     │                    │
+     │── 제어 채널 (21) ──▶│  명령 전송 (LIST, RETR, STOR 등)
+     │                    │
+     │── 데이터 채널 ──────▶│  실제 파일 데이터 전송
+```
+
+데이터 채널 포트는 **Active 모드**와 **Passive 모드**에 따라 다르게 결정된다.
+
+### Active 모드 vs Passive 모드
+
+**Active 모드**
+
+```
+Client              Server
+  │                   │
+  │── PORT 명령 ──────▶│  "내 IP:포트로 연결해라"
+  │                   │
+  │◀─ 서버가 클라이언트에 접속 ─│  (서버가 데이터 연결 시작)
+```
+
+클라이언트가 방화벽 뒤에 있으면 서버가 클라이언트에 접속하지 못해 연결이 실패한다. 공유기 환경에서 자주 문제가 된다.
+
+**Passive 모드**
+
+```
+Client              Server
+  │                   │
+  │── PASV 명령 ──────▶│
+  │◀─ "내 IP:포트에 접속해라" ─│  서버가 포트 알려줌
+  │                   │
+  │── 클라이언트가 서버에 접속 ─▶│  (클라이언트가 데이터 연결 시작)
+```
+
+클라이언트가 접속을 시작하므로 방화벽 문제가 적다. 현재 대부분의 FTP 클라이언트 기본값이다.
+
+### FTP의 치명적 약점
+
+FTP는 **모든 데이터를 평문으로 전송**한다. 아이디, 비밀번호, 파일 내용이 모두 네트워크에 그대로 노출된다.
+
+```
+Wireshark로 캡처 시 그대로 보임:
+USER admin
+PASS secret123
+RETR /var/www/config.php
+... 파일 내용 ...
+```
+
+이 이유로 보안이 중요한 환경에서는 FTP를 사용해서는 안 된다.
+
+---
+
+## FTPS (FTP over SSL/TLS)
+
+FTP에 TLS 암호화를 추가한 것이다. HTTP와 HTTPS의 관계와 유사하다.
+
+```
+Explicit FTPS (STARTTLS):
+  21번 포트로 평문 연결 후 STARTTLS 명령으로 암호화 업그레이드
+
+Implicit FTPS:
+  990번 포트로 처음부터 TLS 연결
+```
+
+암호화는 되지만 여전히 제어·데이터 채널 분리 구조를 유지하므로 방화벽 통과 문제가 남아있다.
+
+---
+
+## SFTP (SSH File Transfer Protocol)
+
+이름이 비슷해 혼동되지만 FTP와 완전히 다른 프로토콜이다. **SSH 세션 위에서 동작**하는 파일 전송 프로토콜로, SSH의 암호화와 인증을 그대로 사용한다.
+
+```
+SFTP 클라이언트       SSH 서버 (포트 22)
+     │                    │
+     │── SSH 연결 (암호화) ▶│
+     │    └─ SFTP 서브시스템 활성화
+     │                    │
+     │── 파일 전송 명령 ───▶│  (암호화된 단일 채널)
+     │◀── 파일 데이터 ──────│
+```
+
+단일 포트(22)만 사용하므로 방화벽 설정이 단순하고, 공개키 인증도 그대로 활용한다.
+
+### SFTP 명령어
+
+```bash
+# 접속
+sftp user@server
+sftp -P 2222 user@server   # 포트 지정
+
+# 접속 후 사용 가능한 명령
+sftp> ls                   # 원격 디렉터리 목록
+sftp> lls                  # 로컬 디렉터리 목록
+sftp> pwd                  # 원격 현재 경로
+sftp> lpwd                 # 로컬 현재 경로
+sftp> cd /var/www          # 원격 디렉터리 이동
+sftp> lcd ~/Downloads      # 로컬 디렉터리 이동
+
+sftp> get remote-file.txt              # 원격 → 로컬 다운로드
+sftp> get remote-file.txt local.txt    # 이름 바꿔서 다운로드
+sftp> put local-file.txt               # 로컬 → 원격 업로드
+sftp> put local-file.txt /var/www/     # 경로 지정 업로드
+
+sftp> mkdir /var/www/new-dir           # 디렉터리 생성
+sftp> rm /var/www/old-file.txt         # 파일 삭제
+sftp> chmod 644 /var/www/file.txt      # 권한 변경
+sftp> exit                             # 종료
+```
+
+### SSH config 활용
+
+```bash
+# ~/.ssh/config에 서버 정보 등록 후
+sftp prod              # prod 서버로 SFTP 접속
+sftp dev               # dev 서버로 SFTP 접속
+```
+
+---
+
+## SCP vs SFTP
+
+SSH 기반의 파일 전송에는 SCP도 있다.
+
+| 항목 | SCP | SFTP |
+|------|-----|------|
+| 기반 프로토콜 | SSH | SSH |
+| 대화형 세션 | ❌ 단방향 전송만 | ✅ 양방향 탐색 가능 |
+| 재개(resume) | ❌ | ✅ (일부 클라이언트) |
+| 디렉터리 목록 | ❌ | ✅ |
+| 속도 | 빠름 | 약간 느림 (오버헤드) |
+| 용도 | 스크립트에서 단순 파일 복사 | 대화형 파일 관리 |
+
+```bash
+# SCP
+scp ./app.jar user@server:/opt/app/
+
+# SFTP (batch 모드)
+sftp user@server <<EOF
+put ./app.jar /opt/app/app.jar
+EOF
+```
+
+---
+
+## 세 프로토콜 비교
+
+| 항목 | FTP | FTPS | SFTP |
+|------|-----|------|------|
+| 암호화 | ❌ 없음 | ✅ TLS | ✅ SSH |
+| 인증 | 비밀번호 | 비밀번호 + 인증서 | 비밀번호 + 공개키 |
+| 사용 포트 | 21 + 데이터용 임의 포트 | 21/990 + 임의 포트 | 22 (단일) |
+| 방화벽 친화성 | 낮음 | 낮음 | 높음 |
+| 현재 권장 여부 | ❌ | 조건부 ✅ | ✅ |
+
+---
+
+## 실무 선택 기준
+
+```
+외부 인터넷을 통해 파일을 전송해야 한다
+  → SFTP (SSH 키 인증 + 암호화)
+
+레거시 시스템이 FTP만 지원한다
+  → 내부망 한정으로만 사용, 외부 노출 금지
+
+파트너사가 FTPS만 지원한다
+  → FTPS Passive 모드로 방화벽 설정
+
+스크립트에서 단순 파일 복사
+  → SCP 또는 rsync over SSH
+```
+
+---
+
+FTP는 네트워크 초창기에 설계되어 보안 개념이 없다. 오늘날 외부와 파일을 주고받는다면 **SFTP를 기본**으로 선택하고, SSH 공개키 인증을 적용해야 한다.

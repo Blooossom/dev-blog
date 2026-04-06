@@ -1,0 +1,256 @@
+---
+title: 메시지 큐 — 비동기 통신과 시스템 분리
+date: '2026-04-06'
+category: Backend
+tags:
+  - 메시지 큐
+  - RabbitMQ
+  - 비동기
+  - MSA
+  - 아키텍처
+summary: >-
+  메시지 큐는 서비스 간 직접 호출 대신 메시지를 중간에 두어 결합도를 낮추고 처리를 비동기화하는 미들웨어다. 동작 원리, 주요 패턴, RabbitMQ 활용까지 정리한다.
+thumbnail: /thumbnails/message-queue.svg
+---
+
+서비스 A가 서비스 B를 직접 HTTP로 호출하면 B가 느려지거나 다운됐을 때 A도 함께 멈춘다. 메시지 큐는 이 직접 연결을 끊고 **중간에 메시지를 두어 발신자와 수신자를 시간적·공간적으로 분리**한다.
+
+## 메시지 큐가 없을 때
+
+```
+주문 서비스 ──HTTP──▶ 재고 서비스 (다운)
+               ❌ 타임아웃 → 주문 실패
+               ❌ 재고 서비스 복구되어도 주문은 이미 실패
+```
+
+## 메시지 큐를 사용하면
+
+```
+주문 서비스 ──▶ [메시지 큐] ──▶ 재고 서비스
+              메시지 보존       나중에 처리 가능
+주문 서비스는 큐에 넣은 즉시 반환 → 재고 서비스 상태 무관
+```
+
+---
+
+## 핵심 구성 요소
+
+```
+Producer(발신자)  →  [Queue]  →  Consumer(수신자)
+                     메시지 보관
+```
+
+| 구성 요소 | 역할 |
+|----------|------|
+| **Producer** | 메시지를 생성해 큐에 전송 |
+| **Queue** | 메시지를 순서대로 보관 (FIFO) |
+| **Consumer** | 큐에서 메시지를 꺼내 처리 |
+| **Broker** | 큐를 관리하는 미들웨어 서버 (RabbitMQ, ActiveMQ 등) |
+
+---
+
+## 메시지 큐가 제공하는 이점
+
+### 비동기 처리
+
+Producer는 Consumer의 처리 완료를 기다리지 않는다. 응답 시간에 민감한 API가 무거운 작업을 큐에 위임할 수 있다.
+
+```
+사용자 요청 → API 서버 → 큐에 메시지 전송 → 즉시 응답 (200 OK)
+                                ↓ (비동기)
+                         Worker → 이메일 발송, 이미지 변환 등
+```
+
+### 부하 평준화 (Load Leveling)
+
+순간적으로 트래픽이 몰려도 큐가 메시지를 버퍼링한다. Consumer는 자신의 처리 속도에 맞게 소비한다.
+
+```
+트래픽 급증: [■■■■■■■■■■■■■■■■] → 큐에 쌓임
+Consumer:  [■■] [■■] [■■] → 일정한 속도로 처리
+```
+
+### 내결함성 (Fault Tolerance)
+
+Consumer가 다운되어도 메시지는 큐에 보존된다. 복구 후 이어서 처리할 수 있다.
+
+### 느슨한 결합
+
+Producer는 Consumer의 주소, 구현, 가용 여부를 알 필요가 없다.
+
+---
+
+## 주요 메시징 패턴
+
+### Point-to-Point (일대일)
+
+하나의 메시지를 하나의 Consumer만 처리한다. 작업 큐(Task Queue) 패턴에 주로 사용된다.
+
+```
+Producer → [Queue] → Consumer A  (Consumer B는 처리 안 함)
+```
+
+여러 Worker가 같은 큐를 구독하면 메시지가 분배된다 (경쟁 소비자 패턴).
+
+```
+                        → Worker 1 (메시지 1 처리)
+Producer → [Queue] →
+                        → Worker 2 (메시지 2 처리)
+```
+
+### Pub/Sub (발행-구독)
+
+하나의 메시지를 여러 Consumer가 각자 받는다. 이벤트 브로드캐스팅에 사용된다.
+
+```
+                    → Consumer A (알림 서비스)
+Publisher → [Topic] → Consumer B (로그 서비스)
+                    → Consumer C (분석 서비스)
+```
+
+---
+
+## RabbitMQ
+
+AMQP(Advanced Message Queuing Protocol) 기반의 오픈소스 메시지 브로커다. Exchange와 Queue의 분리 구조가 특징이다.
+
+### RabbitMQ 구조
+
+```
+Producer → Exchange → Binding → Queue → Consumer
+              │
+         라우팅 규칙 결정
+```
+
+**Exchange 종류**
+
+| 타입 | 동작 |
+|------|------|
+| Direct | 라우팅 키가 정확히 일치하는 큐에 전달 |
+| Fanout | 바인딩된 모든 큐에 전달 (브로드캐스트) |
+| Topic | 패턴 매칭으로 라우팅 (`order.*`, `#.error`) |
+| Headers | 헤더 속성으로 라우팅 |
+
+### Spring Boot + RabbitMQ 예시
+
+```yaml
+# application.yml
+spring:
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+```
+
+```java
+// 설정
+@Configuration
+public class RabbitConfig {
+    public static final String ORDER_QUEUE    = "order.queue";
+    public static final String ORDER_EXCHANGE = "order.exchange";
+    public static final String ORDER_KEY      = "order.created";
+
+    @Bean
+    public Queue orderQueue() {
+        return QueueBuilder.durable(ORDER_QUEUE)
+            .withArgument("x-dead-letter-exchange", "dlx.exchange")  // DLQ 연결
+            .build();
+    }
+
+    @Bean
+    public DirectExchange orderExchange() {
+        return new DirectExchange(ORDER_EXCHANGE);
+    }
+
+    @Bean
+    public Binding orderBinding() {
+        return BindingBuilder
+            .bind(orderQueue())
+            .to(orderExchange())
+            .with(ORDER_KEY);
+    }
+}
+```
+
+```java
+// Producer
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+    private final RabbitTemplate rabbitTemplate;
+
+    public void placeOrder(Order order) {
+        orderRepository.save(order);
+        // 주문 완료 이벤트를 큐에 전송
+        rabbitTemplate.convertAndSend(
+            RabbitConfig.ORDER_EXCHANGE,
+            RabbitConfig.ORDER_KEY,
+            new OrderCreatedMessage(order.getId(), order.getCustomerEmail())
+        );
+    }
+}
+```
+
+```java
+// Consumer
+@Component
+@RequiredArgsConstructor
+public class OrderEventConsumer {
+    private final EmailService emailService;
+
+    @RabbitListener(queues = RabbitConfig.ORDER_QUEUE)
+    public void handleOrderCreated(OrderCreatedMessage message) {
+        emailService.sendOrderConfirmation(message.customerEmail(), message.orderId());
+    }
+}
+```
+
+### Dead Letter Queue (DLQ)
+
+처리에 실패한 메시지를 버리지 않고 별도 큐(DLQ)로 이동시킨다.
+
+```java
+@Bean
+public Queue deadLetterQueue() {
+    return QueueBuilder.durable("dlq.order").build();
+}
+
+@Bean
+public DirectExchange deadLetterExchange() {
+    return new DirectExchange("dlx.exchange");
+}
+
+@Bean
+public Binding dlqBinding() {
+    return BindingBuilder.bind(deadLetterQueue()).to(deadLetterExchange()).with("order.queue");
+}
+```
+
+```java
+@RabbitListener(queues = RabbitConfig.ORDER_QUEUE)
+public void handleOrderCreated(OrderCreatedMessage message) {
+    try {
+        emailService.sendOrderConfirmation(message.customerEmail(), message.orderId());
+    } catch (Exception e) {
+        // 예외를 던지면 메시지가 DLQ로 이동
+        throw new AmqpRejectAndDontRequeueException("처리 실패", e);
+    }
+}
+```
+
+---
+
+## 메시지 큐 vs 이벤트 스트리밍
+
+| 항목 | 메시지 큐 (RabbitMQ) | 이벤트 스트리밍 (Kafka) |
+|------|--------------------|-----------------------|
+| 메시지 보존 | 소비 후 삭제 | 일정 기간 보존 (재처리 가능) |
+| 전달 모델 | Push (브로커가 푸시) | Pull (Consumer가 직접 읽음) |
+| 순서 보장 | 큐 단위 | 파티션 단위 |
+| 처리량 | 중간 | 매우 높음 (초당 수백만 건) |
+| 적합한 용도 | 작업 분배, RPC, 복잡한 라우팅 | 이벤트 로그, 실시간 스트림 처리 |
+
+---
+
+메시지 큐의 핵심 가치는 **서비스 간 직접 의존을 제거**하는 것이다. Producer는 Consumer가 어디 있는지, 얼마나 걸리는지 모르고, Consumer는 Producer의 요청 속도에 맞출 필요가 없다. 이 분리가 시스템 전체의 탄력성과 확장성을 높인다.
