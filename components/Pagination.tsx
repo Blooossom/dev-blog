@@ -3,12 +3,19 @@ import Link from 'next/link'
 interface Props {
   currentPage: number
   totalPages: number
+  category?: string
 }
 
-export default function Pagination({ currentPage, totalPages }: Props) {
+export default function Pagination({ currentPage, totalPages, category }: Props) {
   if (totalPages <= 1) return null
 
-  const getPageHref = (page: number) => (page === 1 ? '/' : `/?page=${page}`)
+  const getPageHref = (page: number) => {
+    const params = new URLSearchParams()
+    if (category) params.set('category', category)
+    if (page > 1) params.set('page', String(page))
+    const qs = params.toString()
+    return qs ? `/?${qs}` : '/'
+  }
 
   // 표시할 페이지 번호 계산 (현재 페이지 앞뒤 2개 + 첫/마지막 페이지)
   const getPageNumbers = (): (number | 'ellipsis')[] => {
