@@ -1,17 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#042712"/>
-      <stop offset="100%" stop-color="#155235"/>
+      <stop offset="0%" stop-color="#100e1e"/>
+      <stop offset="100%" stop-color="#2d2060"/>
     </linearGradient>
     <linearGradient id="lf" x1="100%" y1="0%" x2="20%" y2="0%">
-      <stop offset="0%"   stop-color="#042712" stop-opacity="0"/>
-      <stop offset="55%"  stop-color="#042712" stop-opacity="0.82"/>
-      <stop offset="100%" stop-color="#042712" stop-opacity="1"/>
+      <stop offset="0%"   stop-color="#100e1e" stop-opacity="0"/>
+      <stop offset="55%"  stop-color="#100e1e" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#100e1e" stop-opacity="1"/>
     </linearGradient>
     <linearGradient id="bf" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#155235" stop-opacity="0"/>
-      <stop offset="100%" stop-color="#042712" stop-opacity="0.9"/>
+      <stop offset="0%"   stop-color="#2d2060" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#100e1e" stop-opacity="0.9"/>
     </linearGradient>
   </defs>
 
@@ -20,45 +20,45 @@
 
   <!-- Pattern -->
   <polygon points="902.4,179.0 902.4,251.0 840.0,287.0 777.6,251.0 777.6,179.0 840.0,143.0"
-      fill="#6ee7b7" fill-opacity="0.09"
-      stroke="#6ee7b7" stroke-width="1.5" stroke-opacity="0.27"/>
+      fill="#fb923c" fill-opacity="0.09"
+      stroke="#fb923c" stroke-width="1.5" stroke-opacity="0.27"/>
 <polygon points="1016.5,259.0 1016.5,315.0 968.0,343.0 919.5,315.0 919.5,259.0 968.0,231.0"
-      fill="#6ee7b7" fill-opacity="0.07"
-      stroke="#6ee7b7" stroke-width="1.5" stroke-opacity="0.21000000000000002"/>
+      fill="#fb923c" fill-opacity="0.07"
+      stroke="#fb923c" stroke-width="1.5" stroke-opacity="0.21000000000000002"/>
 <polygon points="760.5,259.0 760.5,315.0 712.0,343.0 663.5,315.0 663.5,259.0 712.0,231.0"
-      fill="#6ee7b7" fill-opacity="0.07"
-      stroke="#6ee7b7" stroke-width="1.5" stroke-opacity="0.21000000000000002"/>
+      fill="#fb923c" fill-opacity="0.07"
+      stroke="#fb923c" stroke-width="1.5" stroke-opacity="0.21000000000000002"/>
 <polygon points="888.5,331.0 888.5,387.0 840.0,415.0 791.5,387.0 791.5,331.0 840.0,303.0"
-      fill="#6ee7b7" fill-opacity="0.11"
-      stroke="#6ee7b7" stroke-width="1.5" stroke-opacity="0.33"/>
+      fill="#fb923c" fill-opacity="0.11"
+      stroke="#fb923c" stroke-width="1.5" stroke-opacity="0.33"/>
 <polygon points="1032.4,378.0 1032.4,420.0 996.0,441.0 959.6,420.0 959.6,378.0 996.0,357.0"
-      fill="#6ee7b7" fill-opacity="0.06"
-      stroke="#6ee7b7" stroke-width="1.5" stroke-opacity="0.18"/>
+      fill="#fb923c" fill-opacity="0.06"
+      stroke="#fb923c" stroke-width="1.5" stroke-opacity="0.18"/>
 <polygon points="720.4,378.0 720.4,420.0 684.0,441.0 647.6,420.0 647.6,378.0 684.0,357.0"
-      fill="#6ee7b7" fill-opacity="0.06"
-      stroke="#6ee7b7" stroke-width="1.5" stroke-opacity="0.18"/>
+      fill="#fb923c" fill-opacity="0.06"
+      stroke="#fb923c" stroke-width="1.5" stroke-opacity="0.18"/>
 <polygon points="932.9,436.0 932.9,474.0 900.0,493.0 867.1,474.0 867.1,436.0 900.0,417.0"
-      fill="#6ee7b7" fill-opacity="0.07"
-      stroke="#6ee7b7" stroke-width="1.5" stroke-opacity="0.21000000000000002"/>
+      fill="#fb923c" fill-opacity="0.07"
+      stroke="#fb923c" stroke-width="1.5" stroke-opacity="0.21000000000000002"/>
 <polygon points="812.9,436.0 812.9,474.0 780.0,493.0 747.1,474.0 747.1,436.0 780.0,417.0"
-      fill="#6ee7b7" fill-opacity="0.07"
-      stroke="#6ee7b7" stroke-width="1.5" stroke-opacity="0.21000000000000002"/>
+      fill="#fb923c" fill-opacity="0.07"
+      stroke="#fb923c" stroke-width="1.5" stroke-opacity="0.21000000000000002"/>
 <polygon points="1057.7,471.0 1057.7,503.0 1030.0,519.0 1002.3,503.0 1002.3,471.0 1030.0,455.0"
-      fill="#6ee7b7" fill-opacity="0.05"
-      stroke="#6ee7b7" stroke-width="1.5" stroke-opacity="0.15000000000000002"/>
+      fill="#fb923c" fill-opacity="0.05"
+      stroke="#fb923c" stroke-width="1.5" stroke-opacity="0.15000000000000002"/>
 
   <!-- Left & bottom fade overlays -->
   <rect width="1200" height="630" fill="url(#lf)"/>
   <rect width="1200" height="630" fill="url(#bf)"/>
 
   <!-- Category badge -->
-  <rect x="60" y="52" width="98" height="32" rx="16"
-    fill="#6ee7b7" fill-opacity="0.15"
-    stroke="#6ee7b7" stroke-width="1" stroke-opacity="0.5"/>
+  <rect x="60" y="52" width="148" height="32" rx="16"
+    fill="#fb923c" fill-opacity="0.15"
+    stroke="#fb923c" stroke-width="1" stroke-opacity="0.5"/>
   <text x="74" y="73"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
     font-size="13" font-weight="700" letter-spacing="2.5"
-    fill="#6ee7b7" fill-opacity="0.95">BACKEND</text>
+    fill="#fb923c" fill-opacity="0.95">ARCHITECTURE</text>
 
   <!-- Title -->
   

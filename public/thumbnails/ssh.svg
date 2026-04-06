@@ -34,13 +34,13 @@
   <rect width="1200" height="630" fill="url(#bf)"/>
 
   <!-- Category badge -->
-  <rect x="60" y="52" width="88" height="32" rx="16"
+  <rect x="60" y="52" width="98" height="32" rx="16"
     fill="#60a5fa" fill-opacity="0.15"
     stroke="#60a5fa" stroke-width="1" stroke-opacity="0.5"/>
   <text x="74" y="73"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
     font-size="13" font-weight="700" letter-spacing="2.5"
-    fill="#60a5fa" fill-opacity="0.95">DEVOPS</text>
+    fill="#60a5fa" fill-opacity="0.95">NETWORK</text>
 
   <!-- Title -->
   

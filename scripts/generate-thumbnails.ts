@@ -454,7 +454,6 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'bun':                            { pattern: 'code',     colors: { bg1: '#1c0d0a', bg2: '#4a1a10', accent: '#fb923c', accent2: '#fed7aa' } },
   'zod':                            { pattern: 'shield' },
   'fsd-architecture':               { pattern: 'layers',   colors: { accent: '#c4b5fd' } },
-  'building-with-nextjs':           { pattern: 'browser',  colors: { bg1: '#0f172a', bg2: '#1e3a5f', accent: '#7dd3fc' } },
   'typescript-utility-types':       { pattern: 'code',     colors: { accent: '#93c5fd', accent2: '#bfdbfe' } },
   'ai-vibe-coding-architecture':    { pattern: 'neural' },
   'claude-superpowers-plugin':      { pattern: 'shield',   colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc' } },
@@ -462,7 +461,6 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'claude-code-channels':           { pattern: 'network',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#c4b5fd' } },
   'gstack':                         { pattern: 'network',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#e879f9' } },
   'claude-skills-superpowers':      { pattern: 'shield',   colors: { bg1: '#1a0730', bg2: '#3b1070', accent: '#e879f9' } },
-  'hello-world':                    { pattern: 'code',     colors: { bg1: '#0a1a0a', bg2: '#1a3d1a', accent: '#4ade80' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
