@@ -63,7 +63,7 @@
   <text x="60" y="516"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
     font-size="34" font-weight="800"
-    fill="white" fill-opacity="0.95">React 메모이제이션 완벽 비교 — memo vs</text>
+    fill="white" fill-opacity="0.95">React 메모이제이션 비교 — memo vs</text>
   <text x="60" y="556"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
     font-size="34" font-weight="800"

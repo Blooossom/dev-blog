@@ -57,10 +57,10 @@
   
   <text x="60" y="516"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="46" font-weight="800"
-    fill="white" fill-opacity="0.95">React Server</text>
-  <text x="60" y="568"
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">React Server Components</text>
+  <text x="60" y="556"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="46" font-weight="800"
-    fill="white" fill-opacity="0.95">Components 완벽 정리</text>
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">동작 원리와 활용법</text>
 </svg>

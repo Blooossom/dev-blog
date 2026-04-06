@@ -65,10 +65,10 @@
   
   <text x="60" y="516"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="46" font-weight="800"
-    fill="white" fill-opacity="0.95">Spring Cloud</text>
-  <text x="60" y="568"
+    font-size="40" font-weight="800"
+    fill="white" fill-opacity="0.95">Spring Cloud Gateway</text>
+  <text x="60" y="562"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="46" font-weight="800"
-    fill="white" fill-opacity="0.95">Gateway 완벽 정리</text>
+    font-size="40" font-weight="800"
+    fill="white" fill-opacity="0.95">라우팅과 필터 구성</text>
 </svg>

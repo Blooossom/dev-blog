@@ -81,8 +81,12 @@
 
   <!-- Title -->
   
-  <text x="60" y="546"
+  <text x="60" y="516"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="40" font-weight="800"
-    fill="white" fill-opacity="0.95">DB Replication 완벽 정리</text>
+    font-size="46" font-weight="800"
+    fill="white" fill-opacity="0.95">DB Replication</text>
+  <text x="60" y="568"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="46" font-weight="800"
+    fill="white" fill-opacity="0.95">동작 원리와 읽기 분산 전략</text>
 </svg>

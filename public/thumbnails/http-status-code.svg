@@ -66,12 +66,12 @@
   <text x="74" y="73"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
     font-size="13" font-weight="700" letter-spacing="2.5"
-    fill="#60a5fa" fill-opacity="0.95">BACKEND</text>
+    fill="#60a5fa" fill-opacity="0.95">NETWORK</text>
 
   <!-- Title -->
   
   <text x="60" y="546"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="40" font-weight="800"
-    fill="white" fill-opacity="0.95">HTTP 상태 코드 완전 정복</text>
+    font-size="46" font-weight="800"
+    fill="white" fill-opacity="0.95">HTTP 상태 코드 정리</text>
 </svg>

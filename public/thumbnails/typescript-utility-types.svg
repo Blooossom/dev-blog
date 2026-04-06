@@ -81,12 +81,8 @@
 
   <!-- Title -->
   
-  <text x="60" y="516"
+  <text x="60" y="546"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="40" font-weight="800"
-    fill="white" fill-opacity="0.95">TypeScript 유틸리티</text>
-  <text x="60" y="562"
-    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="40" font-weight="800"
-    fill="white" fill-opacity="0.95">타입 완전 정복</text>
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">TypeScript 유틸리티 타입 정리</text>
 </svg>

@@ -63,8 +63,12 @@
 
   <!-- Title -->
   
-  <text x="60" y="546"
+  <text x="60" y="516"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="40" font-weight="800"
-    fill="white" fill-opacity="0.95">CI/CD 파이프라인 완벽 정리</text>
+    font-size="46" font-weight="800"
+    fill="white" fill-opacity="0.95">CI/CD 파이프라인</text>
+  <text x="60" y="568"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="46" font-weight="800"
+    fill="white" fill-opacity="0.95">개념부터 실전 구성까지</text>
 </svg>
