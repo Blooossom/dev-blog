@@ -1,0 +1,342 @@
+---
+title: ELK 스택 — 로그 수집부터 시각화까지
+date: '2026-04-06'
+category: DevOps
+tags:
+  - ELK
+  - Elasticsearch
+  - Logstash
+  - Kibana
+  - 로그 관리
+  - Observability
+summary: >-
+  ELK 스택은 Elasticsearch, Logstash, Kibana의 조합으로 분산 시스템의 로그를 수집·저장·검색·시각화하는 표준 Observability 솔루션이다. 각 컴포넌트의 역할과 실전 구성 방법을 정리한다.
+thumbnail: /thumbnails/elk-stack.svg
+---
+
+서버가 여러 대로 늘어나면 로그가 각 서버에 흩어진다. 장애가 나면 SSH로 각 서버에 접속해 `tail -f`로 로그를 뒤지게 된다. ELK 스택은 이 흩어진 로그를 **한 곳에 모아 실시간으로 검색하고 시각화**하는 Observability 솔루션이다.
+
+## ELK란
+
+세 가지 오픈소스의 첫 글자를 딴 이름이다.
+
+```
+E — Elasticsearch   로그 저장·검색 엔진
+L — Logstash        로그 수집·변환 파이프라인
+K — Kibana          대시보드·시각화 UI
+```
+
+최근에는 **Beats**(경량 수집 에이전트)가 추가되어 **ELK(B) 스택** 또는 **Elastic 스택**이라고도 부른다.
+
+```
+애플리케이션/서버
+    ↓ (Filebeat, Metricbeat)
+  Logstash  ──────────▶  Elasticsearch  ──────▶  Kibana
+(수집·파싱·변환)          (저장·인덱싱·검색)       (시각화·대시보드)
+```
+
+---
+
+## 각 컴포넌트의 역할
+
+### Elasticsearch
+
+**분산 검색 엔진**이자 **NoSQL 문서 저장소**다. 로그 데이터를 JSON 문서로 저장하고, 역인덱스(Inverted Index) 구조 덕분에 수억 건의 로그에서도 밀리초 단위 검색이 가능하다.
+
+```
+주요 개념:
+  Index    ← 관계형 DB의 테이블
+  Document ← 테이블의 행 (JSON)
+  Shard    ← 데이터 수평 분할 단위
+  Replica  ← 샤드 복제본 (고가용성)
+```
+
+```bash
+# 문서 저장
+PUT /logs-2026.04.06/_doc/1
+{
+  "timestamp": "2026-04-06T10:30:00",
+  "level": "ERROR",
+  "service": "order-service",
+  "message": "NullPointerException at OrderService.java:42"
+}
+
+# 전문 검색
+GET /logs-*/_search
+{
+  "query": {
+    "match": { "message": "NullPointerException" }
+  }
+}
+```
+
+### Logstash
+
+**로그 수집·파싱·변환 파이프라인**이다. 다양한 소스에서 로그를 받아 정제한 뒤 Elasticsearch로 전송한다.
+
+```
+Input → Filter → Output
+
+Input:  파일, Kafka, Redis, Beats, HTTP 등 50+ 플러그인
+Filter: 파싱(Grok), 변환, 보강, 필드 추가/제거
+Output: Elasticsearch, S3, Kafka, Stdout 등
+```
+
+```ruby
+# logstash.conf 예시
+input {
+  beats {
+    port => 5044  # Filebeat에서 수신
+  }
+}
+
+filter {
+  # Spring Boot 로그 파싱
+  grok {
+    match => {
+      "message" => "%{TIMESTAMP_ISO8601:timestamp} %{LOGLEVEL:level} %{DATA:logger} - %{GREEDYDATA:msg}"
+    }
+  }
+
+  # 타임스탬프 파싱
+  date {
+    match => ["timestamp", "yyyy-MM-dd HH:mm:ss.SSS"]
+    target => "@timestamp"
+  }
+
+  # 불필요한 필드 제거
+  mutate {
+    remove_field => ["host", "agent"]
+  }
+}
+
+output {
+  elasticsearch {
+    hosts => ["http://elasticsearch:9200"]
+    index => "app-logs-%{+YYYY.MM.dd}"  # 일별 인덱스
+  }
+}
+```
+
+### Kibana
+
+Elasticsearch에 저장된 데이터를 **시각화하고 탐색하는 웹 UI**다.
+
+| 기능 | 설명 |
+|------|------|
+| Discover | 로그 실시간 검색·탐색 |
+| Dashboard | 차트·그래프를 조합한 대시보드 |
+| Visualize | 파이차트, 라인 차트, 히트맵 등 시각화 생성 |
+| Dev Tools | Elasticsearch API 직접 실행 |
+| Alerting | 조건 기반 알림 설정 |
+
+### Beats (경량 에이전트)
+
+각 서버에 설치하는 **경량 데이터 수집기**다. Logstash보다 리소스가 훨씬 적다.
+
+| Beat | 수집 대상 |
+|------|---------|
+| **Filebeat** | 로그 파일 (가장 많이 사용) |
+| Metricbeat | CPU, 메모리, 디스크 등 시스템 지표 |
+| Packetbeat | 네트워크 트래픽 |
+| Heartbeat | 서비스 가용성 모니터링 |
+
+---
+
+## ELK를 쓰는 이유
+
+### 분산 시스템에서의 로그 문제
+
+```
+서비스가 3대 이상이면:
+  server-1: /var/log/app.log
+  server-2: /var/log/app.log
+  server-3: /var/log/app.log
+
+장애 발생 시:
+  - 어느 서버에서 에러가 났는지?
+  - 여러 서버의 로그를 시간순으로 엮어야 함
+  - SSH 접속 + grep 반복 → 수동 작업 수십 분
+```
+
+ELK는 모든 로그를 한 곳에 모아 **서비스명·시간·레벨로 바로 필터링**할 수 있게 한다.
+
+### 강력한 전문 검색
+
+```
+"NullPointerException이 어제 오후 3시~5시 사이에 몇 번 났나?"
+"order-service에서 500 에러가 가장 많이 난 엔드포인트는?"
+"특정 사용자 ID의 요청 흐름을 시간순으로 보고 싶다"
+```
+
+이런 쿼리를 Kibana에서 수초 안에 실행할 수 있다.
+
+---
+
+## Docker Compose로 로컬 구성
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  elasticsearch:
+    image: elasticsearch:8.12.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+
+  logstash:
+    image: logstash:8.12.0
+    ports:
+      - "5044:5044"
+    volumes:
+      - ./logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    depends_on:
+      - elasticsearch
+
+  kibana:
+    image: kibana:8.12.0
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+
+  filebeat:
+    image: elastic/filebeat:8.12.0
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - logstash
+
+volumes:
+  es-data:
+```
+
+```yaml
+# filebeat/filebeat.yml
+filebeat.inputs:
+  - type: container
+    paths:
+      - /var/lib/docker/containers/*/*.log
+
+output.logstash:
+  hosts: ["logstash:5044"]
+```
+
+---
+
+## Spring Boot 애플리케이션 연동
+
+Spring Boot 로그를 JSON 형식으로 출력하면 Logstash 파싱이 훨씬 쉬워진다.
+
+```xml
+<!-- pom.xml -->
+<dependency>
+    <groupId>net.logstash.logback</groupId>
+    <artifactId>logstash-logback-encoder</artifactId>
+    <version>7.4</version>
+</dependency>
+```
+
+```xml
+<!-- logback-spring.xml -->
+<configuration>
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"service":"order-service","env":"prod"}</customFields>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="JSON_CONSOLE"/>
+    </root>
+</configuration>
+```
+
+JSON 출력 결과:
+```json
+{
+  "@timestamp": "2026-04-06T10:30:00.123+09:00",
+  "level": "ERROR",
+  "logger_name": "com.example.OrderService",
+  "message": "주문 처리 실패: orderId=12345",
+  "service": "order-service",
+  "env": "prod",
+  "stack_trace": "..."
+}
+```
+
+---
+
+## ELK의 장단점
+
+### 장점
+
+| 항목 | 내용 |
+|------|------|
+| 강력한 검색 | 역인덱스 기반 전문 검색, 수억 건도 빠름 |
+| 유연한 스키마 | JSON 문서 저장, 필드 구조 자유 |
+| 풍부한 시각화 | Kibana 대시보드 다양 |
+| 대규모 확장 | 샤드·레플리카로 수평 확장 |
+| 생태계 | Beats, APM, Fleet 등 연계 도구 풍부 |
+
+### 단점
+
+| 항목 | 내용 |
+|------|------|
+| 높은 리소스 사용 | Elasticsearch가 JVM 기반으로 메모리 사용 큼 (최소 1GB+) |
+| 운영 복잡도 | 클러스터 관리, 인덱스 라이프사이클, 샤드 최적화 등 관리 포인트 많음 |
+| 스토리지 비용 | 로그 보존 기간이 길면 디스크 사용량이 급격히 증가 |
+| 라이선스 | 일부 고급 기능은 유료 (Elastic 라이선스) |
+
+---
+
+## Prometheus + Grafana와의 차이
+
+ELK와 Prometheus/Grafana는 자주 함께 거론되지만 목적이 다르다.
+
+| 항목 | ELK | Prometheus + Grafana |
+|------|-----|---------------------|
+| 주 목적 | **로그** 수집·검색·분석 | **메트릭** 수집·시각화 |
+| 데이터 형태 | 비정형 텍스트 (로그) | 숫자형 시계열 데이터 |
+| 쿼리 언어 | Kibana Query Language, Lucene | PromQL |
+| 강점 | 에러 로그 추적, 사용자 행동 분석 | CPU·메모리·응답시간 모니터링 |
+
+실무에서는 두 가지를 함께 사용한다. 메트릭 이상을 Grafana로 감지하고, 원인을 ELK에서 로그로 추적하는 흐름이 일반적이다.
+
+---
+
+## 인덱스 관리 (ILM)
+
+로그가 쌓이면 디스크가 가득 차므로 **Index Lifecycle Management(ILM)**로 자동 관리한다.
+
+```json
+PUT _ilm/policy/logs-policy
+{
+  "policy": {
+    "phases": {
+      "hot":    { "actions": { "rollover": { "max_size": "10gb", "max_age": "1d" } } },
+      "warm":   { "min_age": "7d",  "actions": { "readonly": {} } },
+      "delete": { "min_age": "30d", "actions": { "delete": {} } }
+    }
+  }
+}
+```
+
+- **hot**: 최근 1일, 활발히 쓰기·읽기
+- **warm**: 7일~30일, 읽기 전용
+- **delete**: 30일 이후 자동 삭제
+
+---
+
+ELK 스택의 핵심은 **분산된 로그를 단일 창구에서 검색·분석**할 수 있게 만드는 것이다. 서비스 규모가 커질수록 로그 중앙화의 가치는 더 커지며, Filebeat로 에이전트를 가볍게 유지하고 Elasticsearch + Kibana로 강력한 분석 환경을 구축하는 것이 현재의 표준 패턴이다.
