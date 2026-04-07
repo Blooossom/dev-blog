@@ -1,0 +1,395 @@
+---
+title: 유효성 검사 — Java(Spring)와 React에서의 전략
+date: '2026-04-08'
+category: General
+tags:
+  - 유효성 검사
+  - Bean Validation
+  - Spring Boot
+  - React Hook Form
+  - Zod
+summary: >-
+  유효성 검사는 신뢰할 수 없는 입력으로부터 시스템을 보호하는 첫 번째 방어선이다. 왜 프론트와 백엔드 모두에서 검사해야 하는지, Java Spring과 React에서 각각 어떻게 구현하는지 정리한다.
+thumbnail: /thumbnails/validation.svg
+---
+
+사용자 입력은 항상 잘못될 수 있다. 이메일 형식이 아닌 문자열, 음수인 가격, 1000자가 넘는 소개글. 유효성 검사 없이 이 값들이 DB에 들어가거나 비즈니스 로직을 통과하면 데이터 오염, 보안 취약점, 의도하지 않은 동작이 생긴다.
+
+## 왜 프론트와 백엔드 모두에서 검사해야 하는가
+
+흔히 "프론트에서 막으면 되지 않나?"라고 생각하지만, 프론트엔드 검사는 **우회가 쉽다.**
+
+```
+정상적인 흐름:
+사용자 → [React 폼 검사] → [Spring API] → DB
+
+우회 흐름:
+공격자 → curl / Postman → [Spring API] → DB
+          ↑ 브라우저 없이 직접 요청 → 프론트 검사 전혀 무의미
+```
+
+| 검사 위치 | 목적 | 특징 |
+|---------|------|------|
+| **프론트엔드** | UX — 즉각적인 피드백, 불필요한 API 요청 방지 | 우회 가능, 신뢰 불가 |
+| **백엔드** | 보안·데이터 무결성 — 실제 방어선 | 항상 실행, 신뢰 가능 |
+
+**결론: 프론트는 UX를 위해, 백엔드는 보안을 위해 — 둘 다 필요하다.**
+
+---
+
+## Java (Spring Boot) — 서버 사이드 검사
+
+### Bean Validation + @Valid
+
+Spring Boot는 Jakarta Bean Validation을 내장 지원한다. 어노테이션으로 규칙을 선언하면 프레임워크가 검사를 자동으로 수행한다.
+
+```java
+// DTO에 제약 조건 선언
+public class SignUpRequest {
+
+    @NotBlank(message = "이메일은 필수입니다")
+    @Email(message = "이메일 형식이 올바르지 않습니다")
+    @Size(max = 100)
+    private String email;
+
+    @NotBlank(message = "비밀번호는 필수입니다")
+    @Size(min = 8, max = 50, message = "비밀번호는 8자 이상 50자 이하입니다")
+    @Pattern(
+        regexp = "^(?=.*[A-Za-z])(?=.*\\d)[A-Za-z\\d@$!%*#?&]+$",
+        message = "비밀번호는 영문과 숫자를 포함해야 합니다"
+    )
+    private String password;
+
+    @NotBlank(message = "이름은 필수입니다")
+    @Size(min = 2, max = 20, message = "이름은 2자 이상 20자 이하입니다")
+    private String name;
+
+    @Min(value = 14, message = "14세 이상만 가입 가능합니다")
+    @Max(value = 150)
+    private int age;
+}
+```
+
+```java
+// 컨트롤러에서 @Valid로 활성화
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @PostMapping("/signup")
+    public ResponseEntity<Void> signUp(@Valid @RequestBody SignUpRequest request) {
+        // 여기까지 왔다면 검사 통과
+        userService.signUp(request);
+        return ResponseEntity.status(HttpStatus.CREATED).build();
+    }
+}
+```
+
+### 주요 Bean Validation 어노테이션
+
+| 어노테이션 | 설명 |
+|-----------|------|
+| `@NotNull` | null 불허 |
+| `@NotBlank` | null·빈 문자열·공백만 있는 문자열 불허 |
+| `@NotEmpty` | null·빈 컬렉션/문자열 불허 |
+| `@Size(min, max)` | 문자열 길이, 컬렉션 크기 |
+| `@Min` / `@Max` | 숫자 최솟값/최댓값 |
+| `@Email` | 이메일 형식 |
+| `@Pattern(regexp)` | 정규식 매칭 |
+| `@Positive` | 양수 (0 제외) |
+| `@PositiveOrZero` | 0 이상 |
+| `@Past` / `@Future` | 과거/미래 날짜 |
+| `@AssertTrue/False` | 불리언 값 |
+
+### 검사 실패 시 에러 응답 처리
+
+`@Valid` 실패 시 `MethodArgumentNotValidException`이 발생한다. `@RestControllerAdvice`로 일관된 에러 응답을 반환한다.
+
+```java
+@RestControllerAdvice
+public class ValidationExceptionHandler {
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidationException(
+            MethodArgumentNotValidException ex) {
+
+        List<FieldError> fieldErrors = ex.getBindingResult()
+            .getFieldErrors()
+            .stream()
+            .map(e -> new FieldError(e.getField(), e.getDefaultMessage()))
+            .toList();
+
+        return ResponseEntity
+            .badRequest()
+            .body(new ErrorResponse("VALIDATION_FAILED", fieldErrors));
+    }
+
+    public record ErrorResponse(String code, List<FieldError> errors) {}
+    public record FieldError(String field, String message) {}
+}
+```
+
+```json
+// 응답 예시
+{
+  "code": "VALIDATION_FAILED",
+  "errors": [
+    { "field": "email", "message": "이메일 형식이 올바르지 않습니다" },
+    { "field": "password", "message": "비밀번호는 8자 이상 50자 이하입니다" }
+  ]
+}
+```
+
+### 커스텀 제약 조건
+
+기본 어노테이션으로 표현하기 어려운 규칙은 직접 만든다.
+
+```java
+// 1. 어노테이션 정의
+@Target({ElementType.FIELD})
+@Retention(RetentionPolicy.RUNTIME)
+@Constraint(validatedBy = PhoneNumberValidator.class)
+public @interface ValidPhoneNumber {
+    String message() default "올바른 전화번호 형식이 아닙니다";
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+}
+
+// 2. 검사 로직 구현
+public class PhoneNumberValidator implements ConstraintValidator<ValidPhoneNumber, String> {
+
+    private static final Pattern PATTERN = Pattern.compile("^010-\\d{4}-\\d{4}$");
+
+    @Override
+    public boolean isValid(String value, ConstraintValidatorContext context) {
+        if (value == null) return true;  // @NotNull이 null 처리
+        return PATTERN.matcher(value).matches();
+    }
+}
+
+// 3. DTO에 적용
+public class ProfileRequest {
+    @ValidPhoneNumber
+    private String phoneNumber;
+}
+```
+
+### 서비스 레이어 검사 — @Validated
+
+DB를 조회해야 알 수 있는 규칙(이메일 중복 등)은 서비스 레이어에서 처리한다.
+
+```java
+@Service
+@RequiredArgsConstructor
+public class UserService {
+
+    private final UserRepository userRepository;
+
+    public void signUp(SignUpRequest request) {
+        // 비즈니스 규칙 검사 — DB 조회가 필요한 경우
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new BusinessException(ErrorCode.DUPLICATE_EMAIL);
+        }
+
+        // 도메인 로직
+        User user = User.create(request.getEmail(), request.getName());
+        userRepository.save(user);
+    }
+}
+```
+
+---
+
+## React — 클라이언트 사이드 검사
+
+### React Hook Form + Zod
+
+React Hook Form은 폼 상태를 관리하고, Zod는 타입 안전한 스키마로 검사 규칙을 정의한다. 둘을 조합하면 타입 추론까지 자동으로 된다.
+
+```bash
+npm install react-hook-form zod @hookform/resolvers
+```
+
+```typescript
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
+
+// 1. Zod 스키마로 검사 규칙 + 타입 동시 정의
+const signUpSchema = z.object({
+  email: z
+    .string()
+    .min(1, '이메일을 입력해 주세요')
+    .email('이메일 형식이 올바르지 않습니다'),
+  password: z
+    .string()
+    .min(8, '비밀번호는 8자 이상이어야 합니다')
+    .max(50, '비밀번호는 50자 이하여야 합니다')
+    .regex(/(?=.*[A-Za-z])(?=.*\d)/, '영문과 숫자를 포함해야 합니다'),
+  passwordConfirm: z.string().min(1, '비밀번호 확인을 입력해 주세요'),
+  name: z
+    .string()
+    .min(2, '이름은 2자 이상이어야 합니다')
+    .max(20, '이름은 20자 이하여야 합니다'),
+  age: z
+    .number({ invalid_type_error: '나이를 입력해 주세요' })
+    .min(14, '14세 이상만 가입 가능합니다'),
+}).refine(
+  (data) => data.password === data.passwordConfirm,
+  {
+    message: '비밀번호가 일치하지 않습니다',
+    path: ['passwordConfirm'],
+  }
+)
+
+// 2. 스키마에서 타입 자동 추론
+type SignUpFormData = z.infer<typeof signUpSchema>
+```
+
+```tsx
+// 3. 폼 컴포넌트
+export function SignUpForm() {
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<SignUpFormData>({
+    resolver: zodResolver(signUpSchema),
+  })
+
+  const onSubmit = async (data: SignUpFormData) => {
+    // data는 검사 통과한 타입 안전한 값
+    await signUpApi(data)
+  }
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <div>
+        <label>이메일</label>
+        <input type="email" {...register('email')} />
+        {errors.email && (
+          <span className="text-red-500 text-sm">{errors.email.message}</span>
+        )}
+      </div>
+
+      <div>
+        <label>비밀번호</label>
+        <input type="password" {...register('password')} />
+        {errors.password && (
+          <span className="text-red-500 text-sm">{errors.password.message}</span>
+        )}
+      </div>
+
+      <div>
+        <label>비밀번호 확인</label>
+        <input type="password" {...register('passwordConfirm')} />
+        {errors.passwordConfirm && (
+          <span className="text-red-500 text-sm">{errors.passwordConfirm.message}</span>
+        )}
+      </div>
+
+      <div>
+        <label>이름</label>
+        <input {...register('name')} />
+        {errors.name && (
+          <span className="text-red-500 text-sm">{errors.name.message}</span>
+        )}
+      </div>
+
+      <button type="submit" disabled={isSubmitting}>
+        {isSubmitting ? '가입 중...' : '회원가입'}
+      </button>
+    </form>
+  )
+}
+```
+
+### 서버 에러를 폼 필드에 반영
+
+API 응답의 에러(이메일 중복 등)를 해당 필드에 표시할 수 있다.
+
+```typescript
+const { setError } = useForm<SignUpFormData>({ resolver: zodResolver(signUpSchema) })
+
+const onSubmit = async (data: SignUpFormData) => {
+  try {
+    await signUpApi(data)
+  } catch (error) {
+    if (isApiError(error) && error.code === 'DUPLICATE_EMAIL') {
+      // 서버 에러를 폼 필드에 직접 연결
+      setError('email', { message: '이미 사용 중인 이메일입니다' })
+    }
+  }
+}
+```
+
+### 검사 실행 시점 제어
+
+```typescript
+useForm({
+  resolver: zodResolver(signUpSchema),
+  mode: 'onBlur',      // 포커스 벗어날 때 (기본: onSubmit)
+  // mode: 'onChange'  // 입력할 때마다 (UX 부담 있음)
+  // mode: 'onSubmit'  // 제출 시에만
+  // mode: 'onTouched' // 첫 번째 blur 이후부터 onChange로 전환
+})
+```
+
+---
+
+## 공통 스키마 공유 (모노레포 환경)
+
+프론트와 백엔드가 같은 저장소에 있다면 Zod 스키마를 공유해 검사 규칙을 단일 진실의 원천으로 관리할 수 있다.
+
+```typescript
+// packages/schemas/src/user.ts
+import { z } from 'zod'
+
+export const signUpSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  name: z.string().min(2).max(20),
+})
+
+export type SignUpRequest = z.infer<typeof signUpSchema>
+```
+
+```typescript
+// apps/web — 프론트에서 사용
+import { signUpSchema } from '@myorg/schemas'
+const { register } = useForm({ resolver: zodResolver(signUpSchema) })
+
+// apps/api (NestJS) — 백엔드에서도 동일 스키마 재사용
+import { signUpSchema } from '@myorg/schemas'
+```
+
+단, 백엔드에서는 Bean Validation이 표준이므로 NestJS 환경이 아닌 Spring Boot라면 Zod를 직접 쓰지는 않는다. 이 경우 스키마는 문서·계약 역할로만 활용하고 실제 검사는 Bean Validation으로 이중 구현한다.
+
+---
+
+## 검사 계층 정리
+
+```
+사용자 입력
+    │
+    ▼
+[React 폼 검사]          ← UX, 즉각 피드백, 불필요한 요청 방지
+    │ (통과)
+    ▼
+[Spring @Valid]           ← 형식·범위 검사, 400 Bad Request 반환
+    │ (통과)
+    ▼
+[Service 비즈니스 검사]   ← 중복 검사, 상태 검사, 도메인 규칙
+    │ (통과)
+    ▼
+[DB 제약 조건]            ← 최후 방어선 (unique, not null, check)
+    │
+    ▼
+  저장 완료
+```
+
+각 계층은 서로의 존재를 가정하지 않고 독립적으로 방어해야 한다.
+
+---
+
+유효성 검사의 핵심 원칙은 **신뢰 경계를 명확히 하는 것**이다. 프론트엔드는 신뢰할 수 없는 환경이므로 백엔드 검사는 절대 생략할 수 없다. 프론트의 검사는 사용자 경험을 위한 투자이고, 백엔드의 검사는 시스템 보안을 위한 필수 장치다.
