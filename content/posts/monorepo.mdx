@@ -1,0 +1,390 @@
+---
+title: 모노레포 — 단일 저장소로 여러 패키지 관리하기
+date: '2026-04-07'
+category: General
+tags:
+  - 모노레포
+  - Turborepo
+  - pnpm Workspace
+  - 프로젝트 구조
+  - 협업
+summary: >-
+  모노레포는 여러 프로젝트를 하나의 Git 저장소에서 관리하는 전략이다. 폴리레포와의 차이, 장단점, Turborepo와 pnpm workspace를 활용한 실전 구성까지 정리한다.
+thumbnail: /thumbnails/monorepo.svg
+---
+
+프론트엔드, 백엔드, 공통 라이브러리가 각각 다른 저장소에 있으면 변경 하나에 PR이 세 개 열린다. 공통 타입을 수정하면 의존하는 프로젝트들을 순서대로 업데이트해야 하고, 버전 관리도 따로 해야 한다. 모노레포는 이 문제를 저장소 통합으로 해결한다.
+
+## 폴리레포 vs 모노레포
+
+### 폴리레포 (Polyrepo)
+
+프로젝트마다 별도의 Git 저장소를 운영한다.
+
+```
+github.com/org/
+  ├── frontend/         (저장소 1)
+  ├── backend/          (저장소 2)
+  ├── shared-types/     (저장소 3)
+  └── design-system/    (저장소 4)
+```
+
+**문제점:**
+- 공통 코드 변경 시 각 저장소에 PR + 버전 업데이트 반복
+- 저장소 간 코드 공유가 npm 패키지 경유로만 가능
+- 개발 환경 설정(ESLint, TypeScript config)이 저장소마다 중복
+- 여러 저장소를 동시에 보는 Cross-repo 변경 추적이 어렵다
+
+### 모노레포 (Monorepo)
+
+모든 프로젝트를 하나의 저장소 안에 둔다.
+
+```
+github.com/org/my-monorepo/
+  ├── apps/
+  │   ├── web/          (Next.js 프론트엔드)
+  │   └── api/          (NestJS 백엔드)
+  └── packages/
+      ├── ui/           (공통 컴포넌트)
+      ├── types/        (공통 타입)
+      └── eslint-config/ (공통 ESLint 설정)
+```
+
+공통 타입을 수정하면 하나의 커밋으로 프론트·백엔드에 즉시 반영된다.
+
+---
+
+## 모노레포의 장단점
+
+### 장점
+
+**코드 공유 간소화**
+공통 유틸, 타입, 컴포넌트를 로컬 패키지로 참조한다. 버전 관리 없이 최신 코드가 항상 적용된다.
+
+```typescript
+// apps/web/package.json
+{
+  "dependencies": {
+    "@myorg/types": "workspace:*",  // 로컬 패키지 참조
+    "@myorg/ui": "workspace:*"
+  }
+}
+```
+
+**원자적 커밋(Atomic Commit)**
+여러 패키지에 걸친 변경을 단일 커밋으로 묶을 수 있다. "API 응답 타입 변경 + 프론트엔드 적용"을 하나의 PR로 리뷰할 수 있다.
+
+**통합 CI/CD**
+변경된 패키지와 그 의존 패키지만 선택적으로 빌드·테스트할 수 있다. (Turborepo의 `--filter` 기능)
+
+**일관된 개발 환경**
+ESLint, TypeScript, Prettier 설정을 루트에서 한 번만 관리한다.
+
+### 단점
+
+**저장소 크기 증가**
+모든 프로젝트 이력이 쌓이므로 `git clone`이 느려질 수 있다.
+
+**초기 설정 복잡도**
+워크스페이스, 빌드 캐시, 파이프라인 설정에 학습 비용이 있다.
+
+**접근 제어 한계**
+Git 저장소 단위의 접근 권한 관리가 어렵다. 특정 팀에게 특정 패키지만 접근 권한을 주기 어렵다.
+
+**빌드 도구 필요**
+단순 `npm install`로는 패키지 간 의존성을 효율적으로 처리하지 못한다. Turborepo, Nx 같은 빌드 오케스트레이터가 필요하다.
+
+---
+
+## 핵심 도구
+
+### 패키지 매니저 워크스페이스
+
+모노레포의 기반이 되는 기능. 로컬 패키지 간 참조와 의존성 호이스팅을 담당한다.
+
+```
+pnpm workspace  ← 현재 가장 많이 사용
+npm workspace
+yarn workspace
+```
+
+### 빌드 오케스트레이터
+
+패키지 간 의존 관계를 파악해 빌드 순서를 결정하고 결과를 캐싱한다.
+
+```
+Turborepo  ← Vercel, 경량·빠름
+Nx         ← Angular 팀, 기능 풍부
+```
+
+---
+
+## 실전 구성 — pnpm + Turborepo
+
+### 디렉터리 구조
+
+```
+my-monorepo/
+├── apps/
+│   ├── web/               # Next.js
+│   │   └── package.json
+│   └── api/               # NestJS
+│       └── package.json
+├── packages/
+│   ├── ui/                # 공통 React 컴포넌트
+│   │   └── package.json
+│   ├── types/             # 공통 TypeScript 타입
+│   │   └── package.json
+│   └── eslint-config/     # 공통 ESLint 설정
+│       └── package.json
+├── package.json           # 루트
+├── pnpm-workspace.yaml
+└── turbo.json
+```
+
+### pnpm-workspace.yaml
+
+```yaml
+packages:
+  - 'apps/*'
+  - 'packages/*'
+```
+
+### 루트 package.json
+
+```json
+{
+  "name": "my-monorepo",
+  "private": true,
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "test": "turbo test"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  }
+}
+```
+
+### turbo.json — 파이프라인 정의
+
+```json
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
+    }
+  }
+}
+```
+
+`"dependsOn": ["^build"]`는 "이 태스크를 실행하기 전에 의존 패키지들의 build를 먼저 실행하라"는 의미다.
+
+```
+types → ui → web
+           ↘ api
+
+turbo build 실행 시:
+  1. types build
+  2. ui build (types가 완료된 후)
+  3. web build + api build (ui가 완료된 후, 병렬 실행)
+```
+
+---
+
+## 패키지 설정
+
+### packages/types/package.json
+
+```json
+{
+  "name": "@myorg/types",
+  "version": "0.0.1",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
+```
+
+```typescript
+// packages/types/src/index.ts
+export interface User {
+  id: number
+  name: string
+  email: string
+}
+
+export interface Order {
+  id: number
+  userId: number
+  totalAmount: number
+  status: 'pending' | 'completed' | 'cancelled'
+}
+```
+
+### packages/ui/package.json
+
+```json
+{
+  "name": "@myorg/ui",
+  "version": "0.0.1",
+  "dependencies": {
+    "@myorg/types": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}
+```
+
+### apps/web/package.json
+
+```json
+{
+  "name": "web",
+  "dependencies": {
+    "@myorg/types": "workspace:*",
+    "@myorg/ui": "workspace:*",
+    "next": "^15.0.0",
+    "react": "^19.0.0"
+  }
+}
+```
+
+---
+
+## Turborepo 캐싱
+
+Turborepo는 태스크의 입력(소스 코드, 환경 변수)이 변하지 않으면 **이전 결과를 캐시에서 재사용**한다.
+
+```bash
+$ turbo build
+
+# 첫 번째 실행
+Tasks:    3 successful, 3 total
+Cached:   0 cached, 3 total
+Time:     12.4s
+
+# 코드 변경 없이 두 번째 실행
+Tasks:    3 successful, 3 total
+Cached:   3 cached, 3 total  ← 모두 캐시 히트
+Time:     312ms              ← 40배 빠름
+```
+
+**원격 캐시(Remote Cache)**를 Vercel이나 자체 서버에 설정하면 팀원 간에 캐시를 공유할 수 있다. CI에서 한 번 빌드한 결과를 다른 팀원의 로컬에서 재사용한다.
+
+```bash
+# Vercel Remote Cache 연동
+npx turbo login
+npx turbo link
+```
+
+---
+
+## 선택적 실행 — --filter
+
+변경된 패키지와 관련 패키지만 빌드·테스트한다.
+
+```bash
+# 특정 패키지만 빌드
+turbo build --filter=web
+
+# 변경된 패키지와 그 의존자들만 빌드
+turbo build --filter=...[HEAD^1]
+
+# 특정 패키지와 그 의존 패키지들
+turbo build --filter=web...
+
+# 특정 앱의 dev 서버만 실행
+turbo dev --filter=web
+```
+
+---
+
+## 공통 설정 공유
+
+### TypeScript
+
+```json
+// packages/tsconfig/base.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+```json
+// apps/web/tsconfig.json
+{
+  "extends": "@myorg/tsconfig/base.json",
+  "compilerOptions": {
+    "plugins": [{ "name": "next" }]
+  }
+}
+```
+
+### ESLint
+
+```javascript
+// packages/eslint-config/index.js
+module.exports = {
+  extends: ['eslint:recommended', 'plugin:@typescript-eslint/recommended'],
+  rules: {
+    'no-console': 'warn',
+  },
+}
+```
+
+```json
+// apps/web/.eslintrc.json
+{
+  "extends": ["@myorg/eslint-config"]
+}
+```
+
+---
+
+## 모노레포 도입 기준
+
+```
+이런 경우 모노레포가 유리:
+  - 여러 앱이 공통 타입·컴포넌트·유틸을 공유한다
+  - 프론트·백엔드가 긴밀하게 연동되어 동시 변경이 잦다
+  - 팀이 하나의 제품을 함께 개발한다
+  - 코드 표준을 일관되게 유지하고 싶다
+
+이런 경우 폴리레포가 유리:
+  - 팀/서비스 간 독립성이 중요하다 (배포 주기, 기술 스택 차이)
+  - 저장소 접근 권한을 세밀하게 제어해야 한다
+  - 각 서비스가 서로 거의 의존하지 않는다
+```
+
+---
+
+모노레포의 핵심 가치는 **코드 공유와 원자적 변경**이다. 여러 패키지에 걸친 리팩토링을 하나의 PR로 리뷰하고, 타입 변경이 프론트·백엔드에 동시에 적용되는 경험은 협업 속도를 크게 높인다. 다만 빌드 파이프라인 초기 설정 비용이 있으므로, 공통 코드가 명확히 존재하는 시점에 도입하는 것이 적절하다.
