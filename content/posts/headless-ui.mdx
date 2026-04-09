@@ -1,0 +1,416 @@
+---
+title: Headless UI — 스타일 없는 컴포넌트 라이브러리
+date: '2026-04-10'
+category: Frontend
+tags:
+  - Headless UI
+  - React
+  - 접근성
+  - 컴포넌트
+  - Tailwind CSS
+summary: >-
+  Headless UI는 스타일 없이 동작과 접근성만 제공하는 컴포넌트 라이브러리다. 디자인 시스템을 자유롭게 구성하면서도 키보드 내비게이션, ARIA, 포커스 관리를 처음부터 구현하지 않아도 된다.
+thumbnail: /thumbnails/headless-ui.svg
+---
+
+`<select>`를 커스텀하거나 모달을 직접 만들 때 스타일보다 더 까다로운 문제가 생긴다. 키보드로 옵션 탐색, 포커스 트랩, ARIA 속성 설정, 스크린 리더 지원 — 접근성 요구사항만 제대로 처리해도 상당한 공수가 든다. Headless UI는 이 동작 로직만 컴포넌트로 분리해서 제공한다.
+
+## Headless UI란
+
+**스타일(CSS)은 전혀 없고, 동작(behavior)과 접근성(accessibility)만 제공하는 컴포넌트 라이브러리**다. Tailwind Labs에서 만들었으며, React와 Vue를 지원한다.
+
+```
+일반 UI 라이브러리 (MUI, Ant Design 등)
+  동작 + 접근성 + 스타일 → 통째로 제공
+  → 커스텀 스타일 적용이 어렵고 번들 크기가 크다
+
+Headless UI
+  동작 + 접근성만 제공, 스타일은 사용자가 담당
+  → 어떤 디자인 시스템과도 조합 가능
+```
+
+```bash
+npm install @headlessui/react
+```
+
+---
+
+## 제공하는 컴포넌트
+
+| 컴포넌트 | 용도 |
+|---------|------|
+| `Dialog` | 모달, 다이얼로그 |
+| `Disclosure` | 아코디언, FAQ 토글 |
+| `Combobox` | 자동완성 드롭다운 |
+| `Listbox` | 커스텀 `<select>` |
+| `Menu` | 드롭다운 메뉴 |
+| `Popover` | 팝오버 패널 |
+| `RadioGroup` | 라디오 버튼 그룹 |
+| `Switch` | 토글 스위치 |
+| `Tabs` | 탭 인터페이스 |
+| `Transition` | CSS 전환 애니메이션 |
+
+---
+
+## 핵심 개념: 렌더 프롭과 `as` 프롭
+
+### `as` 프롭
+
+Headless UI 컴포넌트는 기본적으로 특정 HTML 요소로 렌더링된다. `as` 프롭으로 렌더링될 요소를 바꿀 수 있다.
+
+```tsx
+// 기본: <ul>로 렌더링
+<Listbox.Options />
+
+// div로 변경
+<Listbox.Options as="div" />
+
+// Fragment로 변경 (DOM 요소 없이)
+<Listbox.Options as={Fragment} />
+```
+
+### 렌더 프롭 (Render Props)
+
+내부 상태를 자식 컴포넌트에게 노출한다. 열림 상태, 선택 상태 등을 받아 조건부 스타일 적용에 활용한다.
+
+```tsx
+<Disclosure>
+  {({ open }) => (  // open 상태를 받아서 사용
+    <>
+      <Disclosure.Button>
+        메뉴 {open ? '닫기' : '열기'}
+      </Disclosure.Button>
+      <Disclosure.Panel>내용</Disclosure.Panel>
+    </>
+  )}
+</Disclosure>
+```
+
+---
+
+## Dialog (모달)
+
+가장 자주 쓰이는 컴포넌트다. 포커스 트랩, ESC 키 닫기, 배경 스크롤 잠금을 자동으로 처리한다.
+
+```tsx
+import { useState } from 'react'
+import { Dialog } from '@headlessui/react'
+
+export function ConfirmModal() {
+  const [isOpen, setIsOpen] = useState(false)
+
+  return (
+    <>
+      <button onClick={() => setIsOpen(true)}>
+        삭제
+      </button>
+
+      <Dialog
+        open={isOpen}
+        onClose={() => setIsOpen(false)}  // 배경 클릭, ESC 키로 닫힘
+        className="relative z-50"
+      >
+        {/* 배경 오버레이 */}
+        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
+
+        {/* 모달 패널 */}
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <Dialog.Panel className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <Dialog.Title className="text-lg font-semibold text-gray-900">
+              정말 삭제하시겠습니까?
+            </Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm text-gray-500">
+              삭제된 데이터는 복구할 수 없습니다.
+            </Dialog.Description>
+
+            <div className="mt-6 flex gap-3 justify-end">
+              <button
+                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg"
+                onClick={() => setIsOpen(false)}
+              >
+                취소
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-red-500 hover:bg-red-600 rounded-lg"
+                onClick={() => {
+                  // 삭제 로직
+                  setIsOpen(false)
+                }}
+              >
+                삭제
+              </button>
+            </div>
+          </Dialog.Panel>
+        </div>
+      </Dialog>
+    </>
+  )
+}
+```
+
+**자동으로 처리되는 것:**
+- 모달 열릴 때 내부 첫 번째 포커스 가능한 요소로 포커스 이동
+- ESC 키로 `onClose` 호출
+- 모달 밖 요소는 스크린 리더에서 `aria-hidden` 처리
+- `role="dialog"`, `aria-modal="true"` 자동 적용
+
+---
+
+## Combobox (자동완성)
+
+검색어를 입력하면 필터링된 옵션을 보여주는 드롭다운이다.
+
+```tsx
+import { useState } from 'react'
+import { Combobox } from '@headlessui/react'
+
+const fruits = ['사과', '바나나', '포도', '딸기', '수박', '참외']
+
+export function FruitCombobox() {
+  const [selected, setSelected] = useState('')
+  const [query, setQuery] = useState('')
+
+  const filtered =
+    query === ''
+      ? fruits
+      : fruits.filter((fruit) => fruit.includes(query))
+
+  return (
+    <Combobox value={selected} onChange={setSelected}>
+      <div className="relative">
+        <Combobox.Input
+          className="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onChange={(e) => setQuery(e.target.value)}
+          displayValue={(fruit: string) => fruit}
+          placeholder="과일 검색..."
+        />
+
+        <Combobox.Options className="absolute z-10 mt-1 w-full overflow-auto rounded-lg bg-white shadow-lg border border-gray-200 max-h-48">
+          {filtered.length === 0 ? (
+            <div className="px-4 py-2 text-sm text-gray-500">
+              검색 결과 없음
+            </div>
+          ) : (
+            filtered.map((fruit) => (
+              <Combobox.Option
+                key={fruit}
+                value={fruit}
+                className={({ active }) =>
+                  `px-4 py-2 text-sm cursor-pointer ${
+                    active ? 'bg-blue-500 text-white' : 'text-gray-900'
+                  }`
+                }
+              >
+                {fruit}
+              </Combobox.Option>
+            ))
+          )}
+        </Combobox.Options>
+      </div>
+    </Combobox>
+  )
+}
+```
+
+**자동으로 처리되는 것:**
+- 키보드 화살표로 옵션 탐색
+- Enter로 선택, ESC로 닫기
+- `role="combobox"`, `aria-expanded`, `aria-activedescendant` 관리
+
+---
+
+## Listbox (커스텀 Select)
+
+기본 `<select>`를 완전히 커스텀할 때 사용한다.
+
+```tsx
+import { Listbox } from '@headlessui/react'
+
+const statuses = [
+  { id: 1, name: '진행 중', color: 'bg-blue-500' },
+  { id: 2, name: '완료', color: 'bg-green-500' },
+  { id: 3, name: '보류', color: 'bg-yellow-500' },
+]
+
+export function StatusSelect() {
+  const [selected, setSelected] = useState(statuses[0])
+
+  return (
+    <Listbox value={selected} onChange={setSelected}>
+      <div className="relative w-48">
+        <Listbox.Button className="w-full flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-left">
+          <span className={`w-2 h-2 rounded-full ${selected.color}`} />
+          {selected.name}
+        </Listbox.Button>
+
+        <Listbox.Options className="absolute z-10 mt-1 w-full rounded-lg bg-white shadow-lg border border-gray-200">
+          {statuses.map((status) => (
+            <Listbox.Option
+              key={status.id}
+              value={status}
+              className={({ active, selected }) =>
+                `flex items-center gap-2 px-3 py-2 text-sm cursor-pointer
+                ${active ? 'bg-gray-100' : ''}
+                ${selected ? 'font-medium' : ''}`
+              }
+            >
+              {({ selected }) => (
+                <>
+                  <span className={`w-2 h-2 rounded-full ${status.color}`} />
+                  {status.name}
+                  {selected && <span className="ml-auto text-blue-500">✓</span>}
+                </>
+              )}
+            </Listbox.Option>
+          ))}
+        </Listbox.Options>
+      </div>
+    </Listbox>
+  )
+}
+```
+
+---
+
+## Disclosure (아코디언)
+
+열고 닫는 토글 패턴에 사용한다.
+
+```tsx
+import { Disclosure } from '@headlessui/react'
+
+const faqs = [
+  { question: '배송 기간은 얼마나 걸리나요?', answer: '영업일 기준 2~3일 소요됩니다.' },
+  { question: '교환/반품은 어떻게 하나요?', answer: '수령 후 7일 이내에 고객센터로 문의해 주세요.' },
+]
+
+export function FaqAccordion() {
+  return (
+    <div className="space-y-2">
+      {faqs.map((faq) => (
+        <Disclosure key={faq.question}>
+          {({ open }) => (
+            <div className="rounded-lg border border-gray-200">
+              <Disclosure.Button className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-left text-gray-900 hover:bg-gray-50">
+                {faq.question}
+                <span className={`transition-transform ${open ? 'rotate-180' : ''}`}>
+                  ▼
+                </span>
+              </Disclosure.Button>
+              <Disclosure.Panel className="px-4 pb-3 text-sm text-gray-600">
+                {faq.answer}
+              </Disclosure.Panel>
+            </div>
+          )}
+        </Disclosure>
+      ))}
+    </div>
+  )
+}
+```
+
+---
+
+## Transition
+
+컴포넌트 마운트/언마운트 시 CSS 전환을 적용한다. Dialog, Menu, Popover 등과 함께 자주 쓴다.
+
+```tsx
+import { Transition } from '@headlessui/react'
+import { Fragment } from 'react'
+
+<Transition
+  show={isOpen}
+  as={Fragment}
+  enter="transition ease-out duration-200"
+  enterFrom="opacity-0 scale-95"
+  enterTo="opacity-100 scale-100"
+  leave="transition ease-in duration-150"
+  leaveFrom="opacity-100 scale-100"
+  leaveTo="opacity-0 scale-95"
+>
+  <div className="...">드롭다운 내용</div>
+</Transition>
+```
+
+| 프롭 | 적용 시점 |
+|------|---------|
+| `enter` | 진입 전체 구간 |
+| `enterFrom` | 진입 시작 상태 |
+| `enterTo` | 진입 완료 상태 |
+| `leave` | 퇴장 전체 구간 |
+| `leaveFrom` | 퇴장 시작 상태 |
+| `leaveTo` | 퇴장 완료 상태 |
+
+---
+
+## Menu (드롭다운 메뉴)
+
+버튼 클릭 시 나타나는 컨텍스트 메뉴다. `role="menu"`, 키보드 탐색이 자동 처리된다.
+
+```tsx
+import { Menu } from '@headlessui/react'
+
+export function ActionMenu() {
+  return (
+    <Menu as="div" className="relative">
+      <Menu.Button className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 hover:bg-gray-50">
+        더보기 ▾
+      </Menu.Button>
+
+      <Transition
+        as={Fragment}
+        enter="transition ease-out duration-100"
+        enterFrom="opacity-0 scale-95"
+        enterTo="opacity-100 scale-100"
+        leave="transition ease-in duration-75"
+        leaveFrom="opacity-100 scale-100"
+        leaveTo="opacity-0 scale-95"
+      >
+        <Menu.Items className="absolute right-0 mt-1 w-40 rounded-lg bg-white shadow-lg border border-gray-200 focus:outline-none">
+          <div className="p-1">
+            {[
+              { label: '수정', action: () => {} },
+              { label: '복사', action: () => {} },
+              { label: '삭제', action: () => {}, danger: true },
+            ].map((item) => (
+              <Menu.Item key={item.label}>
+                {({ active }) => (
+                  <button
+                    onClick={item.action}
+                    className={`w-full text-left px-3 py-1.5 text-sm rounded-md
+                      ${active ? 'bg-gray-100' : ''}
+                      ${item.danger ? 'text-red-500' : 'text-gray-700'}`}
+                  >
+                    {item.label}
+                  </button>
+                )}
+              </Menu.Item>
+            ))}
+          </div>
+        </Menu.Items>
+      </Transition>
+    </Menu>
+  )
+}
+```
+
+---
+
+## Headless UI vs 다른 선택지
+
+| | Headless UI | Radix UI | shadcn/ui |
+|--|------------|---------|---------|
+| 스타일 | 없음 | 없음 | Tailwind 기본 제공 |
+| 접근성 | ✓ | ✓ | ✓ (Radix 기반) |
+| 연동 | Tailwind 권장 | 어떤 CSS든 | Tailwind + Radix |
+| 컴포넌트 수 | 10개 | 30개+ | 40개+ |
+| 번들 크기 | 경량 | 경량 | 복사 방식 (0 의존) |
+
+**Headless UI**: Tailwind 프로젝트에서 가볍게 시작할 때 적합  
+**Radix UI**: 더 다양한 컴포넌트가 필요하고, CSS-in-JS나 CSS Modules를 쓸 때  
+**shadcn/ui**: 빠르게 완성된 디자인이 필요할 때 (Radix + Tailwind 조합을 코드로 복사)
+
+---
+
+Headless UI의 핵심 가치는 **접근성 구현 비용을 없애면서 스타일 자유도를 유지하는 것**이다. 키보드 탐색, 포커스 관리, ARIA 속성 같은 요소들은 직접 구현하면 까다롭고 놓치기 쉬운데, Headless UI가 이 부분을 담당하고 시각적 표현은 전적으로 개발자가 제어할 수 있다.
