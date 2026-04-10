@@ -1,0 +1,611 @@
+---
+title: TanStack Query useInfiniteQuery — 무한 스크롤 완전 가이드
+date: '2026-04-10'
+category: Frontend
+tags:
+  - TanStack Query
+  - React Query
+  - useInfiniteQuery
+  - 무한 스크롤
+  - React
+summary: >-
+  useInfiniteQuery는 페이지네이션과 무한 스크롤을 선언적으로 구현하는 TanStack Query의 핵심 훅이다. 기본 동작 원리부터 커서 기반 페이지네이션, Intersection Observer 연동, 양방향 무한 스크롤까지 실전 패턴을 정리한다.
+thumbnail: /thumbnails/tanstack-use-infinite-query.svg
+---
+
+"더 보기" 버튼이나 무한 스크롤을 직접 구현하면 다음 페이지 데이터를 기존 목록에 누적하는 로직, 로딩 상태 관리, 마지막 페이지 감지, 에러 처리가 한꺼번에 얽힌다. `useInfiniteQuery`는 이 복잡한 상태를 하나의 훅으로 추상화한다.
+
+## useQuery vs useInfiniteQuery
+
+```typescript
+// useQuery — 단일 응답, 새 요청이 이전 데이터를 교체
+const { data } = useQuery({
+  queryKey: ['posts', page],
+  queryFn: () => fetchPosts(page),
+})
+// data: { posts: [...], total: 100 }
+
+// useInfiniteQuery — 페이지별 응답을 누적
+const { data } = useInfiniteQuery({
+  queryKey: ['posts'],
+  queryFn: ({ pageParam }) => fetchPosts(pageParam),
+  initialPageParam: 1,
+  getNextPageParam: (lastPage) => lastPage.nextPage,
+})
+// data.pages: [{ posts: [...] }, { posts: [...] }, ...]
+// data.pageParams: [1, 2, 3, ...]
+```
+
+`useInfiniteQuery`는 응답을 교체하지 않고 `pages` 배열에 계속 쌓는다.
+
+---
+
+## 기본 구조
+
+```typescript
+const {
+  data,              // { pages: Page[], pageParams: unknown[] }
+  fetchNextPage,     // 다음 페이지 요청 함수
+  fetchPreviousPage, // 이전 페이지 요청 함수 (양방향 스크롤)
+  hasNextPage,       // getNextPageParam이 undefined 반환하면 false
+  hasPreviousPage,   // getPreviousPageParam이 undefined 반환하면 false
+  isFetchingNextPage,    // 다음 페이지 로딩 중
+  isFetchingPreviousPage,// 이전 페이지 로딩 중
+  isFetching,        // 어떤 형태로든 요청 중
+  isLoading,         // 최초 로딩
+  isError,
+  error,
+} = useInfiniteQuery({
+  queryKey: ['items'],
+  queryFn: ({ pageParam }) => fetchItems(pageParam),
+  initialPageParam: 0,       // 첫 번째 pageParam 값
+  getNextPageParam: (lastPage, allPages, lastPageParam) => {
+    // 다음 pageParam 반환. undefined 반환 시 hasNextPage = false
+    return lastPage.hasMore ? lastPage.nextCursor : undefined
+  },
+  getPreviousPageParam: (firstPage, allPages, firstPageParam) => {
+    return firstPage.prevCursor ?? undefined
+  },
+})
+```
+
+### getNextPageParam 인자
+
+| 인자 | 타입 | 설명 |
+|------|------|------|
+| `lastPage` | `TData` | 가장 최근에 받은 페이지 응답 |
+| `allPages` | `TData[]` | 지금까지 받은 모든 페이지 배열 |
+| `lastPageParam` | `TPageParam` | 마지막 요청에 사용된 pageParam |
+
+---
+
+## 페이지 번호 기반 페이지네이션
+
+API가 `page` 번호를 받는 전통적인 방식이다.
+
+```typescript
+// API 응답 타입
+interface PostsResponse {
+  posts: Post[]
+  page: number
+  totalPages: number
+  hasNextPage: boolean
+}
+
+// 훅 정의
+function usePostsQuery() {
+  return useInfiniteQuery({
+    queryKey: ['posts'],
+    queryFn: async ({ pageParam }) => {
+      const res = await fetch(`/api/posts?page=${pageParam}&limit=10`)
+      return res.json() as Promise<PostsResponse>
+    },
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => {
+      return lastPage.hasNextPage ? lastPage.page + 1 : undefined
+    },
+  })
+}
+```
+
+```tsx
+export function PostList() {
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+    isError,
+  } = usePostsQuery()
+
+  if (isLoading) return <PostSkeleton />
+  if (isError) return <ErrorMessage />
+
+  // pages 배열을 flat하게 펼쳐서 렌더링
+  const posts = data.pages.flatMap((page) => page.posts)
+
+  return (
+    <div>
+      <ul className="space-y-4">
+        {posts.map((post) => (
+          <PostCard key={post.id} post={post} />
+        ))}
+      </ul>
+
+      <div className="mt-6 flex justify-center">
+        {hasNextPage ? (
+          <button
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+            className="px-6 py-2 rounded-lg bg-blue-500 text-white disabled:opacity-50"
+          >
+            {isFetchingNextPage ? '로딩 중...' : '더 보기'}
+          </button>
+        ) : (
+          <p className="text-sm text-gray-400">모든 글을 불러왔습니다.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+## 커서 기반 페이지네이션
+
+소셜 피드, 채팅처럼 새 데이터가 실시간으로 추가되는 경우 커서 방식이 더 안정적이다. 페이지 번호는 데이터 삽입/삭제 시 중복·누락이 생기지만 커서는 특정 레코드를 직접 가리키기 때문이다.
+
+```typescript
+interface FeedResponse {
+  items: FeedItem[]
+  nextCursor: string | null  // 다음 페이지 시작점 (마지막이면 null)
+  prevCursor: string | null
+}
+
+function useFeedQuery(userId: string) {
+  return useInfiniteQuery({
+    queryKey: ['feed', userId],
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: '20' })
+      if (pageParam) params.set('cursor', pageParam)
+
+      const res = await fetch(`/api/feed?${params}`)
+      return res.json() as Promise<FeedResponse>
+    },
+    initialPageParam: '',  // 첫 요청에는 cursor 없음
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+  })
+}
+```
+
+---
+
+## Intersection Observer로 자동 무한 스크롤
+
+"더 보기" 버튼 없이 스크롤이 하단에 닿으면 자동으로 다음 페이지를 불러온다.
+
+### useIntersectionObserver 훅
+
+```typescript
+// hooks/useIntersectionObserver.ts
+import { useEffect, useRef } from 'react'
+
+interface Options {
+  onIntersect: () => void
+  enabled?: boolean
+  threshold?: number
+  rootMargin?: string
+}
+
+export function useIntersectionObserver({
+  onIntersect,
+  enabled = true,
+  threshold = 0.1,
+  rootMargin = '0px',
+}: Options) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!enabled || !ref.current) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          onIntersect()
+        }
+      },
+      { threshold, rootMargin }
+    )
+
+    observer.observe(ref.current)
+    return () => observer.disconnect()
+  }, [enabled, onIntersect, threshold, rootMargin])
+
+  return ref
+}
+```
+
+### 컴포넌트 연동
+
+```tsx
+export function InfinitePostList() {
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+  } = usePostsQuery()
+
+  // 목록 끝에 sentinel 요소를 두고 뷰포트에 들어오면 fetchNextPage 호출
+  const sentinelRef = useIntersectionObserver({
+    onIntersect: fetchNextPage,
+    enabled: hasNextPage && !isFetchingNextPage,
+    rootMargin: '200px',  // 하단 200px 전에 미리 로드
+  })
+
+  if (isLoading) return <PostSkeleton count={5} />
+
+  const posts = data!.pages.flatMap((page) => page.posts)
+
+  return (
+    <div>
+      <ul className="space-y-4">
+        {posts.map((post) => (
+          <PostCard key={post.id} post={post} />
+        ))}
+      </ul>
+
+      {/* sentinel — 뷰포트에 진입하면 다음 페이지 요청 */}
+      <div ref={sentinelRef} className="h-4" />
+
+      {isFetchingNextPage && (
+        <div className="flex justify-center py-6">
+          <Spinner />
+        </div>
+      )}
+
+      {!hasNextPage && posts.length > 0 && (
+        <p className="py-6 text-center text-sm text-gray-400">
+          모든 게시글을 불러왔습니다.
+        </p>
+      )}
+    </div>
+  )
+}
+```
+
+---
+
+## 스켈레톤 UI와 함께 쓰기
+
+최초 로딩과 추가 로딩을 다르게 표시한다.
+
+```tsx
+export function PostListWithSkeleton() {
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,        // 최초 로딩 (data가 없는 상태)
+    isFetching,       // 백그라운드 refetch 포함 모든 로딩
+  } = usePostsQuery()
+
+  const posts = data?.pages.flatMap((page) => page.posts) ?? []
+
+  return (
+    <div>
+      <ul className="space-y-4">
+        {/* 실제 데이터 */}
+        {posts.map((post) => (
+          <PostCard key={post.id} post={post} />
+        ))}
+
+        {/* 최초 로딩: 스켈레톤 5개 */}
+        {isLoading &&
+          Array.from({ length: 5 }).map((_, i) => (
+            <PostCardSkeleton key={i} />
+          ))}
+
+        {/* 추가 로딩: 스켈레톤 3개 */}
+        {isFetchingNextPage &&
+          Array.from({ length: 3 }).map((_, i) => (
+            <PostCardSkeleton key={`next-${i}`} />
+          ))}
+      </ul>
+
+      {hasNextPage && !isFetchingNextPage && (
+        <button onClick={() => fetchNextPage()}>더 보기</button>
+      )}
+    </div>
+  )
+}
+```
+
+---
+
+## select로 data 변환
+
+`useInfiniteQuery`의 `select` 옵션으로 `pages` 배열을 변환하면 컴포넌트에서 `flatMap`을 반복하지 않아도 된다.
+
+```typescript
+function usePostsQuery() {
+  return useInfiniteQuery({
+    queryKey: ['posts'],
+    queryFn: ({ pageParam }) => fetchPosts(pageParam),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.nextPage ?? undefined,
+    select: (data) => ({
+      // 컴포넌트에서 바로 posts 배열을 사용할 수 있게 변환
+      posts: data.pages.flatMap((page) => page.posts),
+      pageParams: data.pageParams,
+    }),
+  })
+}
+
+// 컴포넌트에서
+const { data } = usePostsQuery()
+// data.posts — 바로 사용 가능
+// data.pageParams
+```
+
+---
+
+## 양방향 무한 스크롤
+
+채팅처럼 특정 메시지로 이동한 뒤 위아래로 모두 스크롤해야 하는 경우다.
+
+```typescript
+function useChatQuery(roomId: string, initialMessageId: string) {
+  return useInfiniteQuery({
+    queryKey: ['chat', roomId],
+    queryFn: async ({ pageParam }) => {
+      const { direction, cursor } = pageParam
+      return fetchMessages({ roomId, cursor, direction, limit: 30 })
+    },
+    initialPageParam: { direction: 'forward', cursor: initialMessageId },
+    getNextPageParam: (lastPage) => {
+      return lastPage.hasMore
+        ? { direction: 'forward', cursor: lastPage.lastMessageId }
+        : undefined
+    },
+    getPreviousPageParam: (firstPage) => {
+      return firstPage.hasPrev
+        ? { direction: 'backward', cursor: firstPage.firstMessageId }
+        : undefined
+    },
+  })
+}
+```
+
+```tsx
+export function ChatWindow({ roomId, initialMessageId }: Props) {
+  const {
+    data,
+    fetchNextPage,
+    fetchPreviousPage,
+    hasNextPage,
+    hasPreviousPage,
+    isFetchingNextPage,
+    isFetchingPreviousPage,
+  } = useChatQuery(roomId, initialMessageId)
+
+  const topSentinelRef = useIntersectionObserver({
+    onIntersect: fetchPreviousPage,
+    enabled: hasPreviousPage && !isFetchingPreviousPage,
+    rootMargin: '100px',
+  })
+
+  const bottomSentinelRef = useIntersectionObserver({
+    onIntersect: fetchNextPage,
+    enabled: hasNextPage && !isFetchingNextPage,
+    rootMargin: '100px',
+  })
+
+  const messages = data?.pages.flatMap((page) => page.messages) ?? []
+
+  return (
+    <div className="overflow-y-auto h-full">
+      {/* 위로 스크롤 시 이전 메시지 로드 */}
+      <div ref={topSentinelRef} />
+      {isFetchingPreviousPage && <MessageSkeleton />}
+
+      {messages.map((msg) => (
+        <ChatMessage key={msg.id} message={msg} />
+      ))}
+
+      {/* 아래로 스크롤 시 새 메시지 로드 */}
+      {isFetchingNextPage && <MessageSkeleton />}
+      <div ref={bottomSentinelRef} />
+    </div>
+  )
+}
+```
+
+---
+
+## maxPages — 메모리 제한
+
+무한 스크롤을 오래 하면 `pages` 배열이 계속 커져 메모리를 많이 사용한다. `maxPages`로 최대 유지 페이지 수를 제한한다.
+
+```typescript
+useInfiniteQuery({
+  queryKey: ['posts'],
+  queryFn: ({ pageParam }) => fetchPosts(pageParam),
+  initialPageParam: 1,
+  getNextPageParam: (lastPage) => lastPage.nextPage ?? undefined,
+  maxPages: 5,  // 최대 5페이지만 유지. 6번째 페이지 로드 시 1번째 페이지 제거
+})
+```
+
+---
+
+## refetch 동작
+
+`useInfiniteQuery`는 refetch 시 **현재 로드된 모든 페이지를 순서대로 다시 요청**한다.
+
+```typescript
+// 3페이지까지 로드된 상태에서 refetch 호출 시:
+// → page 1 요청 → 완료 → page 2 요청 → 완료 → page 3 요청 → 완료
+
+const { refetch } = useInfiniteQuery({ ... })
+
+// 당김 새로고침(Pull-to-refresh) 구현
+async function handleRefresh() {
+  await refetch()
+}
+```
+
+특정 페이지만 새로고침하고 싶다면 `refetchPage` 옵션을 사용한다.
+
+```typescript
+// 첫 번째 페이지만 refetch
+refetch({
+  refetchPage: (page, index) => index === 0,
+})
+```
+
+---
+
+## 에러 처리와 재시도
+
+```tsx
+export function PostListWithErrorHandling() {
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isError,
+    error,
+    failureCount,     // 현재 페이지 실패 횟수
+  } = useInfiniteQuery({
+    queryKey: ['posts'],
+    queryFn: ({ pageParam }) => fetchPosts(pageParam),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => lastPage.nextPage ?? undefined,
+    retry: 2,           // 실패 시 2회 재시도
+    retryDelay: 1000,   // 1초 간격
+  })
+
+  const posts = data?.pages.flatMap((page) => page.posts) ?? []
+
+  return (
+    <div>
+      <ul>
+        {posts.map((post) => <PostCard key={post.id} post={post} />)}
+      </ul>
+
+      {isError && (
+        <div className="flex flex-col items-center gap-2 py-6">
+          <p className="text-sm text-red-500">
+            데이터를 불러오지 못했습니다.
+          </p>
+          <button
+            onClick={() => fetchNextPage()}
+            className="text-sm text-blue-500 underline"
+          >
+            다시 시도
+          </button>
+        </div>
+      )}
+
+      {!isError && hasNextPage && (
+        <button onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
+          {isFetchingNextPage ? '로딩 중...' : '더 보기'}
+        </button>
+      )}
+    </div>
+  )
+}
+```
+
+---
+
+## prefetchInfiniteQuery
+
+서버 사이드나 라우트 진입 전에 첫 페이지를 미리 가져온다.
+
+```typescript
+// Next.js App Router — 서버 컴포넌트에서 프리패치
+import { dehydrate, HydrationBoundary, QueryClient } from '@tanstack/react-query'
+
+export default async function PostsPage() {
+  const queryClient = new QueryClient()
+
+  await queryClient.prefetchInfiniteQuery({
+    queryKey: ['posts'],
+    queryFn: ({ pageParam }) => fetchPosts(pageParam),
+    initialPageParam: 1,
+    // 서버에서 첫 3페이지 미리 가져오기
+    pages: 3,
+  })
+
+  return (
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      <PostList />
+    </HydrationBoundary>
+  )
+}
+```
+
+---
+
+## 옵션 정리
+
+| 옵션 | 타입 | 설명 |
+|------|------|------|
+| `queryKey` | `unknown[]` | 캐시 키 |
+| `queryFn` | `({ pageParam }) => Promise<TData>` | 데이터 패칭 함수 |
+| `initialPageParam` | `TPageParam` | 첫 번째 pageParam |
+| `getNextPageParam` | `(lastPage, allPages, lastPageParam) => TPageParam \| undefined` | 다음 pageParam 반환 |
+| `getPreviousPageParam` | `(firstPage, allPages, firstPageParam) => TPageParam \| undefined` | 이전 pageParam 반환 |
+| `maxPages` | `number` | 메모리에 유지할 최대 페이지 수 |
+| `select` | `(data) => TSelected` | 반환 데이터 변환 |
+| `staleTime` | `number` | 데이터 신선도 유지 시간 (ms) |
+| `retry` | `number \| boolean` | 실패 시 재시도 횟수 |
+
+---
+
+## 자주 하는 실수
+
+**1. `data?.pages`에 직접 접근하지 않고 `data` 자체를 렌더링**
+
+```typescript
+// 잘못된 예
+const posts = data ?? []  // data는 { pages, pageParams } 객체
+
+// 올바른 예
+const posts = data?.pages.flatMap((page) => page.posts) ?? []
+```
+
+**2. `initialPageParam` 생략**
+
+v5부터 `initialPageParam`은 필수다. 생략하면 타입 에러가 발생한다.
+
+**3. `getNextPageParam`에서 `null` 반환**
+
+```typescript
+// 잘못된 예 — null을 반환하면 hasNextPage가 true로 유지됨
+getNextPageParam: (lastPage) => lastPage.nextCursor || null
+
+// 올바른 예 — undefined를 반환해야 hasNextPage가 false로 전환됨
+getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined
+```
+
+**4. key에 pageParam 포함**
+
+```typescript
+// 잘못된 예 — pageParam이 queryKey에 들어가면 각 페이지가 독립 캐시가 됨
+queryKey: ['posts', pageParam],
+
+// 올바른 예
+queryKey: ['posts'],
+```
+
+---
+
+`useInfiniteQuery`의 핵심은 **페이지 단위 응답 누적과 다음 pageParam 계산을 선언적으로 분리**하는 것이다. `getNextPageParam`만 올바르게 구현하면 나머지 상태(hasNextPage, isFetchingNextPage 등)는 자동으로 파생된다. 여기에 Intersection Observer를 조합하면 사용자가 버튼을 누를 필요 없는 자연스러운 무한 스크롤을 최소한의 코드로 완성할 수 있다.
