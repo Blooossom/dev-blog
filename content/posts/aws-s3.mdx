@@ -1,0 +1,572 @@
+---
+title: AWS S3 — 개념부터 실전 활용까지
+date: '2026-04-12'
+category: DevOps
+tags:
+  - AWS
+  - S3
+  - 클라우드 스토리지
+  - Spring Boot
+  - 파일 업로드
+summary: >-
+  AWS S3는 무제한 확장이 가능한 객체 스토리지 서비스다. 버킷·객체 구조, 접근 제어, Presigned URL, Spring Boot 파일 업로드, 정적 웹사이트 호스팅, 수명 주기 정책까지 실무에서 필요한 S3 활용법을 정리한다.
+thumbnail: /thumbnails/aws-s3.svg
+---
+
+파일 서버를 직접 운영하면 디스크 용량 관리, 서버 이중화, 백업, 대역폭 비용이 모두 운영자의 몫이다. AWS S3는 이 인프라 부담을 없애고 API 호출만으로 파일을 저장·제공할 수 있게 한다. 용량 제한이 없고 사용한 만큼만 과금된다.
+
+## S3 기본 개념
+
+### 버킷 (Bucket)
+
+파일을 담는 최상위 컨테이너다. 전 세계적으로 유일한 이름이어야 한다.
+
+```
+규칙:
+  - 전 세계에서 유일한 이름
+  - 3~63자, 소문자·숫자·하이픈만 허용
+  - 리전(Region) 단위로 생성
+```
+
+### 객체 (Object)
+
+S3에 저장되는 파일 단위다. **키(Key)** 와 **값(Value, 실제 데이터)** 으로 구성된다.
+
+```
+버킷: my-app-bucket
+키:   uploads/2026/04/profile-1234.jpg
+URL:  https://my-app-bucket.s3.ap-northeast-2.amazonaws.com/uploads/2026/04/profile-1234.jpg
+```
+
+S3는 파일 시스템이 아니라 **키-값 객체 스토리지**다. 폴더처럼 보이는 `/`도 실제로는 키 이름의 일부일 뿐이다.
+
+### 객체 구성 요소
+
+| 구성 요소 | 설명 |
+|---------|------|
+| Key | 객체 식별자 (경로처럼 보이는 문자열) |
+| Value | 실제 데이터 (최대 5TB) |
+| Metadata | 콘텐츠 타입, 사용자 정의 속성 등 |
+| Version ID | 버전 관리 활성화 시 부여 |
+| ETag | 객체 무결성 확인용 해시 |
+
+---
+
+## 스토리지 클래스
+
+사용 패턴에 따라 비용과 가용성이 다른 스토리지 클래스를 선택한다.
+
+| 클래스 | 용도 | 검색 지연 | 상대 비용 |
+|-------|------|---------|---------|
+| **Standard** | 자주 접근하는 데이터 | 즉시 | 높음 |
+| **Standard-IA** | 가끔 접근 (Infrequent Access) | 즉시 | 중간 |
+| **One Zone-IA** | 가끔 접근, 단일 AZ | 즉시 | 낮음 |
+| **Glacier Instant** | 아카이브, 분기에 한 번 접근 | 즉시 | 매우 낮음 |
+| **Glacier Flexible** | 아카이브, 연 1~2회 접근 | 분~시간 | 매우 낮음 |
+| **Glacier Deep Archive** | 장기 보관 (7년+) | 12시간 | 최저 |
+| **Intelligent-Tiering** | 접근 패턴 불명확 시 자동 분류 | 즉시 | 모니터링 비용 |
+
+---
+
+## 접근 제어
+
+### 버킷 정책 (Bucket Policy)
+
+JSON으로 작성하는 리소스 기반 정책이다. 특정 IP, 계정, 서비스에 대한 접근을 제어한다.
+
+```json
+// 퍼블릭 읽기 허용 (정적 웹사이트 호스팅용)
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublicReadGetObject",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::my-app-bucket/*"
+    }
+  ]
+}
+```
+
+```json
+// 특정 IAM 역할만 업로드 허용
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::123456789012:role/AppServerRole"
+      },
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::my-app-bucket/*"
+    }
+  ]
+}
+```
+
+### IAM 정책
+
+서버 애플리케이션이 S3에 접근할 때는 IAM Role을 사용한다. EC2, ECS, Lambda에 Role을 부여하면 액세스 키 없이 자격증명이 자동 처리된다.
+
+```json
+// EC2에 부여하는 IAM 정책 예시
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::my-app-bucket/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::my-app-bucket"
+    }
+  ]
+}
+```
+
+### Block Public Access
+
+계정·버킷 단위로 퍼블릭 접근을 강제 차단하는 설정이다. 실수로 버킷을 공개하는 사고를 방지한다.
+
+```
+일반 백엔드 스토리지: Block Public Access 전체 ON
+정적 웹사이트 호스팅: Block Public Access 해제 + 버킷 정책으로 읽기 허용
+```
+
+---
+
+## Presigned URL
+
+클라이언트가 서버를 거치지 않고 S3에 **직접 업로드/다운로드**할 수 있는 임시 서명 URL이다.
+
+```
+일반 업로드 흐름 (서버 경유)
+Client → [파일] → Server → [파일] → S3
+문제: 대용량 파일이 서버를 통과 → 서버 부하, 대역폭 비용
+
+Presigned URL 업로드 흐름
+Client → [업로드 URL 요청] → Server → [Presigned URL 발급] → Client
+Client → [파일] ─────────────────────────────────────────────▶ S3
+장점: 서버 부하 없음, 클라이언트가 S3에 직접 업로드
+```
+
+### Spring Boot에서 Presigned URL 발급
+
+```xml
+<!-- pom.xml -->
+<dependency>
+    <groupId>software.amazon.awssdk</groupId>
+    <artifactId>s3</artifactId>
+    <version>2.25.0</version>
+</dependency>
+<dependency>
+    <groupId>software.amazon.awssdk</groupId>
+    <artifactId>s3-presigner</artifactId>
+    <version>2.25.0</version>
+</dependency>
+```
+
+```yaml
+# application.yml
+cloud:
+  aws:
+    s3:
+      bucket: my-app-bucket
+    region:
+      static: ap-northeast-2
+```
+
+```java
+@Configuration
+public class S3Config {
+
+    @Value("${cloud.aws.region.static}")
+    private String region;
+
+    @Bean
+    public S3Client s3Client() {
+        return S3Client.builder()
+            .region(Region.of(region))
+            // EC2/ECS 환경: IAM Role 자동 사용
+            // 로컬 개발: ~/.aws/credentials 또는 환경변수 사용
+            .credentialsProvider(DefaultCredentialsProvider.create())
+            .build();
+    }
+
+    @Bean
+    public S3Presigner s3Presigner() {
+        return S3Presigner.builder()
+            .region(Region.of(region))
+            .credentialsProvider(DefaultCredentialsProvider.create())
+            .build();
+    }
+}
+```
+
+```java
+@Service
+@RequiredArgsConstructor
+public class S3Service {
+
+    private final S3Client s3Client;
+    private final S3Presigner s3Presigner;
+
+    @Value("${cloud.aws.s3.bucket}")
+    private String bucket;
+
+    // 업로드용 Presigned URL 발급 (PUT)
+    public PresignedUploadResponse generateUploadUrl(String fileName, String contentType) {
+        String key = "uploads/" + UUID.randomUUID() + "/" + fileName;
+
+        PutObjectPresignRequest presignRequest = PutObjectPresignRequest.builder()
+            .signatureDuration(Duration.ofMinutes(10))  // 10분간 유효
+            .putObjectRequest(req -> req
+                .bucket(bucket)
+                .key(key)
+                .contentType(contentType)
+            )
+            .build();
+
+        PresignedPutObjectRequest presigned = s3Presigner.presignPutObject(presignRequest);
+
+        return new PresignedUploadResponse(
+            presigned.url().toString(),
+            key
+        );
+    }
+
+    // 다운로드용 Presigned URL 발급 (GET)
+    public String generateDownloadUrl(String key) {
+        GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
+            .signatureDuration(Duration.ofHours(1))
+            .getObjectRequest(req -> req
+                .bucket(bucket)
+                .key(key)
+            )
+            .build();
+
+        return s3Presigner.presignGetObject(presignRequest).url().toString();
+    }
+
+    // 서버에서 직접 업로드
+    public String upload(MultipartFile file, String directory) throws IOException {
+        String key = directory + "/" + UUID.randomUUID() + "_" + file.getOriginalFilename();
+
+        s3Client.putObject(
+            PutObjectRequest.builder()
+                .bucket(bucket)
+                .key(key)
+                .contentType(file.getContentType())
+                .contentLength(file.getSize())
+                .build(),
+            RequestBody.fromInputStream(file.getInputStream(), file.getSize())
+        );
+
+        return key;
+    }
+
+    // 객체 삭제
+    public void delete(String key) {
+        s3Client.deleteObject(req -> req.bucket(bucket).key(key));
+    }
+
+    // 객체 URL 반환 (퍼블릭 버킷용)
+    public String getPublicUrl(String key) {
+        return String.format("https://%s.s3.%s.amazonaws.com/%s", bucket, region, key);
+    }
+}
+```
+
+### 컨트롤러
+
+```java
+@RestController
+@RequestMapping("/api/files")
+@RequiredArgsConstructor
+public class FileController {
+
+    private final S3Service s3Service;
+
+    // 클라이언트가 S3 직접 업로드 전에 Presigned URL 요청
+    @PostMapping("/presigned-upload")
+    public ResponseEntity<PresignedUploadResponse> getUploadUrl(
+            @RequestParam String fileName,
+            @RequestParam String contentType) {
+        return ResponseEntity.ok(s3Service.generateUploadUrl(fileName, contentType));
+    }
+
+    // 서버 경유 업로드 (소용량 파일)
+    @PostMapping("/upload")
+    public ResponseEntity<Map<String, String>> upload(
+            @RequestPart MultipartFile file) throws IOException {
+        String key = s3Service.upload(file, "uploads");
+        return ResponseEntity.ok(Map.of("key", key));
+    }
+
+    // 비공개 파일 다운로드 URL 발급
+    @GetMapping("/{key}/download-url")
+    public ResponseEntity<Map<String, String>> getDownloadUrl(@PathVariable String key) {
+        String url = s3Service.generateDownloadUrl(key);
+        return ResponseEntity.ok(Map.of("url", url));
+    }
+}
+```
+
+### 클라이언트 Presigned URL 업로드
+
+```typescript
+// 1. 서버에서 업로드 URL 발급
+const { uploadUrl, key } = await api.post('/api/files/presigned-upload', {
+  fileName: file.name,
+  contentType: file.type,
+})
+
+// 2. S3에 직접 PUT 요청 (인증 불필요 — URL 자체가 서명됨)
+await fetch(uploadUrl, {
+  method: 'PUT',
+  headers: { 'Content-Type': file.type },
+  body: file,
+})
+
+// 3. 업로드 완료 후 key를 서버에 저장
+await api.post('/api/posts', { imageKey: key, ... })
+```
+
+---
+
+## 파일 업로드 검증
+
+서버에서 파일 타입·크기를 반드시 검증한다.
+
+```java
+@Service
+public class FileValidator {
+
+    private static final Set<String> ALLOWED_IMAGE_TYPES = Set.of(
+        "image/jpeg", "image/png", "image/webp", "image/gif"
+    );
+    private static final long MAX_SIZE = 10 * 1024 * 1024;  // 10MB
+
+    public void validate(MultipartFile file) {
+        if (file.isEmpty()) {
+            throw new InvalidFileException("파일이 비어 있습니다");
+        }
+        if (!ALLOWED_IMAGE_TYPES.contains(file.getContentType())) {
+            throw new InvalidFileException("허용되지 않는 파일 형식입니다");
+        }
+        if (file.getSize() > MAX_SIZE) {
+            throw new InvalidFileException("파일 크기는 10MB 이하여야 합니다");
+        }
+    }
+}
+```
+
+Content-Type 헤더는 클라이언트가 임의로 설정할 수 있으므로, 중요한 경우 **Magic Bytes**(파일 시그니처)로 실제 파일 형식을 확인한다.
+
+```java
+// Apache Tika로 실제 파일 형식 감지
+Tika tika = new Tika();
+String detectedType = tika.detect(file.getInputStream());
+if (!ALLOWED_IMAGE_TYPES.contains(detectedType)) {
+    throw new InvalidFileException("실제 파일 형식이 허용되지 않습니다");
+}
+```
+
+---
+
+## 버전 관리 (Versioning)
+
+같은 키에 파일을 덮어써도 이전 버전이 보존된다.
+
+```
+버전 관리 비활성화 (기본):
+  uploads/photo.jpg 업로드 → 덮어씌워짐
+
+버전 관리 활성화:
+  uploads/photo.jpg (v1) → 유지
+  uploads/photo.jpg 재업로드 → uploads/photo.jpg (v2) 추가
+  → 두 버전 모두 접근 가능
+```
+
+실수로 삭제하거나 덮어쓴 파일을 복구할 수 있다. 단, 모든 버전이 저장되므로 스토리지 비용이 증가한다. 수명 주기 정책으로 오래된 버전을 자동 삭제한다.
+
+---
+
+## 수명 주기 정책 (Lifecycle Policy)
+
+오래된 객체를 자동으로 더 저렴한 스토리지로 이동하거나 삭제한다.
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "archive-old-logs",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "logs/" },
+      "Transitions": [
+        {
+          "Days": 30,
+          "StorageClass": "STANDARD_IA"  // 30일 후 저빈도 접근 클래스로 이동
+        },
+        {
+          "Days": 90,
+          "StorageClass": "GLACIER_IR"   // 90일 후 Glacier로 이동
+        }
+      ],
+      "Expiration": {
+        "Days": 365                       // 1년 후 삭제
+      }
+    },
+    {
+      "ID": "clean-old-versions",
+      "Status": "Enabled",
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 30              // 이전 버전 30일 후 삭제
+      }
+    }
+  ]
+}
+```
+
+---
+
+## 정적 웹사이트 호스팅
+
+별도 웹 서버 없이 S3만으로 HTML/CSS/JS를 제공할 수 있다.
+
+```
+설정:
+  버킷 → 속성 → 정적 웹사이트 호스팅 활성화
+  인덱스 문서: index.html
+  오류 문서: index.html (SPA의 경우)
+
+엔드포인트:
+  http://my-app-bucket.s3-website.ap-northeast-2.amazonaws.com
+```
+
+**CloudFront와 함께 사용**하면 HTTPS 적용, 글로벌 CDN 배포, 커스텀 도메인을 지원한다.
+
+```
+사용자 → CloudFront (엣지 서버, 전 세계) → S3 (오리진)
+          ↑ HTTPS, 캐시, 커스텀 도메인
+```
+
+---
+
+## CORS 설정
+
+브라우저에서 S3에 직접 업로드(Presigned URL)할 때 CORS를 설정해야 한다.
+
+```json
+[
+  {
+    "AllowedHeaders": ["Content-Type", "Content-Length"],
+    "AllowedMethods": ["GET", "PUT", "POST"],
+    "AllowedOrigins": ["https://myapp.com"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+---
+
+## 이벤트 알림
+
+객체 업로드·삭제 시 Lambda, SQS, SNS를 트리거한다.
+
+```
+활용 예:
+  이미지 업로드 → S3 이벤트 → Lambda → 썸네일 생성 → S3 저장
+  로그 파일 업로드 → S3 이벤트 → SQS → 로그 처리 워커
+```
+
+```json
+// 버킷 이벤트 알림 설정
+{
+  "LambdaFunctionConfigurations": [
+    {
+      "LambdaFunctionArn": "arn:aws:lambda:ap-northeast-2:...:function:resize-image",
+      "Events": ["s3:ObjectCreated:*"],
+      "Filter": {
+        "Key": {
+          "FilterRules": [
+            { "Name": "prefix", "Value": "uploads/" },
+            { "Name": "suffix", "Value": ".jpg" }
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+---
+
+## 비용 구조
+
+```
+요금 항목:
+  스토리지:      저장 용량 × 클래스별 단가 (GB/월)
+  요청:          PUT/COPY/POST 요청 수, GET/SELECT 요청 수
+  데이터 전송:   S3 → 인터넷 아웃바운드 (인바운드는 무료)
+                 같은 리전 내 S3 ↔ EC2/CloudFront는 무료
+
+절약 팁:
+  - 자주 안 쓰는 데이터는 수명 주기 정책으로 IA/Glacier 이동
+  - CloudFront 캐시로 S3 직접 요청 수 감소
+  - 작은 파일 다수보다 큰 파일로 합쳐서 저장 (요청 수 절감)
+  - 리전은 서비스와 동일하게 (데이터 전송 비용 절감)
+```
+
+---
+
+## 멀티파트 업로드
+
+5GB 이상의 대용량 파일은 멀티파트 업로드를 사용한다. 파일을 여러 조각으로 나눠 병렬 업로드 후 S3에서 조합한다.
+
+```java
+// AWS SDK v2는 TransferManager로 자동 처리
+S3TransferManager transferManager = S3TransferManager.builder()
+    .s3Client(S3AsyncClient.create())
+    .build();
+
+FileUpload upload = transferManager.uploadFile(req -> req
+    .putObjectRequest(r -> r.bucket(bucket).key(key))
+    .source(Path.of("/path/to/large-file.zip"))
+);
+
+upload.completionFuture().join();
+```
+
+---
+
+## 실무 패턴 요약
+
+```
+이미지/파일 업로드
+  소용량 (< 5MB):  서버 경유 업로드 또는 Presigned PUT
+  대용량 (> 5MB):  Presigned URL + 멀티파트 업로드
+
+접근 제어
+  공개 콘텐츠 (CDN):  버킷 정책으로 GetObject 허용
+  비공개 콘텐츠:       IAM 역할 + Presigned GET URL
+  업로드 권한:         Presigned PUT URL (서버가 키·시간 제한 서명)
+
+비용 최적화
+  정적 자산:           S3 + CloudFront
+  로그·백업:           Intelligent-Tiering 또는 수명 주기 정책
+  버전 관리:           NoncurrentVersion 삭제 정책 필수
+```
+
+S3는 단순한 파일 저장소를 넘어 정적 웹 호스팅, 이벤트 드리븐 파이프라인, CDN 오리진, 데이터 레이크의 기반으로 쓰인다. Presigned URL로 서버 부하를 없애고, IAM Role로 자격증명을 코드에서 분리하는 것이 S3 활용의 두 가지 핵심이다.
