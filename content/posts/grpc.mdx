@@ -1,0 +1,524 @@
+---
+title: gRPC — REST를 넘어선 고성능 RPC 프레임워크
+date: '2026-04-12'
+category: Backend
+tags:
+  - gRPC
+  - Protobuf
+  - RPC
+  - MSA
+  - Spring Boot
+  - 성능
+summary: >-
+  gRPC는 Protocol Buffers와 HTTP/2를 기반으로 한 고성능 RPC 프레임워크다. REST와의 차이, Protobuf 스키마 정의, 4가지 통신 패턴, Spring Boot 서버·클라이언트 구현까지 정리한다.
+thumbnail: /thumbnails/grpc.svg
+---
+
+마이크로서비스 간 통신을 REST로 구성하면 JSON 직렬화 비용, 긴 텍스트 헤더, HTTP/1.1의 커넥션 제한이 병목이 된다. gRPC는 바이너리 직렬화와 HTTP/2를 기반으로 이 문제를 해결하는 Google이 만든 오픈소스 RPC 프레임워크다.
+
+## gRPC란
+
+**gRPC Remote Procedure Call**. 클라이언트가 원격 서버의 메서드를 로컬 함수처럼 호출하는 방식이다.
+
+```
+REST
+Client ──POST /orders──▶ Server
+        ◀── 200 { "id": 1, ... } ──
+  - 메서드(동사)는 HTTP verb (GET/POST/PUT/DELETE)
+  - 페이로드: JSON 텍스트
+
+gRPC
+Client ──OrderService.CreateOrder(CreateOrderRequest)──▶ Server
+        ◀── OrderResponse ──
+  - 메서드(동사)는 서비스의 프로시저 이름
+  - 페이로드: Protocol Buffers 바이너리
+```
+
+---
+
+## REST vs gRPC
+
+| 항목 | REST | gRPC |
+|------|------|------|
+| 프로토콜 | HTTP/1.1 (주로) | HTTP/2 |
+| 직렬화 | JSON (텍스트) | Protocol Buffers (바이너리) |
+| 스키마 | 선택적 (OpenAPI) | 필수 (.proto 파일) |
+| 코드 생성 | 선택적 | 자동 (모든 언어) |
+| 스트리밍 | 제한적 (SSE, WebSocket 별도) | 양방향 스트리밍 내장 |
+| 브라우저 지원 | 완벽 | 제한적 (gRPC-Web 필요) |
+| 가독성 | 사람이 읽기 쉬움 | 바이너리, 디버깅 도구 필요 |
+| 속도 | 보통 | REST 대비 2~10배 빠름 |
+| 적합한 환경 | 외부 API, 브라우저 | 서비스 간 내부 통신 |
+
+---
+
+## Protocol Buffers (Protobuf)
+
+gRPC의 인터페이스 정의 언어(IDL)이자 직렬화 포맷이다. `.proto` 파일에 서비스와 메시지를 정의하면 각 언어의 코드가 자동 생성된다.
+
+### 기본 문법
+
+```protobuf
+syntax = "proto3";
+
+package order;
+
+option java_package = "com.example.order.grpc";
+option java_multiple_files = true;
+
+// 메시지 정의 (DTO)
+message CreateOrderRequest {
+  int64 user_id = 1;
+  repeated OrderItem items = 2;   // repeated = 배열
+  string delivery_address = 3;
+}
+
+message OrderItem {
+  int64 product_id = 1;
+  int32 quantity = 2;
+  double price = 3;
+}
+
+message OrderResponse {
+  int64 order_id = 1;
+  OrderStatus status = 2;
+  string created_at = 3;
+}
+
+message GetOrderRequest {
+  int64 order_id = 1;
+}
+
+// 열거형
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;  // proto3: 첫 번째는 반드시 0
+  ORDER_STATUS_PENDING = 1;
+  ORDER_STATUS_CONFIRMED = 2;
+  ORDER_STATUS_DELIVERED = 3;
+  ORDER_STATUS_CANCELLED = 4;
+}
+
+// 서비스 정의
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (OrderResponse);
+  rpc GetOrder(GetOrderRequest) returns (OrderResponse);
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+}
+```
+
+### 필드 번호
+
+각 필드의 `= 1`, `= 2`는 이름이 아닌 **번호**로 직렬화된다. 필드를 추가해도 기존 클라이언트와 호환된다(하위 호환). 번호는 한 번 할당하면 변경하면 안 된다.
+
+### 타입 대응
+
+| Protobuf | Java | TypeScript |
+|---------|------|------------|
+| `int32` | `int` | `number` |
+| `int64` | `long` | `string` (BigInt 대신) |
+| `float` / `double` | `float` / `double` | `number` |
+| `bool` | `boolean` | `boolean` |
+| `string` | `String` | `string` |
+| `bytes` | `ByteString` | `Uint8Array` |
+| `repeated T` | `List<T>` | `T[]` |
+| `map<K, V>` | `Map<K, V>` | `{ [key: K]: V }` |
+
+---
+
+## 4가지 통신 패턴
+
+```protobuf
+service StreamService {
+  // 1. Unary — 요청 1, 응답 1 (REST와 동일)
+  rpc GetUser(UserRequest) returns (UserResponse);
+
+  // 2. Server Streaming — 요청 1, 응답 스트림
+  rpc ListLogs(LogRequest) returns (stream LogEntry);
+
+  // 3. Client Streaming — 요청 스트림, 응답 1
+  rpc UploadChunks(stream Chunk) returns (UploadResult);
+
+  // 4. Bidirectional Streaming — 요청·응답 모두 스트림
+  rpc Chat(stream ChatMessage) returns (stream ChatMessage);
+}
+```
+
+```
+Unary             Client ──req──▶ Server ──res──▶ Client
+Server Streaming  Client ──req──▶ Server ──res1──res2──res3──▶ Client
+Client Streaming  Client ──req1──req2──req3──▶ Server ──res──▶ Client
+Bidirectional     Client ──req1──▶ Server ──res1──▶ Client
+                         ◀──res2── Server ◀──req2──
+                         (동시에 양방향 스트림)
+```
+
+---
+
+## Spring Boot 서버 구현
+
+### 의존성
+
+```xml
+<!-- pom.xml -->
+<dependency>
+    <groupId>net.devh</groupId>
+    <artifactId>grpc-server-spring-boot-starter</artifactId>
+    <version>3.1.0.RELEASE</version>
+</dependency>
+
+<!-- protobuf 플러그인 (Maven) -->
+<build>
+  <extensions>
+    <extension>
+      <groupId>kr.motd.maven</groupId>
+      <artifactId>os-maven-plugin</artifactId>
+      <version>1.7.1</version>
+    </extension>
+  </extensions>
+  <plugins>
+    <plugin>
+      <groupId>org.xolstice.maven.plugins</groupId>
+      <artifactId>protobuf-maven-plugin</artifactId>
+      <version>0.6.1</version>
+      <configuration>
+        <protocArtifact>com.google.protobuf:protoc:3.25.1:exe:${os.detected.classifier}</protocArtifact>
+        <pluginId>grpc-java</pluginId>
+        <pluginArtifact>io.grpc:protoc-gen-grpc-java:1.62.2:exe:${os.detected.classifier}</pluginArtifact>
+      </configuration>
+      <executions>
+        <execution>
+          <goals>
+            <goal>compile</goal>
+            <goal>compile-custom</goal>
+          </goals>
+        </execution>
+      </executions>
+    </plugin>
+  </plugins>
+</build>
+```
+
+```yaml
+# application.yml
+grpc:
+  server:
+    port: 9090  # gRPC 서버 포트 (HTTP와 별도)
+```
+
+### 서비스 구현
+
+```java
+// .proto에서 생성된 OrderServiceGrpc.OrderServiceImplBase를 상속
+@GrpcService
+@RequiredArgsConstructor
+public class OrderGrpcService extends OrderServiceGrpc.OrderServiceImplBase {
+
+    private final OrderService orderService;
+
+    // Unary RPC
+    @Override
+    public void createOrder(
+            CreateOrderRequest request,
+            StreamObserver<OrderResponse> responseObserver) {
+        try {
+            Order order = orderService.create(
+                request.getUserId(),
+                request.getItemsList()
+            );
+
+            OrderResponse response = OrderResponse.newBuilder()
+                .setOrderId(order.getId())
+                .setStatus(OrderStatus.ORDER_STATUS_PENDING)
+                .setCreatedAt(order.getCreatedAt().toString())
+                .build();
+
+            responseObserver.onNext(response);    // 응답 전송
+            responseObserver.onCompleted();       // 완료 신호
+        } catch (Exception e) {
+            responseObserver.onError(
+                Status.INTERNAL
+                    .withDescription(e.getMessage())
+                    .asRuntimeException()
+            );
+        }
+    }
+
+    // Server Streaming RPC
+    @Override
+    public void streamOrderUpdates(
+            GetOrderRequest request,
+            StreamObserver<OrderResponse> responseObserver) {
+
+        orderService.getOrderUpdates(request.getOrderId())
+            .forEach(update -> {
+                responseObserver.onNext(
+                    OrderResponse.newBuilder()
+                        .setOrderId(update.getId())
+                        .setStatus(toProtoStatus(update.getStatus()))
+                        .build()
+                );
+            });
+
+        responseObserver.onCompleted();
+    }
+}
+```
+
+### gRPC 에러 처리
+
+gRPC는 HTTP 상태 코드 대신 자체 **Status Code**를 사용한다.
+
+| gRPC Status | 의미 | HTTP 유사 |
+|------------|------|---------|
+| `OK` | 성공 | 200 |
+| `NOT_FOUND` | 리소스 없음 | 404 |
+| `INVALID_ARGUMENT` | 잘못된 입력 | 400 |
+| `ALREADY_EXISTS` | 중복 | 409 |
+| `PERMISSION_DENIED` | 권한 없음 | 403 |
+| `UNAUTHENTICATED` | 인증 실패 | 401 |
+| `INTERNAL` | 서버 내부 오류 | 500 |
+| `UNAVAILABLE` | 서비스 불가 | 503 |
+| `DEADLINE_EXCEEDED` | 타임아웃 | 504 |
+
+```java
+// 에러 반환
+responseObserver.onError(
+    Status.NOT_FOUND
+        .withDescription("Order not found: " + orderId)
+        .augmentDescription("orderId=" + orderId)
+        .asRuntimeException()
+);
+
+// 전역 예외 처리 인터셉터
+@GrpcGlobalServerInterceptor
+public class ExceptionInterceptor implements ServerInterceptor {
+
+    @Override
+    public <Q, R> ServerCall.Listener<Q> interceptCall(
+            ServerCall<Q, R> call,
+            Metadata headers,
+            ServerCallHandler<Q, R> next) {
+
+        return new ForwardingServerCallListener.SimpleForwardingServerCallListener<Q>(
+                next.startCall(call, headers)) {
+
+            @Override
+            public void onHalfClose() {
+                try {
+                    super.onHalfClose();
+                } catch (BusinessException e) {
+                    call.close(
+                        Status.INVALID_ARGUMENT.withDescription(e.getMessage()),
+                        new Metadata()
+                    );
+                }
+            }
+        };
+    }
+}
+```
+
+---
+
+## Spring Boot 클라이언트 구현
+
+```xml
+<dependency>
+    <groupId>net.devh</groupId>
+    <artifactId>grpc-client-spring-boot-starter</artifactId>
+    <version>3.1.0.RELEASE</version>
+</dependency>
+```
+
+```yaml
+# application.yml (클라이언트 서비스)
+grpc:
+  client:
+    order-service:
+      address: 'static://order-service:9090'  # 서버 주소
+      negotiation-type: plaintext             # TLS 미사용 (내부망)
+```
+
+```java
+@Service
+public class OrderClient {
+
+    // Spring이 자동으로 Stub 주입
+    @GrpcClient("order-service")
+    private OrderServiceGrpc.OrderServiceBlockingStub orderStub;
+
+    // 비동기용 (스트리밍)
+    @GrpcClient("order-service")
+    private OrderServiceGrpc.OrderServiceStub asyncOrderStub;
+
+    // Unary 동기 호출
+    public OrderResponse createOrder(long userId, List<OrderItem> items) {
+        CreateOrderRequest request = CreateOrderRequest.newBuilder()
+            .setUserId(userId)
+            .addAllItems(items)
+            .build();
+
+        return orderStub
+            .withDeadlineAfter(5, TimeUnit.SECONDS)  // 타임아웃 설정
+            .createOrder(request);
+    }
+
+    // Server Streaming 비동기 호출
+    public void streamUpdates(long orderId, StreamObserver<OrderResponse> observer) {
+        GetOrderRequest request = GetOrderRequest.newBuilder()
+            .setOrderId(orderId)
+            .build();
+
+        asyncOrderStub.streamOrderUpdates(request, observer);
+    }
+}
+```
+
+---
+
+## 인터셉터 — 인증·로깅
+
+```java
+// 서버 인터셉터: JWT 검증
+@GrpcGlobalServerInterceptor
+public class AuthServerInterceptor implements ServerInterceptor {
+
+    static final Metadata.Key<String> AUTH_HEADER =
+        Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+
+    @Override
+    public <Q, R> ServerCall.Listener<Q> interceptCall(
+            ServerCall<Q, R> call,
+            Metadata headers,
+            ServerCallHandler<Q, R> next) {
+
+        String token = headers.get(AUTH_HEADER);
+        if (token == null || !token.startsWith("Bearer ")) {
+            call.close(Status.UNAUTHENTICATED.withDescription("Missing token"), new Metadata());
+            return new ServerCall.Listener<>() {};
+        }
+
+        // 토큰 검증 후 Context에 userId 저장
+        Long userId = jwtProvider.getUserId(token.substring(7));
+        Context ctx = Context.current().withValue(USER_ID_KEY, userId);
+        return Contexts.interceptCall(ctx, call, headers, next);
+    }
+}
+
+// 클라이언트 인터셉터: 토큰 자동 첨부
+@Component
+public class AuthClientInterceptor implements ClientInterceptor {
+
+    @Override
+    public <Q, R> ClientCall<Q, R> interceptCall(
+            MethodDescriptor<Q, R> method,
+            CallOptions callOptions,
+            Channel next) {
+
+        return new ForwardingClientCall.SimpleForwardingClientCall<>(
+                next.newCall(method, callOptions)) {
+
+            @Override
+            public void start(Listener<R> responseListener, Metadata headers) {
+                headers.put(AUTH_HEADER, "Bearer " + tokenStore.get());
+                super.start(responseListener, headers);
+            }
+        };
+    }
+}
+```
+
+---
+
+## Protobuf 스키마 관리
+
+마이크로서비스 환경에서는 `.proto` 파일을 별도 저장소(또는 모노레포 공유 패키지)에서 관리한다.
+
+```
+proto-schemas/          ← 전용 Git 저장소
+  ├── order/
+  │   └── order.proto
+  ├── user/
+  │   └── user.proto
+  └── common/
+      └── common.proto
+
+각 서비스에서 Git Submodule 또는 패키지 레지스트리로 참조
+→ 빌드 시 자동 코드 생성
+→ 스키마 변경은 PR 리뷰 필수 (하위 호환 확인)
+```
+
+### 하위 호환 규칙
+
+```protobuf
+// 안전한 변경 (하위 호환)
+  + 새 필드 추가 (새 번호 사용)
+  + 새 열거형 값 추가
+  + 새 RPC 메서드 추가
+
+// 위험한 변경 (하위 호환 깨짐)
+  - 필드 번호 변경
+  - 필드 타입 변경
+  - 필드 이름 변경 (JSON 매핑에 영향)
+  - 필드 삭제 (번호 재사용 금지)
+```
+
+---
+
+## gRPC-Web — 브라우저 지원
+
+브라우저는 HTTP/2 트레일러를 직접 처리하지 못해 gRPC를 바로 사용할 수 없다. **gRPC-Web** 프록시(Envoy, grpc-gateway)를 두어 변환한다.
+
+```
+Browser ──gRPC-Web(HTTP/1.1)──▶ Envoy Proxy ──gRPC(HTTP/2)──▶ gRPC Server
+```
+
+```yaml
+# envoy.yaml (기본 설정)
+static_resources:
+  listeners:
+    - address:
+        socket_address: { address: 0.0.0.0, port_value: 8080 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                http_filters:
+                  - name: envoy.filters.http.grpc_web
+                  - name: envoy.filters.http.cors
+                  - name: envoy.filters.http.router
+  clusters:
+    - name: grpc_service
+      type: LOGICAL_DNS
+      http2_protocol_options: {}
+      load_assignment:
+        cluster_name: grpc_service
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: grpc-server, port_value: 9090 }
+```
+
+---
+
+## gRPC를 선택할 때
+
+```
+gRPC가 유리한 경우
+  - 서비스 간 내부 통신 (MSA)
+  - 높은 처리량이 필요한 통신 (초당 수천 요청)
+  - 양방향 실시간 스트리밍 (채팅, 게임, 텔레메트리)
+  - 다양한 언어의 서비스가 동일 인터페이스를 공유해야 할 때
+  - 엄격한 스키마 계약이 필요한 팀 간 협업
+
+REST가 유리한 경우
+  - 외부에 공개되는 퍼블릭 API
+  - 브라우저 클라이언트가 직접 호출하는 경우
+  - 팀이 gRPC 경험이 없고 러닝 커브 감당이 어려운 경우
+  - 단순 CRUD 위주의 소규모 서비스
+```
+
+---
+
+gRPC의 핵심 가치는 **스키마 우선 설계와 자동 코드 생성**이다. `.proto` 파일이 서비스 간 계약이 되어 타입 불일치를 컴파일 타임에 잡고, 바이너리 직렬화와 HTTP/2로 성능을 확보한다. 서비스가 늘어날수록 타입 안전한 내부 통신의 가치는 더 커진다.
