@@ -1,0 +1,565 @@
+---
+title: React Suspense — 비동기 UI의 선언적 처리
+date: '2026-04-14'
+category: Frontend
+tags:
+  - React
+  - Suspense
+  - 비동기
+  - 로딩 상태
+  - Error Boundary
+  - TanStack Query
+summary: >-
+  Suspense는 컴포넌트가 준비되지 않았을 때 fallback UI를 선언적으로 보여주는 React의 메커니즘이다. 동작 원리, lazy 로딩, 데이터 패칭 통합, Error Boundary 조합, 그리고 실전 패턴까지 정리한다.
+thumbnail: /thumbnails/react-suspense.svg
+---
+
+비동기 작업의 로딩 상태를 처리하는 전통적인 방식은 `isLoading` 플래그를 각 컴포넌트마다 관리하는 것이다. 컴포넌트가 늘어날수록 조건부 렌더링이 코드 전체에 흩어진다. Suspense는 이 로딩 상태를 컴포넌트 바깥으로 꺼내 **선언적으로** 처리한다.
+
+## Suspense란
+
+자식 컴포넌트가 아직 렌더링할 준비가 되지 않았을 때 `fallback`을 보여주는 React 컴포넌트다.
+
+```tsx
+<Suspense fallback={<Spinner />}>
+  <UserProfile />  {/* 데이터 로딩 중이면 Spinner 표시 */}
+</Suspense>
+```
+
+"준비가 되지 않았다"는 것은 컴포넌트가 **Promise를 throw**했다는 의미다. React는 이 Promise가 resolve되면 해당 컴포넌트를 다시 렌더링한다.
+
+---
+
+## 동작 원리
+
+Suspense는 React의 렌더링 과정에 끼어드는 방식으로 동작한다.
+
+```
+1. React가 <UserProfile />을 렌더링 시도
+2. UserProfile 내부에서 Promise throw
+3. React가 Promise를 감지 → 가장 가까운 Suspense로 전달
+4. Suspense가 fallback(Spinner) 렌더링
+5. Promise resolve
+6. React가 <UserProfile /> 재렌더링 → 정상 UI 표시
+```
+
+```tsx
+// Suspense가 감지하는 패턴 (개념적 이해)
+function UserProfile() {
+  const data = cache.read('user/1')  // 준비 안 됐으면 Promise throw
+  return <div>{data.name}</div>
+}
+```
+
+실제로 개발자가 직접 Promise를 throw할 일은 드물다. 라이브러리(TanStack Query, Next.js, Relay 등)가 이 메커니즘을 내부적으로 구현해 제공한다.
+
+---
+
+## React.lazy로 코드 분할
+
+가장 기본적인 Suspense 활용이다. 컴포넌트를 동적으로 import해 번들을 분할한다.
+
+```tsx
+import { lazy, Suspense } from 'react'
+
+// 동적 import — 해당 컴포넌트가 처음 렌더링될 때 JS 청크를 로드
+const HeavyChart = lazy(() => import('./HeavyChart'))
+const SettingsPanel = lazy(() => import('./SettingsPanel'))
+
+export function Dashboard() {
+  const [tab, setTab] = useState<'chart' | 'settings'>('chart')
+
+  return (
+    <div>
+      <nav>
+        <button onClick={() => setTab('chart')}>차트</button>
+        <button onClick={() => setTab('settings')}>설정</button>
+      </nav>
+
+      <Suspense fallback={<div className="animate-pulse h-64 bg-gray-100 rounded" />}>
+        {tab === 'chart' ? <HeavyChart /> : <SettingsPanel />}
+      </Suspense>
+    </div>
+  )
+}
+```
+
+```
+번들 분할 효과:
+  초기 번들: main.js (HeavyChart, SettingsPanel 미포함)
+  사용자가 '차트' 탭 클릭 → chunk-HeavyChart.js 로드
+  사용자가 '설정' 탭 클릭 → chunk-SettingsPanel.js 로드
+```
+
+### 라우트 레벨 코드 분할
+
+페이지 단위로 분할하면 초기 로딩 속도가 크게 개선된다.
+
+```tsx
+import { lazy, Suspense } from 'react'
+import { Routes, Route } from 'react-router-dom'
+
+const HomePage    = lazy(() => import('./pages/HomePage'))
+const PostPage    = lazy(() => import('./pages/PostPage'))
+const ProfilePage = lazy(() => import('./pages/ProfilePage'))
+
+export function App() {
+  return (
+    <Suspense fallback={<PageSkeleton />}>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/posts/:id" element={<PostPage />} />
+        <Route path="/profile" element={<ProfilePage />} />
+      </Routes>
+    </Suspense>
+  )
+}
+```
+
+---
+
+## 데이터 패칭과 Suspense
+
+### TanStack Query + Suspense
+
+`useSuspenseQuery`를 사용하면 로딩 상태를 컴포넌트 밖 Suspense가 처리한다.
+
+```tsx
+import { useSuspenseQuery } from '@tanstack/react-query'
+
+// isLoading 분기 없이 data를 바로 사용
+function UserProfile({ userId }: { userId: number }) {
+  const { data } = useSuspenseQuery({
+    queryKey: ['user', userId],
+    queryFn: () => fetchUser(userId),
+  })
+
+  // 여기까지 왔다면 data는 반드시 존재 (타입도 non-nullable)
+  return (
+    <div>
+      <img src={data.avatar} alt={data.name} />
+      <h2>{data.name}</h2>
+      <p>{data.bio}</p>
+    </div>
+  )
+}
+
+// 부모에서 Suspense로 감싸기
+function ProfilePage({ userId }: { userId: number }) {
+  return (
+    <Suspense fallback={<ProfileSkeleton />}>
+      <UserProfile userId={userId} />
+    </Suspense>
+  )
+}
+```
+
+**기존 방식과 비교:**
+
+```tsx
+// 기존 — isLoading 분기가 컴포넌트 안에 있음
+function UserProfile({ userId }: { userId: number }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['user', userId],
+    queryFn: () => fetchUser(userId),
+  })
+
+  if (isLoading) return <ProfileSkeleton />  // 로딩 UI가 여기에 포함
+
+  return (
+    <div>
+      <h2>{data!.name}</h2>  // data가 undefined일 수 있어 ! 필요
+    </div>
+  )
+}
+
+// Suspense 방식 — 로딩 UI가 바깥으로 분리
+function UserProfile({ userId }: { userId: number }) {
+  const { data } = useSuspenseQuery({ ... })
+  return <div><h2>{data.name}</h2></div>  // data는 항상 존재
+}
+```
+
+### 병렬 데이터 패칭
+
+여러 쿼리를 동시에 실행하고 모두 완료되면 한 번에 렌더링한다.
+
+```tsx
+function PostDetail({ postId }: { postId: number }) {
+  // 두 쿼리가 병렬로 실행됨
+  const { data: post } = useSuspenseQuery({
+    queryKey: ['post', postId],
+    queryFn: () => fetchPost(postId),
+  })
+  const { data: comments } = useSuspenseQuery({
+    queryKey: ['comments', postId],
+    queryFn: () => fetchComments(postId),
+  })
+
+  return (
+    <article>
+      <h1>{post.title}</h1>
+      <p>{post.content}</p>
+      <CommentList comments={comments} />
+    </article>
+  )
+}
+
+// 단일 Suspense가 두 쿼리 모두 기다림
+<Suspense fallback={<PostSkeleton />}>
+  <PostDetail postId={1} />
+</Suspense>
+```
+
+---
+
+## Suspense 중첩
+
+여러 Suspense를 중첩해 로딩 영역을 세밀하게 분리한다.
+
+```tsx
+function App() {
+  return (
+    // 전체 페이지 로딩
+    <Suspense fallback={<PageSkeleton />}>
+      <Layout>
+        <Sidebar />
+
+        <main>
+          {/* 메인 콘텐츠 별도 로딩 */}
+          <Suspense fallback={<ContentSkeleton />}>
+            <PostList />
+          </Suspense>
+
+          {/* 사이드 위젯 별도 로딩 */}
+          <aside>
+            <Suspense fallback={<WidgetSkeleton />}>
+              <TrendingWidget />
+            </Suspense>
+            <Suspense fallback={<WidgetSkeleton />}>
+              <RecommendWidget />
+            </Suspense>
+          </aside>
+        </main>
+      </Layout>
+    </Suspense>
+  )
+}
+```
+
+```
+중첩 전:
+  PostList + TrendingWidget + RecommendWidget 중 하나라도 로딩 중이면
+  → 전체가 PageSkeleton으로 대체됨
+
+중첩 후:
+  PostList 로딩 중 → ContentSkeleton만 표시
+  TrendingWidget 로딩 중 → 해당 위젯만 WidgetSkeleton
+  → 준비된 UI는 즉시 표시
+```
+
+---
+
+## Error Boundary와 함께 쓰기
+
+Suspense는 로딩 상태만 처리한다. 에러는 **Error Boundary**가 처리한다.
+
+```tsx
+import { Component, ReactNode } from 'react'
+
+interface Props {
+  fallback: ReactNode
+  children: ReactNode
+}
+
+interface State {
+  hasError: boolean
+  error?: Error
+}
+
+class ErrorBoundary extends Component<Props, State> {
+  state: State = { hasError: false }
+
+  static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, info: { componentStack: string }) {
+    // 에러 로깅 서비스로 전송
+    console.error('ErrorBoundary caught:', error, info)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback
+    }
+    return this.props.children
+  }
+}
+```
+
+```tsx
+// Suspense + ErrorBoundary 조합
+function PostPage({ postId }: { postId: number }) {
+  return (
+    <ErrorBoundary
+      fallback={
+        <div className="text-center py-12">
+          <p className="text-red-500">게시글을 불러오지 못했습니다.</p>
+          <button onClick={() => window.location.reload()}>다시 시도</button>
+        </div>
+      }
+    >
+      <Suspense fallback={<PostSkeleton />}>
+        <PostDetail postId={postId} />
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+```
+
+### react-error-boundary 라이브러리
+
+```bash
+npm install react-error-boundary
+```
+
+```tsx
+import { ErrorBoundary, useErrorBoundary } from 'react-error-boundary'
+
+// 재시도 기능 포함
+function ErrorFallback({
+  error,
+  resetErrorBoundary,
+}: {
+  error: Error
+  resetErrorBoundary: () => void
+}) {
+  return (
+    <div className="flex flex-col items-center gap-4 py-12">
+      <p className="text-red-500">{error.message}</p>
+      <button
+        onClick={resetErrorBoundary}  // 에러 상태 초기화 + 재시도
+        className="px-4 py-2 bg-blue-500 text-white rounded-lg"
+      >
+        다시 시도
+      </button>
+    </div>
+  )
+}
+
+function PostPage({ postId }: { postId: number }) {
+  return (
+    <ErrorBoundary
+      FallbackComponent={ErrorFallback}
+      onReset={() => {
+        // 재시도 전 초기화 로직 (캐시 제거 등)
+      }}
+    >
+      <Suspense fallback={<PostSkeleton />}>
+        <PostDetail postId={postId} />
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+```
+
+---
+
+## useDeferredValue — 긴급하지 않은 업데이트 지연
+
+Suspense와 함께 자주 쓰이는 훅이다. 값의 업데이트를 지연시켜 현재 UI를 유지하면서 백그라운드에서 새 데이터를 준비한다.
+
+```tsx
+function SearchResults() {
+  const [query, setQuery] = useState('')
+  const deferredQuery = useDeferredValue(query)  // query 업데이트를 지연
+
+  const isStale = query !== deferredQuery  // 지연 중 여부
+
+  return (
+    <div>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="검색어 입력..."
+      />
+
+      {/* 이전 결과를 흐리게 보여주면서 새 결과 준비 */}
+      <div className={isStale ? 'opacity-50 pointer-events-none' : ''}>
+        <Suspense fallback={<SearchSkeleton />}>
+          <SearchResultList query={deferredQuery} />
+        </Suspense>
+      </div>
+    </div>
+  )
+}
+```
+
+```
+useDeferredValue 없이:
+  query 변경 → Suspense 발동 → fallback(스켈레톤) 표시 → 결과 표시
+  → 타이핑할 때마다 스켈레톤이 깜빡임 (UX 불량)
+
+useDeferredValue 있으면:
+  query 변경 → 이전 결과 유지 (흐리게) → 백그라운드에서 새 결과 준비
+  → 새 결과 완료 → 자연스럽게 교체 (스켈레톤 깜빡임 없음)
+```
+
+---
+
+## useTransition — 상태 업데이트 우선순위 지정
+
+페이지 전환처럼 시간이 걸리는 상태 업데이트를 "긴급하지 않은" 것으로 표시한다.
+
+```tsx
+function TabContainer() {
+  const [tab, setTab] = useState('home')
+  const [isPending, startTransition] = useTransition()
+
+  function selectTab(nextTab: string) {
+    startTransition(() => {
+      setTab(nextTab)  // 이 업데이트는 긴급하지 않음으로 표시
+    })
+  }
+
+  return (
+    <div>
+      <nav>
+        {['home', 'about', 'posts'].map((t) => (
+          <button
+            key={t}
+            onClick={() => selectTab(t)}
+            // isPending 동안 탭 버튼은 즉시 반응 (클릭 가능)
+            className={tab === t ? 'font-bold' : ''}
+          >
+            {t}
+          </button>
+        ))}
+      </nav>
+
+      {/* isPending 동안 이전 탭 내용을 흐리게 유지 */}
+      <div className={isPending ? 'opacity-60' : ''}>
+        <Suspense fallback={<TabSkeleton />}>
+          <TabContent tab={tab} />
+        </Suspense>
+      </div>
+    </div>
+  )
+}
+```
+
+| 훅 | 용도 |
+|---|------|
+| `useDeferredValue` | 값(value)의 업데이트를 지연 — 입력창처럼 외부에서 오는 값 |
+| `useTransition` | 상태 업데이트(setter)를 지연 — 탭 전환처럼 내가 제어하는 업데이트 |
+
+---
+
+## Next.js App Router에서의 Suspense
+
+Next.js 13+ App Router는 Suspense를 서버 컴포넌트와 긴밀하게 통합한다.
+
+```tsx
+// app/posts/page.tsx
+import { Suspense } from 'react'
+
+// 서버 컴포넌트에서 직접 데이터 패칭
+async function PostList() {
+  const posts = await fetchPosts()  // 서버에서 실행
+  return (
+    <ul>
+      {posts.map((post) => <PostCard key={post.id} post={post} />)}
+    </ul>
+  )
+}
+
+async function FeaturedPost() {
+  const post = await fetchFeaturedPost()
+  return <HeroCard post={post} />
+}
+
+export default function Page() {
+  return (
+    <div>
+      {/* 두 컴포넌트가 병렬로 데이터 패칭 */}
+      <Suspense fallback={<HeroSkeleton />}>
+        <FeaturedPost />
+      </Suspense>
+
+      <Suspense fallback={<ListSkeleton />}>
+        <PostList />
+      </Suspense>
+    </div>
+  )
+}
+```
+
+```tsx
+// loading.tsx — 해당 경로의 기본 Suspense fallback
+// app/posts/loading.tsx
+export default function Loading() {
+  return <PageSkeleton />
+}
+```
+
+`loading.tsx`는 페이지 전체를 `<Suspense fallback={<Loading />}>`으로 감싸는 것과 동일하다.
+
+---
+
+## 스켈레톤 UI 설계 원칙
+
+Suspense fallback으로 실제 UI와 유사한 스켈레톤을 사용하면 사용자가 레이아웃 변화 없이 콘텐츠가 채워지는 것을 경험한다.
+
+```tsx
+// 실제 컴포넌트와 같은 레이아웃을 유지
+function PostCardSkeleton() {
+  return (
+    <div className="flex gap-4 p-4 border rounded-xl animate-pulse">
+      <div className="w-20 h-20 bg-gray-200 rounded-lg shrink-0" />
+      <div className="flex-1 space-y-2">
+        <div className="h-4 bg-gray-200 rounded w-3/4" />
+        <div className="h-3 bg-gray-200 rounded w-1/2" />
+        <div className="h-3 bg-gray-200 rounded w-full" />
+      </div>
+    </div>
+  )
+}
+
+function PostListSkeleton() {
+  return (
+    <div className="space-y-3">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <PostCardSkeleton key={i} />
+      ))}
+    </div>
+  )
+}
+```
+
+---
+
+## 정리
+
+```
+Suspense 적용 판단 기준
+
+코드 분할 (lazy):
+  → 초기 번들이 크거나 특정 화면이 무거울 때
+
+데이터 패칭 (useSuspenseQuery):
+  → isLoading 분기를 컴포넌트 밖으로 꺼내고 싶을 때
+  → data가 항상 존재한다는 타입 보장이 필요할 때
+  → 여러 컴포넌트의 로딩 상태를 하나로 묶을 때
+
+Error Boundary와 함께:
+  → 반드시 쌍으로 사용. Suspense는 로딩만, 에러는 ErrorBoundary
+
+useDeferredValue:
+  → 검색 입력처럼 타이핑 중 이전 결과를 유지하고 싶을 때
+
+useTransition:
+  → 탭 전환처럼 내가 트리거하는 상태 업데이트를 지연할 때
+```
+
+Suspense의 핵심 가치는 **비동기 상태를 컴포넌트 밖으로 분리해 컴포넌트가 "항상 준비된 상태"만 표현하게 만드는 것**이다. `isLoading`, `isError` 분기가 사라진 컴포넌트는 실제 UI 로직에만 집중할 수 있다.
