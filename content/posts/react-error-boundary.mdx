@@ -1,0 +1,467 @@
+---
+title: React Error Boundary — 에러를 격리하고 우아하게 복구하기
+date: '2026-04-15'
+category: Frontend
+tags:
+  - React
+  - Error Boundary
+  - 에러 처리
+  - Suspense
+  - react-error-boundary
+summary: >-
+  Error Boundary는 자식 컴포넌트에서 발생한 렌더링 에러를 잡아 전체 앱이 아닌 해당 영역만 대체 UI로 교체한다. 동작 원리, 직접 구현, react-error-boundary 라이브러리 활용, Suspense 조합 패턴까지 정리한다.
+thumbnail: /thumbnails/react-error-boundary.svg
+---
+
+React 컴포넌트에서 렌더링 중 예외가 발생하면 기본적으로 전체 앱이 흰 화면으로 날아간다. Error Boundary는 에러를 특정 영역에서 잡아 나머지 UI는 정상 동작하게 하면서 해당 영역만 대체 UI로 교체한다.
+
+## Error Boundary란
+
+자식 컴포넌트 트리에서 발생한 **렌더링 에러를 포착**하는 React 컴포넌트다. try-catch와 비슷하지만 컴포넌트 트리 단위로 동작한다.
+
+```
+Error Boundary 없이:
+  UserProfile 렌더링 중 에러 → 전체 앱 흰 화면
+
+Error Boundary 있으면:
+  UserProfile 렌더링 중 에러 → 해당 Boundary만 fallback UI 표시
+                              → 나머지 앱은 정상 동작
+```
+
+```tsx
+<ErrorBoundary fallback={<ErrorFallback />}>
+  <UserProfile />  {/* 여기서 에러 발생 → ErrorFallback 표시 */}
+</ErrorBoundary>
+```
+
+---
+
+## Error Boundary가 잡는 에러 vs 잡지 못하는 에러
+
+```
+잡는 에러 (렌더링 중 발생)
+  - 렌더 함수 내부 예외
+  - 생명주기 메서드 예외 (componentDidMount 등)
+  - 자식 컴포넌트 트리 렌더링 중 예외
+
+잡지 못하는 에러
+  - 이벤트 핸들러 내부 에러 (onClick, onChange 등)
+  - 비동기 코드 (setTimeout, fetch, Promise rejection)
+  - 서버 사이드 렌더링(SSR) 중 에러
+  - Error Boundary 컴포넌트 자체의 에러
+```
+
+이벤트 핸들러 에러는 일반 try-catch로 처리한다.
+
+```tsx
+function SearchButton() {
+  const handleClick = () => {
+    try {
+      doSearch()
+    } catch (error) {
+      // 이벤트 핸들러 에러는 Error Boundary가 잡지 못함
+      setErrorMessage('검색에 실패했습니다.')
+    }
+  }
+  return <button onClick={handleClick}>검색</button>
+}
+```
+
+---
+
+## 직접 구현
+
+Error Boundary는 **클래스 컴포넌트**로만 구현할 수 있다. `getDerivedStateFromError`와 `componentDidCatch` 두 생명주기를 사용한다.
+
+```tsx
+import { Component, ReactNode, ErrorInfo } from 'react'
+
+interface Props {
+  fallback: ReactNode | ((error: Error, reset: () => void) => ReactNode)
+  children: ReactNode
+  onError?: (error: Error, info: ErrorInfo) => void
+}
+
+interface State {
+  hasError: boolean
+  error: Error | null
+}
+
+class ErrorBoundary extends Component<Props, State> {
+  state: State = {
+    hasError: false,
+    error: null,
+  }
+
+  // 에러 발생 시 state 업데이트 — 렌더링 단계에서 호출
+  static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error }
+  }
+
+  // 에러 정보 수집 — 커밋 단계에서 호출 (사이드 이펙트 가능)
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    // 에러 로깅 서비스로 전송
+    this.props.onError?.(error, info)
+    console.error('[ErrorBoundary]', error, info.componentStack)
+  }
+
+  reset = () => {
+    this.setState({ hasError: false, error: null })
+  }
+
+  render() {
+    if (this.state.hasError && this.state.error) {
+      const { fallback } = this.props
+      if (typeof fallback === 'function') {
+        return fallback(this.state.error, this.reset)
+      }
+      return fallback
+    }
+    return this.props.children
+  }
+}
+```
+
+```tsx
+// 사용 예시
+<ErrorBoundary
+  fallback={(error, reset) => (
+    <div className="flex flex-col items-center gap-3 py-8 text-center">
+      <p className="text-red-500 font-medium">문제가 발생했습니다</p>
+      <p className="text-sm text-gray-500">{error.message}</p>
+      <button
+        onClick={reset}
+        className="px-4 py-2 bg-blue-500 text-white text-sm rounded-lg"
+      >
+        다시 시도
+      </button>
+    </div>
+  )}
+  onError={(error, info) => {
+    reportToSentry(error, info)
+  }}
+>
+  <UserProfile userId={1} />
+</ErrorBoundary>
+```
+
+---
+
+## react-error-boundary 라이브러리
+
+직접 구현보다 기능이 풍부하고 함수형 패턴과 잘 맞는다.
+
+```bash
+npm install react-error-boundary
+```
+
+### ErrorBoundary 컴포넌트
+
+```tsx
+import { ErrorBoundary } from 'react-error-boundary'
+
+function ErrorFallback({
+  error,
+  resetErrorBoundary,
+}: {
+  error: Error
+  resetErrorBoundary: () => void
+}) {
+  return (
+    <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-center">
+      <h3 className="text-red-600 font-semibold mb-2">오류가 발생했습니다</h3>
+      <p className="text-sm text-red-500 mb-4">{error.message}</p>
+      <button
+        onClick={resetErrorBoundary}
+        className="px-4 py-2 bg-red-500 text-white text-sm rounded-lg hover:bg-red-600"
+      >
+        다시 시도
+      </button>
+    </div>
+  )
+}
+
+function PostPage({ postId }: { postId: number }) {
+  return (
+    <ErrorBoundary
+      FallbackComponent={ErrorFallback}
+      onError={(error, info) => reportToSentry(error, info)}
+      onReset={() => {
+        // 에러 상태 초기화 전 실행 (캐시 무효화 등)
+      }}
+    >
+      <PostDetail postId={postId} />
+    </ErrorBoundary>
+  )
+}
+```
+
+### resetKeys — 자동 리셋
+
+`resetKeys`에 지정한 값이 변경되면 Error Boundary를 자동으로 리셋한다.
+
+```tsx
+function PostPage({ postId }: { postId: number }) {
+  return (
+    <ErrorBoundary
+      FallbackComponent={ErrorFallback}
+      // postId가 바뀌면 에러 상태를 자동 리셋 후 재시도
+      resetKeys={[postId]}
+    >
+      <PostDetail postId={postId} />
+    </ErrorBoundary>
+  )
+}
+```
+
+```
+사용자가 에러 화면에서 다른 게시글로 이동하면
+→ postId 변경 → resetKeys 감지 → Error Boundary 자동 리셋
+→ 새 게시글 렌더링 시도
+```
+
+### useErrorBoundary — 이벤트 핸들러 에러를 Error Boundary로 전달
+
+이벤트 핸들러나 비동기 에러를 Error Boundary가 처리하게 만든다.
+
+```tsx
+import { useErrorBoundary } from 'react-error-boundary'
+
+function SearchForm() {
+  const { showBoundary } = useErrorBoundary()
+  const [query, setQuery] = useState('')
+
+  const handleSearch = async () => {
+    try {
+      const result = await searchApi(query)
+      setResults(result)
+    } catch (error) {
+      // 비동기 에러를 Error Boundary로 전달
+      showBoundary(error)
+    }
+  }
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); handleSearch() }}>
+      <input value={query} onChange={(e) => setQuery(e.target.value)} />
+      <button type="submit">검색</button>
+    </form>
+  )
+}
+
+// ErrorBoundary로 감싸면 showBoundary 호출 시 fallback 표시
+<ErrorBoundary FallbackComponent={ErrorFallback}>
+  <SearchForm />
+</ErrorBoundary>
+```
+
+---
+
+## 에러 격리 전략
+
+Error Boundary를 어디에 배치하느냐가 사용자 경험을 결정한다.
+
+### 전체 앱 수준 — 최후 방어선
+
+```tsx
+// main.tsx
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <ErrorBoundary
+    fallback={
+      <div className="flex h-screen items-center justify-center">
+        <div className="text-center">
+          <h1 className="text-2xl font-bold text-gray-800 mb-2">
+            예상치 못한 오류가 발생했습니다
+          </h1>
+          <p className="text-gray-500 mb-4">
+            잠시 후 다시 시도해 주세요.
+          </p>
+          <button onClick={() => window.location.reload()}>
+            페이지 새로고침
+          </button>
+        </div>
+      </div>
+    }
+  >
+    <App />
+  </ErrorBoundary>
+)
+```
+
+### 페이지/섹션 수준 — 권장
+
+```tsx
+// 독립적인 섹션마다 별도 Error Boundary
+function Dashboard() {
+  return (
+    <div className="grid grid-cols-2 gap-6">
+      <ErrorBoundary FallbackComponent={WidgetError}>
+        <RevenueChart />
+      </ErrorBoundary>
+
+      <ErrorBoundary FallbackComponent={WidgetError}>
+        <UserStatsWidget />
+      </ErrorBoundary>
+
+      <ErrorBoundary FallbackComponent={WidgetError}>
+        <RecentOrdersTable />
+      </ErrorBoundary>
+
+      <ErrorBoundary FallbackComponent={WidgetError}>
+        <NotificationsWidget />
+      </ErrorBoundary>
+    </div>
+  )
+}
+
+// 하나의 위젯에서 에러가 나도 나머지는 정상 동작
+function WidgetError({ resetErrorBoundary }: { resetErrorBoundary: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center h-48 rounded-xl border border-dashed border-gray-300 text-gray-400">
+      <p className="text-sm mb-2">데이터를 불러오지 못했습니다</p>
+      <button onClick={resetErrorBoundary} className="text-xs text-blue-400 underline">
+        재시도
+      </button>
+    </div>
+  )
+}
+```
+
+---
+
+## Suspense와 함께 쓰기
+
+Error Boundary는 Suspense와 항상 쌍으로 쓴다. Suspense는 로딩을, Error Boundary는 에러를 각각 담당한다.
+
+```tsx
+// 기본 조합 패턴
+function AsyncSection({ children }: { children: ReactNode }) {
+  return (
+    <ErrorBoundary FallbackComponent={ErrorFallback}>
+      <Suspense fallback={<SectionSkeleton />}>
+        {children}
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+
+// 사용
+<AsyncSection>
+  <UserProfile userId={1} />
+</AsyncSection>
+
+<AsyncSection>
+  <PostList />
+</AsyncSection>
+```
+
+순서가 중요하다. **ErrorBoundary가 Suspense를 감싸야** Suspense 내 컴포넌트의 에러도 포착한다.
+
+```
+✅ ErrorBoundary → Suspense → Component  (에러 포착됨)
+❌ Suspense → ErrorBoundary → Component  (Suspense 내 에러 포착 안 됨)
+```
+
+### TanStack Query와 통합
+
+```tsx
+import { QueryErrorResetBoundary } from '@tanstack/react-query'
+import { ErrorBoundary } from 'react-error-boundary'
+
+function PostSection({ postId }: { postId: number }) {
+  return (
+    // QueryErrorResetBoundary: reset 시 쿼리도 함께 초기화
+    <QueryErrorResetBoundary>
+      {({ reset }) => (
+        <ErrorBoundary
+          onReset={reset}  // Error Boundary reset과 Query reset 연결
+          FallbackComponent={({ error, resetErrorBoundary }) => (
+            <div className="text-center py-6">
+              <p className="text-red-500 text-sm mb-3">{error.message}</p>
+              <button
+                onClick={resetErrorBoundary}
+                className="px-4 py-2 bg-blue-500 text-white text-sm rounded-lg"
+              >
+                다시 시도
+              </button>
+            </div>
+          )}
+        >
+          <Suspense fallback={<PostSkeleton />}>
+            <PostDetail postId={postId} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+    </QueryErrorResetBoundary>
+  )
+}
+```
+
+---
+
+## 에러 로깅
+
+`componentDidCatch` (또는 라이브러리의 `onError`)에서 Sentry 등 에러 추적 서비스로 전송한다.
+
+```tsx
+import * as Sentry from '@sentry/react'
+
+// Sentry가 제공하는 ErrorBoundary 사용
+function App() {
+  return (
+    <Sentry.ErrorBoundary
+      fallback={({ error, resetError }) => (
+        <ErrorScreen error={error} onReset={resetError} />
+      )}
+      showDialog  // Sentry 사용자 피드백 다이얼로그 표시
+    >
+      <Router />
+    </Sentry.ErrorBoundary>
+  )
+}
+
+// 또는 react-error-boundary의 onError에서 직접 전송
+<ErrorBoundary
+  FallbackComponent={ErrorFallback}
+  onError={(error, info) => {
+    Sentry.captureException(error, {
+      contexts: {
+        react: { componentStack: info.componentStack },
+      },
+    })
+  }}
+>
+  <App />
+</ErrorBoundary>
+```
+
+---
+
+## 개발 환경 주의
+
+CRA, Vite 기반의 개발 서버는 에러 오버레이를 표시하기 때문에 **개발 환경에서는 Error Boundary가 동작하는 것처럼 보이지 않는다.** 오버레이를 닫으면 Error Boundary의 fallback UI가 나타난다. 프로덕션 빌드에서는 정상 동작한다.
+
+---
+
+## 정리
+
+```
+Error Boundary 배치 전략
+  앱 루트:    전체 붕괴 방지 최후 방어선
+  페이지:     라우트 단위 에러 격리
+  섹션/위젯:  독립적인 UI 블록 단위 (권장)
+
+잡는 에러        → 렌더링 중 예외
+잡지 못하는 에러  → 이벤트 핸들러, 비동기, SSR
+                  useErrorBoundary()로 수동 전달 가능
+
+Suspense 조합
+  ErrorBoundary (바깥) → Suspense (안쪽)
+  로딩 → Suspense / 에러 → ErrorBoundary
+
+resetKeys
+  특정 값(예: postId) 변경 시 자동 리셋
+  페이지 전환 시 에러 상태 자동 해소에 유용
+```
+
+Error Boundary의 핵심은 **에러 전파 범위를 좁히는 것**이다. 하나의 위젯이 실패해도 나머지 페이지는 동작해야 한다. 작은 단위로 경계를 나눌수록 에러의 영향이 줄어들고, 사용자는 실패한 부분만 재시도할 수 있다.
