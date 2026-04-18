@@ -1,0 +1,397 @@
+---
+title: 전략 패턴 — 알고리즘을 캡슐화하고 교체 가능하게 만들기
+date: '2026-04-19'
+category: Architecture
+tags:
+  - 디자인 패턴
+  - 전략 패턴
+  - Strategy Pattern
+  - OOP
+  - SOLID
+summary: >-
+  전략 패턴은 알고리즘 군을 정의하고 각각을 캡슐화해 런타임에 교체할 수 있게 하는 디자인 패턴이다. if-else 분기를 제거하고 확장에 열려 있는 코드를 만드는 가장 실용적인 방법을 정리한다.
+thumbnail: /thumbnails/strategy-pattern.svg
+---
+
+`if (paymentType.equals("card")) { ... } else if (paymentType.equals("kakao")) { ... }` — 이런 코드는 결제 수단이 하나씩 추가될 때마다 길어진다. 전략 패턴은 이 조건 분기를 객체로 분리해 런타임에 교체 가능하게 만드는 패턴이다.
+
+## 전략 패턴이란
+
+GoF 디자인 패턴 중 행동(Behavioral) 패턴에 속한다. 핵심 아이디어는 단순하다.
+
+```
+알고리즘을 인터페이스로 추상화하고
+각 알고리즘을 별도 클래스로 구현한 뒤
+사용하는 쪽(Context)에서 구체 구현을 주입받는다
+```
+
+구성 요소는 세 가지다.
+
+| 구성 요소 | 역할 |
+|-----------|------|
+| Strategy (인터페이스) | 알고리즘이 따라야 할 계약 정의 |
+| ConcreteStrategy | 실제 알고리즘 구현체 |
+| Context | Strategy를 보유하고 실행을 위임하는 클래스 |
+
+---
+
+## 기본 구현 — Java
+
+### 문제: 결제 수단별 분기
+
+```java
+// Bad — 수단이 추가될 때마다 이 메서드를 수정해야 한다
+public void pay(String type, int amount) {
+    if (type.equals("card")) {
+        // 카드 결제 로직
+    } else if (type.equals("kakao")) {
+        // 카카오페이 로직
+    } else if (type.equals("toss")) {
+        // 토스 로직
+    }
+}
+```
+
+### 해결: 전략 패턴 적용
+
+```java
+// 1. Strategy 인터페이스
+public interface PaymentStrategy {
+    void pay(int amount);
+}
+
+// 2. ConcreteStrategy 구현체들
+public class CardPayment implements PaymentStrategy {
+    private String cardNumber;
+
+    public CardPayment(String cardNumber) {
+        this.cardNumber = cardNumber;
+    }
+
+    @Override
+    public void pay(int amount) {
+        System.out.printf("카드(%s)로 %d원 결제%n", cardNumber, amount);
+    }
+}
+
+public class KakaoPayment implements PaymentStrategy {
+    @Override
+    public void pay(int amount) {
+        System.out.printf("카카오페이로 %d원 결제%n", amount);
+    }
+}
+
+public class TossPayment implements PaymentStrategy {
+    @Override
+    public void pay(int amount) {
+        System.out.printf("토스로 %d원 결제%n", amount);
+    }
+}
+
+// 3. Context
+public class PaymentContext {
+    private PaymentStrategy strategy;
+
+    public void setStrategy(PaymentStrategy strategy) {
+        this.strategy = strategy;
+    }
+
+    public void checkout(int amount) {
+        strategy.pay(amount);
+    }
+}
+```
+
+```java
+// 사용
+PaymentContext context = new PaymentContext();
+
+context.setStrategy(new CardPayment("1234-5678"));
+context.checkout(50000);  // 카드(1234-5678)로 50000원 결제
+
+context.setStrategy(new KakaoPayment());
+context.checkout(30000);  // 카카오페이로 30000원 결제
+```
+
+새로운 결제 수단이 생기면 `PaymentStrategy`를 구현하는 클래스만 추가하면 된다. `PaymentContext`는 변경하지 않는다 — **OCP(개방-폐쇄 원칙)** 준수.
+
+---
+
+## Spring에서의 전략 패턴
+
+Spring IoC 컨테이너와 결합하면 전략 주입을 더 자연스럽게 처리할 수 있다.
+
+### Bean으로 등록하고 Map으로 주입
+
+```java
+// Strategy 인터페이스
+public interface DeliveryStrategy {
+    String getType();
+    int calculateFee(int weight);
+}
+
+// 구현체 — Bean으로 등록
+@Component
+public class StandardDelivery implements DeliveryStrategy {
+    @Override
+    public String getType() { return "standard"; }
+
+    @Override
+    public int calculateFee(int weight) {
+        return weight > 5 ? 5000 : 3000;
+    }
+}
+
+@Component
+public class ExpressDelivery implements DeliveryStrategy {
+    @Override
+    public String getType() { return "express"; }
+
+    @Override
+    public int calculateFee(int weight) {
+        return weight > 5 ? 10000 : 7000;
+    }
+}
+```
+
+```java
+// Context — Map 자동 주입
+@Service
+public class DeliveryService {
+    private final Map<String, DeliveryStrategy> strategies;
+
+    public DeliveryService(List<DeliveryStrategy> strategyList) {
+        this.strategies = strategyList.stream()
+            .collect(Collectors.toMap(
+                DeliveryStrategy::getType,
+                Function.identity()
+            ));
+    }
+
+    public int calculate(String type, int weight) {
+        DeliveryStrategy strategy = strategies.get(type);
+        if (strategy == null) {
+            throw new IllegalArgumentException("지원하지 않는 배송 방식: " + type);
+        }
+        return strategy.calculateFee(weight);
+    }
+}
+```
+
+```java
+// 사용
+deliveryService.calculate("standard", 3);  // 3000
+deliveryService.calculate("express", 3);   // 7000
+```
+
+Spring이 `DeliveryStrategy` 타입의 빈을 모두 수집해 주입한다. 새 배송 방식을 추가할 때 `@Component`가 붙은 클래스를 하나 추가하는 것으로 충분하다.
+
+---
+
+## TypeScript 구현
+
+```typescript
+// Strategy 인터페이스
+interface SortStrategy<T> {
+  sort(data: T[]): T[];
+}
+
+// ConcreteStrategy 구현체들
+class BubbleSort<T> implements SortStrategy<T> {
+  sort(data: T[]): T[] {
+    const arr = [...data];
+    for (let i = 0; i < arr.length; i++) {
+      for (let j = 0; j < arr.length - i - 1; j++) {
+        if (arr[j] > arr[j + 1]) {
+          [arr[j], arr[j + 1]] = [arr[j + 1], arr[j]];
+        }
+      }
+    }
+    return arr;
+  }
+}
+
+class QuickSort<T> implements SortStrategy<T> {
+  sort(data: T[]): T[] {
+    if (data.length <= 1) return data;
+    const pivot = data[Math.floor(data.length / 2)];
+    const left = data.filter(x => x < pivot);
+    const right = data.filter(x => x > pivot);
+    return [...this.sort(left), pivot, ...this.sort(right)];
+  }
+}
+
+// Context
+class Sorter<T> {
+  constructor(private strategy: SortStrategy<T>) {}
+
+  setStrategy(strategy: SortStrategy<T>) {
+    this.strategy = strategy;
+  }
+
+  execute(data: T[]): T[] {
+    return this.strategy.sort(data);
+  }
+}
+```
+
+```typescript
+const sorter = new Sorter(new BubbleSort<number>());
+console.log(sorter.execute([5, 2, 8, 1])); // [1, 2, 5, 8]
+
+sorter.setStrategy(new QuickSort<number>());
+console.log(sorter.execute([5, 2, 8, 1])); // [1, 2, 5, 8]
+```
+
+---
+
+## 함수형 스타일 — 클래스 없이
+
+Java 8+나 TypeScript에서는 인터페이스/클래스 대신 함수 자체를 전략으로 넘길 수 있다.
+
+```java
+// Java — 함수형 인터페이스 활용
+@FunctionalInterface
+public interface DiscountStrategy {
+    int apply(int price);
+}
+
+public class OrderService {
+    public int calculatePrice(int price, DiscountStrategy discount) {
+        return discount.apply(price);
+    }
+}
+```
+
+```java
+// 람다로 전략 전달
+orderService.calculatePrice(10000, price -> price);                    // 할인 없음
+orderService.calculatePrice(10000, price -> price * 90 / 100);        // 10% 할인
+orderService.calculatePrice(10000, price -> Math.max(price - 2000, 0)); // 2000원 할인
+```
+
+```typescript
+// TypeScript
+type PricingStrategy = (price: number) => number;
+
+function checkout(price: number, strategy: PricingStrategy): number {
+  return strategy(price);
+}
+
+checkout(10000, price => price);                        // 10000
+checkout(10000, price => price * 0.9);                 // 9000
+checkout(10000, price => Math.max(price - 2000, 0));   // 8000
+```
+
+---
+
+## 전략 패턴 vs 유사 패턴 비교
+
+```
+전략 패턴 (Strategy)
+  → 알고리즘 교체가 목적
+  → Context가 Strategy를 보유하고 위임
+  → 런타임에 전략 변경 가능
+
+템플릿 메서드 패턴 (Template Method)
+  → 알고리즘의 뼈대(순서)는 고정, 일부 단계만 서브클래스가 구현
+  → 상속 기반 (전략 패턴은 합성 기반)
+
+커맨드 패턴 (Command)
+  → 요청 자체를 객체화, 실행·취소·큐잉이 목적
+  → 전략 패턴은 how(어떻게), 커맨드는 what(무엇을)
+```
+
+---
+
+## 언제 써야 하는가
+
+### 적합한 상황
+
+```
+✓ 같은 작업을 다른 방식으로 처리하는 로직이 여러 개일 때
+  (정렬, 결제, 할인, 압축, 인증 방식 등)
+
+✓ 조건 분기가 많아지는 게 예상되는 곳
+  (수단이 계속 늘어나는 결제 로직, 파일 포맷별 파싱 등)
+
+✓ 알고리즘 변경이 런타임에 발생해야 할 때
+
+✓ 단위 테스트에서 알고리즘을 격리해 테스트하고 싶을 때
+```
+
+### 과한 적용은 피해야 하는 상황
+
+```
+✗ 알고리즘이 딱 하나뿐이고 늘어날 가능성이 없을 때
+✗ 전략마다 Context가 달라 공통 인터페이스를 뽑기 어려울 때
+✗ 단순 if-else 2개짜리를 억지로 분리할 때
+```
+
+---
+
+## 실전 예시 — 파일 내보내기
+
+```java
+public interface ExportStrategy {
+    void export(List<Map<String, Object>> data, OutputStream out);
+}
+
+@Component
+public class CsvExport implements ExportStrategy {
+    @Override
+    public void export(List<Map<String, Object>> data, OutputStream out) {
+        // CSV 직렬화
+    }
+}
+
+@Component
+public class ExcelExport implements ExportStrategy {
+    @Override
+    public void export(List<Map<String, Object>> data, OutputStream out) {
+        // Apache POI로 Excel 생성
+    }
+}
+
+@Component
+public class JsonExport implements ExportStrategy {
+    @Override
+    public void export(List<Map<String, Object>> data, OutputStream out) {
+        // Jackson으로 JSON 직렬화
+    }
+}
+```
+
+```java
+@RestController
+@RequestMapping("/reports")
+public class ReportController {
+    private final Map<String, ExportStrategy> strategies;
+
+    public ReportController(List<ExportStrategy> strategyList) {
+        this.strategies = strategyList.stream()
+            .collect(Collectors.toMap(
+                s -> s.getClass().getSimpleName().replace("Export", "").toLowerCase(),
+                Function.identity()
+            ));
+    }
+
+    @GetMapping("/export")
+    public void export(
+        @RequestParam String format,
+        HttpServletResponse response
+    ) throws IOException {
+        ExportStrategy strategy = strategies.get(format);
+        if (strategy == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+
+        List<Map<String, Object>> data = fetchReportData();
+        strategy.export(data, response.getOutputStream());
+    }
+}
+```
+
+`/reports/export?format=csv`, `?format=excel`, `?format=json` 모두 동일한 엔드포인트로 처리된다. 새 포맷이 필요하면 `ExportStrategy` 구현 클래스 하나를 추가하고 `@Component`를 붙이면 된다.
+
+---
+
+전략 패턴의 핵심은 **"무엇을 할지(Context)와 어떻게 할지(Strategy)를 분리하는 것"**이다. 조건 분기가 늘어나는 곳을 발견했다면, 전략 패턴으로 알고리즘을 캡슐화하고 OCP를 지키는 구조를 만들어라.
