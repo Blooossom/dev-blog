@@ -105,7 +105,7 @@ export default function Sidebar() {
                     }`}
                   >
                     <span className="material-symbols-outlined text-base select-none">{cat.icon}</span>
-                    <span className="font-label font-semibold uppercase tracking-widest text-xs">
+                    <span className="font-headline text-sm font-semibold">
                       {cat.label}
                     </span>
                   </Link>
@@ -132,7 +132,7 @@ export default function Sidebar() {
                       <Link
                         key={tag}
                         href={`/tags/${tag}`}
-                        className={`px-3 py-1.5 rounded-r-full text-xs transition-all duration-150 ${
+                        className={`px-3 py-1.5 rounded-r-full font-label font-medium uppercase tracking-widest text-[10px] transition-all duration-150 ${
                           isTagActive(tag)
                             ? 'text-rose-900 font-bold bg-rose-50'
                             : 'text-on-surface-variant hover:text-rose-800 hover:bg-surface-container-low'
