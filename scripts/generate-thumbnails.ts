@@ -459,6 +459,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'load-balancing':                 { pattern: 'network',  colors: { bg1: '#0f1e1a', bg2: '#1a3d32', accent: '#34d399', accent2: '#6ee7b7' } },
   'oauth':                          { pattern: 'shield',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'code-review':                    { pattern: 'code',     colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
+  'claude-mythos':                  { pattern: 'neural',   colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
   'spring-boot-4-features':         { pattern: 'spring' },
   'spring-http-clients-comparison': { pattern: 'flow',     colors: { accent: '#6ee7b7' } },
   'tree-shaking':                   { pattern: 'network',  colors: { bg1: '#0f1a2e', bg2: '#1e3460', accent: '#7dd3fc', accent2: '#bae6fd' } },
