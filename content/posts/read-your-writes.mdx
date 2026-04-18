@@ -1,0 +1,188 @@
+---
+title: Read-Your-Writes — 분산 시스템에서 방금 쓴 데이터를 바로 읽을 수 있을까
+date: '2026-04-19'
+category: Backend
+tags:
+  - 분산 시스템
+  - 일관성
+  - Read-Your-Writes
+  - Eventual Consistency
+  - Replication
+summary: >-
+  분산 시스템에서 방금 저장한 데이터를 바로 조회하면 보이지 않는 경우가 있다. Read-Your-Writes 일관성이 왜 깨지고 어떻게 보장할 수 있는지 정리한다.
+thumbnail: /thumbnails/read-your-writes.svg
+---
+
+프로필을 수정하고 새로고침했는데 이전 값이 보인다. 게시글을 작성했는데 목록에 나타나지 않는다. 이런 경험은 Read-Your-Writes 일관성이 보장되지 않을 때 발생한다.
+
+## 왜 발생하는가
+
+대부분의 DB는 쓰기는 Primary에, 읽기는 Replica에서 처리한다.
+
+```
+사용자 → 쓰기 → Primary DB
+사용자 → 읽기 → Replica DB
+
+Primary → Replica 복제에 지연(Replication Lag) 발생
+```
+
+```
+t=0: 사용자가 이름을 "홍길동" → "이순신"으로 수정 (Primary 저장)
+t=1: 사용자가 프로필 조회 요청
+t=2: 읽기 요청이 Replica로 라우팅
+t=3: Replica는 아직 Primary 변경사항을 받지 못함 → "홍길동" 반환
+```
+
+마이크로서비스에서도 동일한 문제가 생긴다. 이벤트 기반으로 서비스 간 데이터를 동기화할 때 이벤트 처리 전에 조회 요청이 들어오면 오래된 데이터를 보게 된다.
+
+---
+
+## 해결 방법
+
+### 1. 쓰기 후 일정 시간 Primary로 라우팅
+
+가장 단순한 방법이다. 사용자가 쓰기를 한 뒤 일정 시간(예: 1~5초) 동안은 읽기도 Primary에서 처리한다.
+
+```java
+@Service
+public class UserService {
+    private final PrimaryDataSource primary;
+    private final ReplicaDataSource replica;
+    private final RedisTemplate<String, Long> redis;
+
+    public void updateProfile(Long userId, ProfileUpdateRequest request) {
+        primary.update(userId, request);
+        // "이 사용자는 최근에 쓰기를 했다" 표시
+        redis.opsForValue().set("user:write:" + userId, 1L, Duration.ofSeconds(5));
+    }
+
+    public UserProfile getProfile(Long userId) {
+        // 최근 쓰기를 한 사용자면 Primary에서 읽기
+        if (redis.hasKey("user:write:" + userId)) {
+            return primary.findById(userId);
+        }
+        return replica.findById(userId);
+    }
+}
+```
+
+### 2. 쓰기 후 읽기에 Replica Lag 대기
+
+```java
+@Transactional
+public UserProfile updateAndRead(Long userId, ProfileUpdateRequest request) {
+    primary.update(userId, request);
+    waitForReplication(userId); // Replication Lag 만큼 대기
+    return replica.findById(userId); // 이제 최신 데이터를 읽을 수 있음
+}
+```
+
+대기 시간이 불확실해 실용성이 낮다.
+
+### 3. 버전/타임스탬프 기반 읽기
+
+쓰기 시점의 버전이나 타임스탬프를 클라이언트에 반환하고, 읽기 시 해당 버전 이상을 보장하는 Replica에서만 읽는다.
+
+```java
+public WriteResult updateProfile(Long userId, ProfileUpdateRequest request) {
+    long version = primary.update(userId, request);
+    return new WriteResult(version); // 클라이언트에 버전 반환
+}
+
+public UserProfile getProfile(Long userId, long minVersion) {
+    // minVersion 이상의 데이터를 가진 Replica 선택
+    DataSource replica = replicaRouter.selectWithMinVersion(minVersion);
+    if (replica == null) {
+        return primary.findById(userId); // 모든 Replica가 뒤처지면 Primary
+    }
+    return replica.findById(userId);
+}
+```
+
+```
+API 응답:
+POST /users/profile
+{
+  "data": {...},
+  "version": 1234567890
+}
+
+GET /users/profile?minVersion=1234567890
+→ 해당 버전 이상을 가진 Replica에서 응답
+```
+
+### 4. 동일 Replica 고정 (Sticky Sessions)
+
+같은 사용자의 요청은 항상 같은 Replica로 라우팅한다.
+
+```
+장점: 구현이 단순
+단점: 해당 Replica가 느리거나 장애 나면 문제
+     로드밸런싱 효과가 줄어듦
+```
+
+### 5. 쓰기 후 캐시 즉시 업데이트
+
+```java
+@Transactional
+public UserProfile updateProfile(Long userId, ProfileUpdateRequest request) {
+    UserProfile updated = primary.update(userId, request);
+    // Replica가 동기화되기 전에 캐시에 최신 값 저장
+    cache.put("user:" + userId, updated, Duration.ofSeconds(10));
+    return updated;
+}
+
+public UserProfile getProfile(Long userId) {
+    // 캐시에 있으면 캐시 반환 (최신 값)
+    return cache.get("user:" + userId)
+        .orElseGet(() -> replica.findById(userId));
+}
+```
+
+---
+
+## 마이크로서비스에서의 Read-Your-Writes
+
+이벤트 기반 시스템에서는 다른 서비스의 프로젝션(Read Model)이 최신 상태가 아닐 수 있다.
+
+```
+주문 서비스: 주문 생성 → OrderPlaced 이벤트 발행
+배송 서비스: 이벤트 수신 → 배송 레코드 생성
+
+문제: 주문 생성 직후 배송 상태를 조회하면 아직 생성 전
+```
+
+```java
+// 방법 1: 이벤트 처리 확인 후 응답
+public OrderResponse createOrder(OrderRequest request) {
+    String orderId = orderService.create(request);
+    waitUntilShippingCreated(orderId); // polling 또는 blocking
+    return new OrderResponse(orderId);
+}
+
+// 방법 2: 클라이언트에서 폴링
+// POST /orders → 202 Accepted + orderId
+// GET /shipping/order/{orderId} → 없으면 202 Pending, 있으면 200 OK
+```
+
+---
+
+## 언제 신경 쓰는가
+
+모든 시스템에서 Read-Your-Writes가 중요한 것은 아니다.
+
+```
+중요한 경우:
+  - 사용자가 방금 수정한 자신의 데이터를 바로 조회
+  - 결제/주문 후 즉시 상태 확인
+  - 소셜 미디어 게시글 작성 후 목록 확인
+
+덜 중요한 경우:
+  - 다른 사용자가 작성한 콘텐츠 조회
+  - 대시보드 통계 (약간의 지연 허용)
+  - 추천 피드
+```
+
+---
+
+Eventual Consistency는 "언젠가 일관성이 맞춰진다"는 뜻이지 사용자 경험을 무시해도 된다는 뜻이 아니다. Read-Your-Writes는 사용자가 자신의 행동 결과를 바로 볼 수 있게 하는 최소한의 일관성 보장이다. Primary 라우팅, 버전 추적, 캐시 선반영 중 서비스의 복잡도와 트래픽에 맞는 방법을 선택해야 한다.

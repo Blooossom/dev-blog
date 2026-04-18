@@ -1,0 +1,216 @@
+---
+title: Circuit Breaker — 장애 전파를 막는 설계 패턴
+date: '2026-04-19'
+category: Architecture
+tags:
+  - Circuit Breaker
+  - 서킷 브레이커
+  - 장애 격리
+  - Resilience4j
+  - 마이크로서비스
+summary: >-
+  외부 서비스가 느려지면 호출하는 쪽의 스레드가 쌓이고 전체 시스템이 다운된다. Circuit Breaker는 장애를 감지하고 빠르게 실패해 장애 전파를 막는 패턴이다.
+thumbnail: /thumbnails/circuit-breaker.svg
+---
+
+결제 서비스가 느려지면 주문 서비스도 느려진다. 주문 서비스가 느려지면 스레드가 쌓이고 결국 주문 서비스도 다운된다. 결제 서비스 하나의 문제가 전체 시스템을 무너뜨리는 것이 장애 전파(Cascading Failure)다.
+
+## 왜 장애가 전파되는가
+
+```
+결제 서비스 응답 지연 (timeout: 30초)
+
+주문 서비스 스레드 풀: 10개
+  → 요청 1: 결제 API 호출, 응답 대기 중
+  → 요청 2: 결제 API 호출, 응답 대기 중
+  → ...
+  → 요청 10: 결제 API 호출, 응답 대기 중
+  → 요청 11: 스레드 없음 → 대기 → 주문 서비스 응답 없음
+```
+
+외부 의존성이 느리면 자신의 리소스를 모두 소진하고 결국 서비스 자체가 마비된다.
+
+---
+
+## Circuit Breaker 상태
+
+전기 회로 차단기에서 이름을 따왔다. 이상 감지 시 회로를 끊어 전파를 막는 것과 같다.
+
+```
+         요청 실패율 임계치 초과
+Closed ──────────────────────────→ Open
+  ↑                                  │
+  │    복구 확인 성공                   │ 설정된 시간 경과
+  │                                  ↓
+  └────────────────────── Half-Open ←──
+                          (소수 요청만 통과)
+```
+
+### Closed (정상)
+
+모든 요청이 통과한다. 실패율을 추적하고, 임계치(예: 50%)를 넘으면 Open으로 전환한다.
+
+### Open (차단)
+
+모든 요청을 즉시 실패로 처리한다(fallback 실행). 외부 서비스 호출 없이 빠르게 응답한다.
+
+```
+클라이언트 → Circuit Breaker(Open) → 즉시 실패 반환 (외부 호출 안 함)
+```
+
+### Half-Open (복구 확인)
+
+Open 상태에서 일정 시간이 지나면 소수의 요청만 통과시켜 외부 서비스 복구 여부를 확인한다.
+- 성공: Closed로 전환
+- 실패: 다시 Open으로 전환
+
+---
+
+## Resilience4j 구현
+
+Spring Boot에서 가장 많이 쓰는 Circuit Breaker 라이브러리다.
+
+### 의존성
+
+```groovy
+implementation 'io.github.resilience4j:resilience4j-spring-boot3:2.2.0'
+implementation 'org.springframework.boot:spring-boot-starter-aop'
+```
+
+### 설정
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      paymentService:
+        # 슬라이딩 윈도우: 마지막 10번의 요청 기준
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+
+        # 실패율 50% 이상이면 Open
+        failure-rate-threshold: 50
+
+        # Open 상태 유지 시간
+        wait-duration-in-open-state: 10s
+
+        # Half-Open에서 통과시킬 요청 수
+        permitted-number-of-calls-in-half-open-state: 3
+
+        # 최소 호출 수 (이 이하면 판단 안 함)
+        minimum-number-of-calls: 5
+
+  retry:
+    instances:
+      paymentService:
+        max-attempts: 3
+        wait-duration: 500ms
+        retry-exceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+```
+
+### 서비스 코드
+
+```java
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+    private final PaymentClient paymentClient;
+
+    @CircuitBreaker(name = "paymentService", fallbackMethod = "paymentFallback")
+    @Retry(name = "paymentService")
+    public PaymentResult processPayment(OrderId orderId, Money amount) {
+        return paymentClient.charge(orderId, amount);
+    }
+
+    // 서킷 오픈 또는 예외 발생 시 호출되는 폴백
+    private PaymentResult paymentFallback(OrderId orderId, Money amount, Exception e) {
+        log.warn("Payment service unavailable, using fallback. orderId={}", orderId, e);
+        // 결제를 나중에 처리하기 위해 큐에 저장하거나
+        // 사용자에게 잠시 후 재시도 안내
+        return PaymentResult.deferred(orderId);
+    }
+}
+```
+
+### 상태 모니터링
+
+```java
+@Autowired
+CircuitBreakerRegistry registry;
+
+public CircuitBreakerStatus getStatus() {
+    CircuitBreaker cb = registry.circuitBreaker("paymentService");
+    return new CircuitBreakerStatus(
+        cb.getState().name(),
+        cb.getMetrics().getFailureRate(),
+        cb.getMetrics().getNumberOfBufferedCalls()
+    );
+}
+```
+
+---
+
+## Bulkhead 패턴과 함께
+
+Circuit Breaker만으로는 스레드 소진 문제를 완전히 막지 못한다. Bulkhead로 서비스별 스레드 풀을 격리한다.
+
+```yaml
+resilience4j:
+  bulkhead:
+    instances:
+      paymentService:
+        max-concurrent-calls: 10  # 동시 호출 최대 10개
+        max-wait-duration: 0ms    # 자리 없으면 즉시 실패
+
+  thread-pool-bulkhead:
+    instances:
+      paymentService:
+        max-thread-pool-size: 5
+        core-thread-pool-size: 3
+        queue-capacity: 10
+```
+
+```java
+@CircuitBreaker(name = "paymentService", fallbackMethod = "paymentFallback")
+@Bulkhead(name = "paymentService", type = Bulkhead.Type.THREADPOOL)
+public CompletableFuture<PaymentResult> processPaymentAsync(OrderId orderId, Money amount) {
+    return CompletableFuture.supplyAsync(() -> paymentClient.charge(orderId, amount));
+}
+```
+
+---
+
+## Fallback 전략
+
+| 상황 | 폴백 전략 |
+|------|-----------|
+| 읽기 API (상품 목록) | 캐시된 데이터 반환 |
+| 결제 | 큐에 저장 후 비동기 처리 |
+| 추천 | 기본값/인기 목록 반환 |
+| 필수 기능 | 에러 반환 + 사용자 안내 |
+
+폴백 없이 에러만 반환해도 빠른 실패는 장애 전파보다 낫다.
+
+---
+
+## 어디에 둘 것인가
+
+```
+서비스 내부:
+  외부 서비스 클라이언트에 Circuit Breaker 적용
+  → 세밀한 제어 가능
+
+API Gateway:
+  모든 업스트림 서비스에 일괄 적용
+  → 중앙화, 서비스 코드 단순화
+
+Service Mesh (Istio, Linkerd):
+  사이드카 프록시에서 처리
+  → 언어/프레임워크 무관
+```
+
+---
+
+Circuit Breaker의 핵심은 "느리게 실패하지 않고 빠르게 실패한다"는 것이다. 외부 서비스 장애를 빠르게 감지해 자신의 리소스를 보호하고, 폴백으로 최소한의 기능을 유지한다. Retry와 Bulkhead를 함께 구성하면 더 견고한 장애 격리가 가능하다.

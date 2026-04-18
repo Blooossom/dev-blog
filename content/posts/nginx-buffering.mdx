@@ -1,0 +1,167 @@
+---
+title: Nginx buffering — SSE와 스트리밍에서 왜 끄는가
+date: '2026-04-19'
+category: DevOps
+tags:
+  - Nginx
+  - buffering
+  - SSE
+  - 스트리밍
+  - proxy_buffering
+summary: >-
+  Nginx의 proxy_buffering은 기본적으로 켜져 있어 응답을 모아서 클라이언트에게 보낸다. SSE나 스트리밍 API에서는 이 설정이 실시간성을 망친다. buffering의 동작 원리와 상황별 설정법을 정리한다.
+thumbnail: /thumbnails/nginx-buffering.svg
+---
+
+Nginx는 백엔드 응답을 받아 클라이언트로 전달할 때 기본적으로 **버퍼링**을 한다. 대부분의 일반 HTTP 응답에서는 성능을 높여주지만, SSE(Server-Sent Events)나 스트리밍 응답에서는 데이터가 실시간으로 전달되지 않는 문제를 만든다.
+
+## proxy_buffering이 하는 일
+
+```
+버퍼링 ON (기본값):
+
+백엔드 → [Nginx 버퍼] → 응답 완성 → 클라이언트
+           (메모리/디스크에 쌓음)
+
+버퍼링 OFF:
+
+백엔드 → Nginx → 클라이언트 (받는 즉시 전달)
+```
+
+`proxy_buffering on`이면 Nginx가 백엔드에서 응답을 모두 받은 뒤 클라이언트에게 보낸다. 백엔드와의 연결을 빨리 끊고 다음 요청을 처리할 수 있어 **백엔드 커넥션 효율이 좋아진다.**
+
+---
+
+## 버퍼링이 문제가 되는 상황
+
+### SSE (Server-Sent Events)
+
+```
+백엔드가 event: message\ndata: hello\n\n 를 보냄
+
+버퍼링 ON → Nginx가 버퍼에 쌓음 → 연결이 닫히거나 버퍼가 찰 때 전달
+            → 클라이언트는 데이터를 실시간으로 받지 못함
+
+버퍼링 OFF → 즉시 클라이언트로 전달
+```
+
+### 대용량 파일 스트리밍 / 청크 응답
+
+응답 전체를 메모리에 올리면 Nginx 메모리가 부족해질 수 있다. 청크 단위로 바로 전달하는 것이 낫다.
+
+### AI 모델 스트리밍 응답
+
+ChatGPT처럼 토큰을 하나씩 스트리밍으로 내려주는 API. 버퍼링이 켜져 있으면 응답이 완성될 때까지 클라이언트에 아무것도 오지 않는다.
+
+---
+
+## Nginx 설정
+
+### SSE 엔드포인트에서 버퍼링 끄기
+
+```nginx
+server {
+    listen 80;
+
+    # 일반 API — 버퍼링 ON (기본값)
+    location /api/ {
+        proxy_pass http://backend;
+        proxy_buffering on;
+    }
+
+    # SSE 엔드포인트 — 버퍼링 OFF
+    location /api/stream {
+        proxy_pass http://backend;
+        proxy_buffering off;
+        proxy_cache off;
+
+        # SSE 필수 설정
+        proxy_set_header Connection '';
+        proxy_http_version 1.1;
+        chunked_transfer_encoding on;
+
+        # 타임아웃을 길게 (SSE는 연결이 오래 유지됨)
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+### 응답 헤더로 버퍼링 제어
+
+백엔드 애플리케이션에서 특정 응답에만 버퍼링을 끄고 싶다면, 응답 헤더로 Nginx에 지시할 수 있다.
+
+```
+백엔드 응답 헤더:
+X-Accel-Buffering: no
+```
+
+Spring에서:
+
+```java
+@GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public ResponseEntity<SseEmitter> stream() {
+    SseEmitter emitter = new SseEmitter(Long.MAX_VALUE);
+
+    HttpHeaders headers = new HttpHeaders();
+    headers.set("X-Accel-Buffering", "no");  // Nginx buffering 끄기
+    headers.set("Cache-Control", "no-cache");
+    headers.set("Connection", "keep-alive");
+
+    return ResponseEntity.ok().headers(headers).body(emitter);
+}
+```
+
+---
+
+## 버퍼 크기 조정
+
+버퍼링을 끄지 않고 크기를 조정해 성능을 튜닝할 수 있다.
+
+```nginx
+location /api/ {
+    proxy_pass http://backend;
+
+    # 버퍼 크기 설정
+    proxy_buffer_size          16k;   # 첫 번째 응답 헤더 버퍼
+    proxy_buffers              8 16k; # 본문 버퍼 (개수 × 크기)
+    proxy_busy_buffers_size    32k;   # 클라이언트로 전송 중인 버퍼 최대 크기
+
+    # 버퍼 초과 시 디스크로 내려쓰는 임시 파일 크기
+    proxy_max_temp_file_size   1024m;
+}
+```
+
+기본값은 `proxy_buffer_size 4k`, `proxy_buffers 8 4k`. 백엔드 응답이 크거나 헤더가 많을 때 `proxy_buffer_size`를 늘리면 `upstream sent invalid header` 에러를 방지할 수 있다.
+
+---
+
+## gzip과 버퍼링의 관계
+
+```nginx
+location /api/ {
+    proxy_pass http://backend;
+    gzip on;
+    gzip_min_length 1024;
+
+    # gzip은 버퍼링을 ON으로 해야 효율적으로 작동
+    # 버퍼링 OFF면 청크마다 압축해야 해서 비효율적
+    proxy_buffering on;
+}
+```
+
+SSE처럼 버퍼링을 꺼야 하는 엔드포인트에서는 gzip도 끄는 것이 안전하다.
+
+---
+
+## 정리
+
+| 상황 | proxy_buffering |
+|------|----------------|
+| 일반 JSON API 응답 | on (기본값) |
+| SSE, 스트리밍 | off |
+| 파일 다운로드 (대용량) | off 또는 버퍼 크기 증가 |
+| AI 토큰 스트리밍 | off |
+| gzip 압축 | on |
+
+Nginx의 `proxy_buffering`은 켜두는 것이 기본적으로 성능에 유리하다. 그러나 실시간 데이터 전달이 필요한 SSE나 스트리밍 API에서는 반드시 꺼야 한다. 전체를 끄기보다 `location` 블록별로 필요한 곳만 끄는 것이 올바른 전략이다.

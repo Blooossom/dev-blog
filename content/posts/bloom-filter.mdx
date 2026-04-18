@@ -1,0 +1,230 @@
+---
+title: Bloom Filter — 존재 여부를 O(1)로 확인하는 확률적 자료구조
+date: '2026-04-19'
+category: General
+tags:
+  - 블룸 필터
+  - Bloom Filter
+  - 자료구조
+  - 확률적 자료구조
+  - 캐시
+summary: >-
+  Bloom Filter는 집합에 원소가 있는지를 매우 빠르게 확인하는 확률적 자료구조다. false positive를 허용하는 대신 메모리를 극단적으로 아낀다. 원리와 실전 활용 사례를 정리한다.
+thumbnail: /thumbnails/bloom-filter.svg
+---
+
+"이 URL을 이전에 방문한 적 있는가?" 수억 개의 URL을 메모리에 HashSet으로 저장하면 수 GB가 필요하다. Bloom Filter는 수 MB로 비슷한 질문에 답한다.
+
+## 기본 원리
+
+Bloom Filter는 **비트 배열**과 **여러 개의 해시 함수**로 구성된다.
+
+```
+비트 배열: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  (크기 m)
+해시 함수: h1, h2, h3  (k개)
+```
+
+### 삽입
+
+"apple"을 추가할 때:
+
+```
+h1("apple") = 2 → 비트[2] = 1
+h2("apple") = 5 → 비트[5] = 1
+h3("apple") = 8 → 비트[8] = 1
+
+비트 배열: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0]
+```
+
+### 조회
+
+"apple"이 있는지 확인:
+
+```
+h1("apple") = 2 → 비트[2] = 1 ✓
+h2("apple") = 5 → 비트[5] = 1 ✓
+h3("apple") = 8 → 비트[8] = 1 ✓
+→ 있을 수도 있음 (possibly in set)
+```
+
+"banana"가 있는지 확인:
+
+```
+h1("banana") = 1 → 비트[1] = 0 ✗
+→ 확실히 없음 (definitely not in set)
+```
+
+---
+
+## false positive와 false negative
+
+Bloom Filter의 핵심 특성:
+
+```
+"있을 수도 있음" → false positive 가능
+"확실히 없음"    → 100% 없음 (false negative 없음)
+```
+
+| 결과 | 의미 | 정확도 |
+|------|------|--------|
+| "없음" | 100% 없다 | 완전 정확 |
+| "있음" | 있거나 없을 수 있다 | 일부 틀릴 수 있음 |
+
+false positive가 발생하는 이유: 다른 원소들이 채운 비트가 우연히 일치할 수 있다.
+
+---
+
+## false positive 확률 계산
+
+```
+m: 비트 배열 크기
+n: 삽입된 원소 수
+k: 해시 함수 개수
+
+false positive 확률 ≈ (1 - e^(-kn/m))^k
+```
+
+예시:
+
+```
+m = 1,000,000 비트 (약 125KB)
+n = 100,000 개 원소
+k = 7 개 해시 함수
+
+false positive 확률 ≈ 0.008 = 0.8%
+```
+
+HashSet으로 100,000개 URL(평균 50바이트)을 저장하면 약 5MB. Bloom Filter는 125KB로 0.8% 오탐율로 같은 기능을 제공한다.
+
+---
+
+## Java 구현 (기본)
+
+```java
+public class BloomFilter {
+    private final BitSet bitSet;
+    private final int size;
+    private final int hashCount;
+
+    public BloomFilter(int size, int hashCount) {
+        this.size = size;
+        this.hashCount = hashCount;
+        this.bitSet = new BitSet(size);
+    }
+
+    public void add(String item) {
+        for (int i = 0; i < hashCount; i++) {
+            int index = hash(item, i);
+            bitSet.set(index);
+        }
+    }
+
+    public boolean mightContain(String item) {
+        for (int i = 0; i < hashCount; i++) {
+            int index = hash(item, i);
+            if (!bitSet.get(index)) {
+                return false; // 확실히 없음
+            }
+        }
+        return true; // 있을 수도 있음
+    }
+
+    private int hash(String item, int seed) {
+        // MurmurHash 변형 (단순화)
+        int hash = item.hashCode() ^ (seed * 0x9e3779b9);
+        return Math.abs(hash % size);
+    }
+}
+```
+
+```java
+// 실무에서는 Guava 사용 권장
+import com.google.common.hash.BloomFilter;
+import com.google.common.hash.Funnels;
+
+BloomFilter<String> filter = BloomFilter.create(
+    Funnels.stringFunnel(Charset.UTF_8),
+    1_000_000,  // 예상 원소 수
+    0.01        // 목표 false positive 확률 1%
+);
+
+filter.put("apple");
+filter.mightContain("apple");  // true
+filter.mightContain("banana"); // false (또는 드물게 true)
+```
+
+---
+
+## 실전 활용 사례
+
+### 1. 캐시 관통 방지 (Cache Penetration)
+
+```
+문제: 존재하지 않는 키를 계속 요청 → 캐시 미스 → DB 매번 조회
+
+해결:
+  서비스 시작 시 모든 유효 키를 Bloom Filter에 로드
+  
+  요청 처리:
+    Bloom Filter: "없음" → DB 조회 없이 바로 404
+    Bloom Filter: "있을 수도" → 캐시/DB 조회
+```
+
+```java
+@Service
+public class ProductService {
+    private final BloomFilter<Long> productFilter;
+    private final ProductRepository productRepository;
+    private final RedisCache cache;
+
+    public Product findById(Long id) {
+        // Bloom Filter로 존재하지 않는 ID 조기 차단
+        if (!productFilter.mightContain(id)) {
+            return null; // DB 조회 없이 즉시 반환
+        }
+
+        return cache.get(id)
+            .orElseGet(() -> productRepository.findById(id).orElse(null));
+    }
+}
+```
+
+### 2. 크롤러 URL 중복 방지
+
+```
+수억 개의 URL을 방문했는지 추적
+HashSet: 수십 GB 메모리 필요
+Bloom Filter: 수백 MB로 충분, 오탐은 URL 중복 방문 (치명적이지 않음)
+```
+
+### 3. 이메일 스팸 필터
+
+```
+악성 이메일 주소 수억 개를 Bloom Filter에 저장
+수신 이메일 발신자가 "없음" → 스팸 아님 (100% 정확)
+"있을 수도" → 추가 검증 수행
+```
+
+### 4. HBase/Cassandra 읽기 최적화
+
+HBase, Cassandra, RocksDB는 내부적으로 Bloom Filter를 SSTable마다 보유한다. 특정 row가 SSTable에 없으면 디스크 읽기를 건너뛴다.
+
+---
+
+## Bloom Filter의 한계
+
+```
+삭제 불가: 비트를 0으로 되돌리면 다른 원소에도 영향
+  → Counting Bloom Filter로 부분 해결 (비트 대신 카운터 사용)
+
+크기 고정: 원소 수 증가에 따라 false positive 확률 증가
+  → Scalable Bloom Filter로 부분 해결
+
+false positive 존재
+  → 오탐이 치명적인 곳에는 사용 불가
+     (예: 결제 중복 방지 — 반드시 DB unique constraint 사용)
+```
+
+---
+
+Bloom Filter는 "절대 없음"을 보장할 수 있을 때 강력하다. false positive를 감수하고 "확실히 없는 것"을 빠르게 걸러내는 것이 핵심 가치다. 캐시 관통 방지, 크롤러 중복 체크, 대용량 집합 멤버십 확인 — 메모리 효율이 중요하고 오탐을 허용할 수 있는 모든 곳에 적합하다.

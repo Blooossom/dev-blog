@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1b2e"/>
+      <stop offset="100%" stop-color="#1a3d6b"/>
+    </linearGradient>
+    <linearGradient id="lf" x1="100%" y1="0%" x2="20%" y2="0%">
+      <stop offset="0%"   stop-color="#0d1b2e" stop-opacity="0"/>
+      <stop offset="55%"  stop-color="#0d1b2e" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#0d1b2e" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="bf" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#1a3d6b" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#0d1b2e" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Pattern -->
+  
+    <path d="M 702.4 309.0 A 182 182 0 0 1 1017.6 309.0"
+      fill="none" stroke="#60a5fa" stroke-width="18" stroke-linecap="round" stroke-opacity="0.1"/>
+    <path d="M 702.4 309.0 A 182 182 0 0 1 939.8 236.4"
+      fill="none" stroke="#60a5fa" stroke-width="18" stroke-linecap="round" stroke-opacity="0.38"/>
+    <line
+      x1="705.8" y1="311.0"
+      x2="728.4" y2="324.0"
+      stroke="#60a5fa" stroke-width="2.5"
+      stroke-opacity="0.5"/>
+<line
+      x1="727.7" y1="280.9"
+      x2="738.1" y2="290.3"
+      stroke="#60a5fa" stroke-width="1.5"
+      stroke-opacity="0.28"/>
+<line
+      x1="755.4" y1="256.0"
+      x2="763.6" y2="267.3"
+      stroke="#60a5fa" stroke-width="1.5"
+      stroke-opacity="0.28"/>
+<line
+      x1="787.6" y1="237.4"
+      x2="793.3" y2="250.2"
+      stroke="#60a5fa" stroke-width="1.5"
+      stroke-opacity="0.28"/>
+<line
+      x1="823.0" y1="225.9"
+      x2="825.9" y2="239.6"
+      stroke="#60a5fa" stroke-width="1.5"
+      stroke-opacity="0.28"/>
+<line
+      x1="860.0" y1="222.0"
+      x2="860.0" y2="248.0"
+      stroke="#60a5fa" stroke-width="2.5"
+      stroke-opacity="0.5"/>
+<line
+      x1="897.0" y1="225.9"
+      x2="894.1" y2="239.6"
+      stroke="#60a5fa" stroke-width="1.5"
+      stroke-opacity="0.28"/>
+<line
+      x1="932.4" y1="237.4"
+      x2="926.7" y2="250.2"
+      stroke="#60a5fa" stroke-width="1.5"
+      stroke-opacity="0.28"/>
+<line
+      x1="964.6" y1="256.0"
+      x2="956.4" y2="267.3"
+      stroke="#60a5fa" stroke-width="1.5"
+      stroke-opacity="0.28"/>
+<line
+      x1="992.3" y1="280.9"
+      x2="981.9" y2="290.3"
+      stroke="#60a5fa" stroke-width="1.5"
+      stroke-opacity="0.28"/>
+<line
+      x1="1014.2" y1="311.0"
+      x2="991.6" y2="324.0"
+      stroke="#60a5fa" stroke-width="2.5"
+      stroke-opacity="0.5"/>
+    <line x1="860" y1="400"
+          x2="926.6"
+          y2="263.4"
+      stroke="#60a5fa" stroke-width="4" stroke-linecap="round" stroke-opacity="0.7"/>
+    <circle cx="860" cy="400" r="14" fill="#60a5fa" fill-opacity="0.45"/>
+    <circle cx="860" cy="400" r="5" fill="#60a5fa" fill-opacity="0.9"/>
+  
+
+  <!-- Left & bottom fade overlays -->
+  <rect width="1200" height="630" fill="url(#lf)"/>
+  <rect width="1200" height="630" fill="url(#bf)"/>
+
+  <!-- Category badge -->
+  <rect x="60" y="52" width="88" height="32" rx="16"
+    fill="#60a5fa" fill-opacity="0.15"
+    stroke="#60a5fa" stroke-width="1" stroke-opacity="0.5"/>
+  <text x="74" y="73"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="13" font-weight="700" letter-spacing="2.5"
+    fill="#60a5fa" fill-opacity="0.95">DEVOPS</text>
+
+  <!-- Title -->
+  
+  <text x="60" y="516"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">Kubernetes readiness와</text>
+  <text x="60" y="556"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">liveness probe 제대로 설정하기</text>
+</svg>

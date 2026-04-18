@@ -1,0 +1,208 @@
+---
+title: Kubernetes readiness와 liveness probe 제대로 설정하기
+date: '2026-04-19'
+category: DevOps
+tags:
+  - Kubernetes
+  - probe
+  - readiness
+  - liveness
+  - 헬스체크
+summary: >-
+  readiness probe와 liveness probe를 잘못 설정하면 정상 Pod가 트래픽을 못 받거나, 멀쩡한 Pod가 계속 재시작된다. 두 probe의 차이와 올바른 설정 기준을 정리한다.
+thumbnail: /thumbnails/kubernetes-probe.svg
+---
+
+Kubernetes는 Pod가 정상인지 판단하기 위해 probe를 사용한다. readiness와 liveness는 이름이 비슷하지만 목적이 전혀 다르다. 잘못 설정하면 서비스 장애로 이어진다.
+
+## readiness probe vs liveness probe
+
+| | readiness probe | liveness probe |
+|---|---|---|
+| 목적 | **트래픽 수신 가능 여부** | **프로세스 재시작 필요 여부** |
+| 실패 시 동작 | Service 엔드포인트에서 제거 (Pod는 살아있음) | Pod 재시작 |
+| 사용 시점 | 앱이 요청을 받을 준비가 됐을 때 | 프로세스가 deadlock/hang 상태일 때 |
+
+```
+readiness 실패:
+  Pod ──X──→ Service (트래픽 차단)
+  Pod는 Running 상태 유지, 재시작 없음
+
+liveness 실패:
+  Pod 재시작 → 초기화 과정 반복
+```
+
+---
+
+## startup probe
+
+Java 앱처럼 기동 시간이 긴 경우, liveness probe가 기동 중에 실패해 Pod를 재시작하는 루프에 빠질 수 있다. 이를 막기 위한 것이 `startupProbe`다.
+
+```
+startupProbe가 성공할 때까지 liveness/readiness probe는 실행되지 않는다
+```
+
+---
+
+## 설정 예시
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: myapp:latest
+          ports:
+            - containerPort: 8080
+
+          # startup probe: 기동 완료까지 기다림
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            failureThreshold: 30   # 최대 30번 × 10초 = 300초 대기
+            periodSeconds: 10
+
+          # readiness probe: 트래픽 수신 가능 여부
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 0  # startup probe가 있으면 0으로
+            periodSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          # liveness probe: 재시작 필요 여부
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 5
+```
+
+---
+
+## Spring Boot Actuator 연동
+
+Spring Boot 2.3+는 liveness/readiness 상태를 별도로 제공한다.
+
+```yaml
+# application.yml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+```
+
+```
+GET /actuator/health/liveness
+{"status": "UP"}
+
+GET /actuator/health/readiness
+{"status": "UP"}  또는 {"status": "OUT_OF_SERVICE"}
+```
+
+Spring Boot는 다음 상황을 자동으로 반영한다.
+
+- **Liveness(UP)**: JVM이 정상 실행 중
+- **Readiness(OUT_OF_SERVICE)**: 앱이 초기화 중이거나, graceful shutdown 진행 중, 외부 의존성 연결 실패
+
+---
+
+## 흔한 잘못된 설정
+
+### 실수 1: liveness에 DB 헬스체크 포함
+
+```yaml
+# 잘못된 설정
+livenessProbe:
+  httpGet:
+    path: /actuator/health  # DB 포함한 전체 헬스체크
+```
+
+DB가 일시적으로 느려지거나 커넥션이 줄면 liveness 실패 → Pod 재시작. DB 문제인데 Pod만 반복해서 죽는다.
+
+```yaml
+# 올바른 설정
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness  # 앱 프로세스 자체만 확인
+```
+
+### 실수 2: initialDelaySeconds에만 의존
+
+```yaml
+# 취약한 설정
+livenessProbe:
+  httpGet:
+    path: /health
+  initialDelaySeconds: 60  # 60초면 충분하겠지
+```
+
+배포 환경에 따라 기동 시간이 달라진다. `startupProbe`로 동적으로 대기하는 것이 안전하다.
+
+### 실수 3: failureThreshold가 너무 낮음
+
+```yaml
+livenessProbe:
+  failureThreshold: 1  # 1번만 실패해도 재시작
+  periodSeconds: 5
+```
+
+일시적인 GC pause나 응답 지연으로 Pod가 반복 재시작될 수 있다. `failureThreshold: 3` 이상을 권장한다.
+
+### 실수 4: readiness와 liveness에 동일한 엔드포인트
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /health
+livenessProbe:
+  httpGet:
+    path: /health  # 동일한 엔드포인트
+```
+
+readiness가 실패할 때 liveness도 같이 실패해 불필요한 재시작이 발생할 수 있다.
+
+---
+
+## probe 타입
+
+```yaml
+# HTTP GET
+httpGet:
+  path: /health
+  port: 8080
+  httpHeaders:
+    - name: Authorization
+      value: Bearer token
+
+# TCP 소켓 연결 확인
+tcpSocket:
+  port: 8080
+
+# 명령 실행 (exit 0이면 성공)
+exec:
+  command:
+    - sh
+    - -c
+    - "redis-cli ping | grep -q PONG"
+```
+
+---
+
+readiness probe는 "이 Pod가 지금 트래픽을 받을 수 있는가", liveness probe는 "이 Pod를 재시작해야 하는가"에 답한다. 두 probe를 같은 엔드포인트로 연결하거나 liveness에 외부 의존성을 포함하면 장애 상황이 오히려 더 커진다. startup probe로 기동 시간을 확보하고, 각 probe의 목적에 맞는 엔드포인트를 분리하는 것이 핵심이다.

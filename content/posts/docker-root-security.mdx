@@ -1,0 +1,193 @@
+---
+title: 컨테이너를 root로 실행하면 안 되는 이유
+date: '2026-04-19'
+category: DevOps
+tags:
+  - Docker
+  - 컨테이너 보안
+  - Non-root
+  - Dockerfile
+  - 보안
+summary: >-
+  컨테이너를 root로 실행하면 컨테이너 탈출 시 호스트 전체가 위협받는다. USER 지시어로 non-root 사용자를 설정하는 방법과 권한 최소화 전략을 정리한다.
+thumbnail: /thumbnails/docker-root-security.svg
+---
+
+Docker 컨테이너 안에서 프로세스는 기본적으로 `root(uid=0)`로 실행된다. 컨테이너가 격리된 환경이라고 해도 root로 실행하는 것은 위험하다.
+
+## root로 실행하면 무슨 일이 생길까
+
+컨테이너는 네임스페이스와 cgroup으로 격리되지만, 커널은 호스트와 공유한다.
+
+```
+root 컨테이너 → 컨테이너 탈출 취약점 → 호스트 root 권한 획득
+```
+
+실제 위협 시나리오:
+
+```
+1. 컨테이너 내 앱에 원격 코드 실행(RCE) 취약점 존재
+2. 공격자가 컨테이너 안에서 root 셸 획득
+3. 마운트된 Docker 소켓 또는 커널 취약점으로 컨테이너 탈출
+4. 호스트 파일시스템 접근, 다른 컨테이너 탈취, 호스트 root 권한 행사
+```
+
+root가 아닌 일반 사용자로 실행하면 탈출에 성공해도 호스트에서의 권한이 제한된다.
+
+---
+
+## Dockerfile에서 non-root 설정
+
+### 기본 패턴
+
+```dockerfile
+FROM eclipse-temurin:21-jre
+
+# 그룹과 사용자 생성
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/sh --create-home appuser
+
+WORKDIR /app
+
+COPY --chown=appuser:appgroup target/app.jar app.jar
+
+# 사용자 전환
+USER appuser
+
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+### 빌드 단계만 root, 실행 단계는 non-root
+
+```dockerfile
+# 빌드 단계 (root 필요)
+FROM gradle:8-jdk21 AS builder
+WORKDIR /build
+COPY . .
+RUN gradle bootJar --no-daemon
+
+# 실행 단계 (non-root)
+FROM eclipse-temurin:21-jre
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --no-create-home appuser
+
+WORKDIR /app
+COPY --from=builder --chown=appuser:appgroup /build/build/libs/*.jar app.jar
+
+USER appuser
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+---
+
+## 포트 바인딩 문제
+
+1024번 미만 포트(`80`, `443`)를 바인딩하려면 리눅스에서 root 권한이 필요하다.
+
+```dockerfile
+# 8080 같은 높은 포트를 사용하면 non-root도 문제없다
+EXPOSE 8080
+
+# Nginx나 로드밸런서가 앞에서 80/443을 받고 8080으로 포워딩
+```
+
+컨테이너 내부에서는 8080을 쓰고, 외부에서 포트 매핑으로 해결한다.
+
+```bash
+docker run -p 80:8080 myapp  # 호스트 80 → 컨테이너 8080
+```
+
+---
+
+## 파일 권한 문제
+
+non-root로 전환하면 root 소유 파일을 쓸 수 없다.
+
+```dockerfile
+# 로그 디렉토리를 미리 생성하고 소유권 부여
+RUN mkdir -p /app/logs && chown -R appuser:appgroup /app/logs
+
+USER appuser
+```
+
+임시 파일이 필요한 경우:
+
+```dockerfile
+# tmpfs 마운트로 처리하거나
+# 쓰기 가능한 디렉토리를 미리 준비
+RUN mkdir -p /tmp/cache && chmod 777 /tmp/cache
+```
+
+---
+
+## Docker Compose에서 user 지정
+
+```yaml
+services:
+  app:
+    image: myapp:latest
+    user: "1001:1001"  # uid:gid
+    # 또는 Dockerfile에 USER가 있으면 생략 가능
+```
+
+---
+
+## 추가 보안 조치
+
+### read-only 파일시스템
+
+```yaml
+services:
+  app:
+    image: myapp:latest
+    read_only: true
+    tmpfs:
+      - /tmp          # 쓰기 필요한 경로는 tmpfs로
+      - /app/logs
+```
+
+### capabilities 제한
+
+```yaml
+services:
+  app:
+    image: myapp:latest
+    cap_drop:
+      - ALL           # 모든 Linux capability 제거
+    cap_add:
+      - NET_BIND_SERVICE  # 필요한 것만 추가
+```
+
+### seccomp 프로파일
+
+```yaml
+services:
+  app:
+    image: myapp:latest
+    security_opt:
+      - no-new-privileges:true  # 프로세스가 권한을 높이지 못하게
+      - seccomp:default         # 기본 seccomp 프로파일 적용
+```
+
+---
+
+## non-root 적용 확인
+
+```bash
+# 컨테이너 안에서 실행 중인 사용자 확인
+docker exec <container_id> whoami
+# appuser
+
+docker exec <container_id> id
+# uid=1001(appuser) gid=1001(appgroup)
+
+# 실행 중인 프로세스 확인
+docker top <container_id>
+# UID    PID   ...  CMD
+# 1001   1234  ...  java -jar app.jar
+```
+
+---
+
+컨테이너를 root로 실행하는 것은 불필요한 권한을 갖는 것이다. `USER` 지시어 한 줄과 파일 소유권 설정으로 공격 표면을 크게 줄일 수 있다. 컨테이너 보안의 시작은 최소 권한 원칙이다.

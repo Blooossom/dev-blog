@@ -1,0 +1,233 @@
+---
+title: 멱등성(Idempotency) — 결제와 주문 API에서 왜 중요한가
+date: '2026-04-19'
+category: Backend
+tags:
+  - 멱등성
+  - Idempotency
+  - API 설계
+  - 결제
+  - 분산 시스템
+summary: >-
+  멱등성은 같은 요청을 여러 번 보내도 결과가 동일한 성질이다. 네트워크 재시도가 발생하는 분산 시스템에서 결제·주문 API가 멱등성을 보장하지 않으면 중복 처리로 치명적인 문제가 생긴다.
+thumbnail: /thumbnails/idempotency.svg
+---
+
+네트워크는 신뢰할 수 없다. 클라이언트가 결제 요청을 보냈는데 응답이 오지 않으면 어떻게 해야 할까? 재시도를 하면 중복 결제가 발생할 수 있다. 하지 않으면 결제가 실패했는지 알 수 없다. 멱등성은 이 딜레마를 해결한다.
+
+## 멱등성이란
+
+```
+f(f(x)) = f(x)
+
+같은 연산을 여러 번 수행해도 결과가 동일하다
+```
+
+HTTP 메서드 관점에서:
+
+| 메서드 | 멱등성 | 이유 |
+|--------|--------|------|
+| GET | O | 조회는 상태를 바꾸지 않는다 |
+| PUT | O | 같은 데이터로 여러 번 업데이트해도 결과 동일 |
+| DELETE | O | 이미 삭제된 리소스를 또 삭제해도 결과 동일 |
+| POST | X | 호출마다 새 리소스 생성 가능 |
+| PATCH | X (일반적으로) | 증분 업데이트는 멱등하지 않을 수 있음 |
+
+POST가 멱등하지 않아도 **애플리케이션 레벨에서 멱등성을 구현**할 수 있다.
+
+---
+
+## 왜 필요한가
+
+분산 시스템에서는 다음 상황이 발생한다.
+
+```
+1. 클라이언트 → 서버: 결제 요청
+2. 서버: 결제 처리 완료
+3. 서버 → 클라이언트: 응답 (네트워크 오류로 유실)
+4. 클라이언트: 타임아웃 → 재시도
+5. 서버: 두 번째 결제 요청 처리 → 중복 결제 발생!
+```
+
+클라이언트 입장에서는 성공인지 실패인지 모르므로 재시도가 정상적인 행동이다. 서버가 멱등성을 보장하면 재시도해도 안전하다.
+
+---
+
+## Idempotency Key 패턴
+
+가장 일반적인 해결책이다. 클라이언트가 요청에 **고유 키**를 포함하고, 서버는 같은 키로 온 요청은 한 번만 처리한다.
+
+### 클라이언트 측
+
+```typescript
+const idempotencyKey = crypto.randomUUID(); // e.g., "550e8400-e29b-41d4-a716-446655440000"
+
+// 처음 요청
+const response = await fetch('/api/payments', {
+    method: 'POST',
+    headers: {
+        'Idempotency-Key': idempotencyKey,
+        'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ amount: 50000, method: 'card' }),
+});
+
+// 타임아웃 후 재시도 — 같은 키 사용
+if (!response.ok) {
+    const retryResponse = await fetch('/api/payments', {
+        method: 'POST',
+        headers: {
+            'Idempotency-Key': idempotencyKey, // 동일한 키
+        },
+        body: JSON.stringify({ amount: 50000, method: 'card' }),
+    });
+}
+```
+
+### 서버 측 구현 (Spring)
+
+```java
+@RestController
+@RequiredArgsConstructor
+public class PaymentController {
+    private final PaymentService paymentService;
+    private final IdempotencyStore idempotencyStore;
+
+    @PostMapping("/api/payments")
+    public ResponseEntity<PaymentResponse> pay(
+        @RequestHeader("Idempotency-Key") String idempotencyKey,
+        @RequestBody PaymentRequest request
+    ) {
+        // 이미 처리한 요청인지 확인
+        Optional<PaymentResponse> cached = idempotencyStore.get(idempotencyKey);
+        if (cached.isPresent()) {
+            return ResponseEntity.ok(cached.get()); // 캐싱된 응답 반환
+        }
+
+        // 처리 중 표시 (동시 요청 방지)
+        if (!idempotencyStore.markProcessing(idempotencyKey)) {
+            throw new ConflictException("동일 키로 요청이 처리 중입니다");
+        }
+
+        try {
+            PaymentResponse result = paymentService.process(request);
+            idempotencyStore.save(idempotencyKey, result, Duration.ofHours(24));
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            idempotencyStore.remove(idempotencyKey);
+            throw e;
+        }
+    }
+}
+```
+
+```java
+// Redis 기반 IdempotencyStore
+@Component
+@RequiredArgsConstructor
+public class RedisIdempotencyStore {
+    private final RedisTemplate<String, String> redisTemplate;
+    private final ObjectMapper objectMapper;
+
+    private static final String PREFIX = "idempotency:";
+
+    public Optional<PaymentResponse> get(String key) {
+        String value = redisTemplate.opsForValue().get(PREFIX + key);
+        if (value == null) return Optional.empty();
+        // JSON 역직렬화
+        return Optional.of(objectMapper.readValue(value, PaymentResponse.class));
+    }
+
+    public boolean markProcessing(String key) {
+        // SET NX PX — 처리 중 락 (30초)
+        Boolean set = redisTemplate.opsForValue()
+            .setIfAbsent(PREFIX + key + ":lock", "1", Duration.ofSeconds(30));
+        return Boolean.TRUE.equals(set);
+    }
+
+    public void save(String key, PaymentResponse response, Duration ttl) {
+        redisTemplate.opsForValue()
+            .set(PREFIX + key, objectMapper.writeValueAsString(response), ttl);
+        redisTemplate.delete(PREFIX + key + ":lock");
+    }
+}
+```
+
+---
+
+## DB 레벨에서의 멱등성
+
+Redis 없이 DB unique constraint로도 구현할 수 있다.
+
+```sql
+CREATE TABLE payments (
+    id          BIGINT PRIMARY KEY AUTO_INCREMENT,
+    idempotency_key VARCHAR(64) NOT NULL,
+    amount      INT NOT NULL,
+    status      VARCHAR(20) NOT NULL,
+    created_at  DATETIME NOT NULL,
+    UNIQUE KEY uk_idempotency_key (idempotency_key)
+);
+```
+
+```java
+public PaymentResponse process(String idempotencyKey, PaymentRequest request) {
+    try {
+        Payment payment = Payment.create(idempotencyKey, request);
+        paymentRepository.save(payment); // unique 위반 시 예외
+        externalPaymentGateway.charge(payment);
+        return PaymentResponse.from(payment);
+    } catch (DataIntegrityViolationException e) {
+        // 이미 처리된 요청 — 기존 결과 반환
+        return paymentRepository.findByIdempotencyKey(idempotencyKey)
+            .map(PaymentResponse::from)
+            .orElseThrow();
+    }
+}
+```
+
+---
+
+## 실제 사례
+
+Stripe, Kakao Pay 등 결제 API는 Idempotency Key를 명시적으로 요구한다.
+
+```
+Stripe API:
+POST /v1/charges
+Idempotency-Key: <UUID>
+
+같은 키로 24시간 내에 다시 요청하면:
+  → 동일한 결과를 반환 (실제 처리 없음)
+  → 응답에 Idempotent-Replayed: true 헤더 포함
+```
+
+---
+
+## 멱등성과 재시도 전략
+
+멱등성이 보장되면 안전하게 재시도할 수 있다.
+
+```java
+public <T> T withRetry(Supplier<T> operation, String idempotencyKey) {
+    int attempts = 0;
+    long delay = 1000; // 1초
+
+    while (attempts < 3) {
+        try {
+            return operation.get();
+        } catch (TimeoutException | NetworkException e) {
+            attempts++;
+            if (attempts == 3) throw e;
+
+            // 지수 백오프 + 지터
+            Thread.sleep(delay + random.nextLong(500));
+            delay *= 2;
+        }
+    }
+}
+```
+
+---
+
+멱등성은 "재시도해도 안전한 API"를 만드는 핵심이다. 결제·주문처럼 중복이 치명적인 API는 Idempotency Key로 서버 측 중복 방지를 보장해야 한다. Redis든 DB unique constraint든 핵심은 같다 — **같은 요청을 두 번 처리하지 않는다.**

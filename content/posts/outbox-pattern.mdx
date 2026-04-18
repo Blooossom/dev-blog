@@ -1,0 +1,245 @@
+---
+title: Outbox Pattern — DB 트랜잭션과 메시지 발행의 정합성
+date: '2026-04-19'
+category: Architecture
+tags:
+  - Outbox Pattern
+  - 메시지 큐
+  - 분산 시스템
+  - Kafka
+  - 트랜잭션
+  - CDC
+summary: >-
+  DB 업데이트와 메시지 발행을 하나의 트랜잭션으로 묶을 수 없어 정합성 문제가 생긴다. Outbox Pattern은 이 문제를 DB의 ACID를 이용해 해결하는 패턴이다.
+thumbnail: /thumbnails/outbox-pattern.svg
+---
+
+주문이 완료됐을 때 Kafka에 이벤트를 발행하려 한다. DB 저장과 Kafka 발행 사이에 서버가 죽으면 어떻게 될까?
+
+## 문제: 이중 쓰기의 불일치
+
+```java
+// 위험한 코드
+@Transactional
+public void placeOrder(OrderRequest request) {
+    Order order = orderRepository.save(Order.from(request)); // DB 저장
+    kafkaTemplate.send("order-events", OrderPlacedEvent.from(order)); // Kafka 발행
+}
+```
+
+트랜잭션 커밋 후 Kafka 발행 전에 서버가 죽으면:
+
+```
+상황 A: DB 저장 성공 → Kafka 발행 실패 → 이벤트 유실
+상황 B: @Transactional 안에서 Kafka 발행 → DB 롤백 → 이미 발행된 이벤트는 취소 불가
+```
+
+DB와 Kafka는 다른 시스템이므로 하나의 트랜잭션으로 묶을 수 없다(2PC를 제외하면).
+
+---
+
+## Outbox Pattern
+
+**DB에 이벤트를 함께 저장하고, 별도 프로세스가 DB를 읽어 메시지를 발행한다.**
+
+```
+┌─────────────────────────────────────────┐
+│  하나의 DB 트랜잭션                        │
+│  1. orders 테이블에 주문 저장               │
+│  2. outbox 테이블에 이벤트 저장             │
+└─────────────────────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────────┐
+│  Outbox Relay (별도 프로세스)              │
+│  outbox 테이블 폴링 또는 CDC               │
+│  → Kafka에 이벤트 발행                    │
+│  → 성공 시 outbox 레코드 처리완료 표시      │
+└─────────────────────────────────────────┘
+```
+
+DB의 ACID를 활용한다. 주문 저장과 이벤트 저장이 같은 트랜잭션이므로 둘 다 성공하거나 둘 다 실패한다.
+
+---
+
+## 구현
+
+### Outbox 테이블
+
+```sql
+CREATE TABLE outbox (
+    id              BIGINT PRIMARY KEY AUTO_INCREMENT,
+    aggregate_type  VARCHAR(50) NOT NULL,  -- 'Order', 'Payment' 등
+    aggregate_id    VARCHAR(100) NOT NULL,
+    event_type      VARCHAR(100) NOT NULL,
+    payload         JSON NOT NULL,
+    status          VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at    DATETIME,
+    INDEX idx_status_created (status, created_at)
+);
+```
+
+### 주문 서비스
+
+```java
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+    private final OrderRepository orderRepository;
+    private final OutboxRepository outboxRepository;
+
+    @Transactional
+    public Order placeOrder(OrderRequest request) {
+        // 1. 주문 저장
+        Order order = orderRepository.save(Order.from(request));
+
+        // 2. 이벤트를 outbox에 저장 (같은 트랜잭션)
+        Outbox event = Outbox.builder()
+            .aggregateType("Order")
+            .aggregateId(order.getId().toString())
+            .eventType("OrderPlaced")
+            .payload(objectMapper.writeValueAsString(OrderPlacedEvent.from(order)))
+            .status("PENDING")
+            .build();
+
+        outboxRepository.save(event);
+
+        return order;
+    }
+}
+```
+
+### Outbox Relay — 폴링 방식
+
+```java
+@Component
+@RequiredArgsConstructor
+public class OutboxRelay {
+    private final OutboxRepository outboxRepository;
+    private final KafkaTemplate<String, String> kafkaTemplate;
+
+    @Scheduled(fixedDelay = 1000)  // 1초마다 실행
+    @Transactional
+    public void relay() {
+        List<Outbox> pendingEvents = outboxRepository
+            .findTop100ByStatusOrderByCreatedAtAsc("PENDING");
+
+        for (Outbox event : pendingEvents) {
+            try {
+                kafkaTemplate.send(
+                    topicOf(event.getEventType()),
+                    event.getAggregateId(),
+                    event.getPayload()
+                ).get(); // 동기 완료 대기
+
+                event.markProcessed();
+                outboxRepository.save(event);
+            } catch (Exception e) {
+                // 실패 시 재시도 (다음 폴링에서 다시 처리)
+                log.error("Outbox relay failed: {}", event.getId(), e);
+            }
+        }
+    }
+}
+```
+
+---
+
+## CDC (Change Data Capture) 방식
+
+폴링은 지연이 있고 DB 부하를 만든다. CDC는 DB의 변경 로그(binlog, WAL)를 실시간으로 읽어 메시지를 발행한다.
+
+```
+MySQL binlog / PostgreSQL WAL
+        │
+        ▼
+   Debezium (CDC 커넥터)
+        │
+        ▼
+    Kafka Topic
+```
+
+```yaml
+# Debezium 커넥터 설정 (Docker Compose)
+connector:
+  name: outbox-connector
+  config:
+    connector.class: io.debezium.connector.mysql.MySqlConnector
+    database.hostname: mysql
+    database.port: 3306
+    database.user: debezium
+    database.server.name: myapp
+    table.include.list: myapp.outbox
+
+    # Outbox Event Router SMT
+    transforms: outbox
+    transforms.outbox.type: io.debezium.transforms.outbox.EventRouter
+    transforms.outbox.table.field.event.id: id
+    transforms.outbox.table.field.event.type: event_type
+    transforms.outbox.table.field.event.key: aggregate_id
+    transforms.outbox.table.field.event.payload: payload
+```
+
+CDC는 폴링 없이 실시간 발행이 가능하고, outbox 테이블을 영구 저장하지 않아도 된다(발행 후 삭제 가능).
+
+---
+
+## Spring Modulith의 내장 Outbox
+
+Spring Modulith는 Outbox Pattern을 프레임워크 레벨에서 지원한다.
+
+```java
+// 이벤트 정의
+public record OrderPlaced(String orderId, int amount) {}
+
+// 서비스에서 발행
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+    private final ApplicationEventPublisher events;
+
+    @Transactional
+    public void placeOrder(OrderRequest request) {
+        Order order = orderRepository.save(Order.from(request));
+        events.publishEvent(new OrderPlaced(order.getId().toString(), order.getAmount()));
+        // → Spring Modulith가 자동으로 outbox에 저장 후 비동기 발행
+    }
+}
+```
+
+```yaml
+# application.yml
+spring:
+  modulith:
+    events:
+      externalization:
+        enabled: true
+```
+
+---
+
+## 중복 발행과 at-least-once
+
+Outbox Relay가 발행에 성공했지만 처리완료 표시 전에 죽으면 같은 이벤트를 다시 발행할 수 있다.
+
+```
+→ at-least-once 보장 (최소 한 번은 발행)
+→ exactly-once가 필요하면 컨슈머가 idempotent하게 처리해야 한다
+```
+
+```java
+// 컨슈머 측 idempotency 처리
+@KafkaListener(topics = "order-events")
+public void handleOrderPlaced(OrderPlacedEvent event) {
+    if (processedEventRepository.existsByEventId(event.eventId())) {
+        return; // 이미 처리된 이벤트 무시
+    }
+    processedEventRepository.save(event.eventId());
+    // 실제 처리
+}
+```
+
+---
+
+Outbox Pattern은 DB 트랜잭션과 메시지 발행 사이의 정합성 문제를 DB 자체의 ACID로 해결한다. 구현은 단순하지만 신뢰성은 높다. CDC 기반으로 실시간성을 높이거나, Spring Modulith로 보일러플레이트를 줄일 수 있다. 이벤트 기반 아키텍처를 설계할 때 outbox는 빠질 수 없는 패턴이다.

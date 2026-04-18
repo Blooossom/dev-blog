@@ -1,0 +1,207 @@
+---
+title: 커서 기반 페이지네이션 — OFFSET의 한계와 keyset 방식
+date: '2026-04-19'
+category: Backend
+tags:
+  - 페이지네이션
+  - keyset pagination
+  - cursor
+  - OFFSET
+  - 성능 최적화
+  - SQL
+summary: >-
+  OFFSET 기반 페이지네이션은 데이터가 많아질수록 뒤 페이지가 느려지는 구조적 한계가 있다. keyset(커서) 기반 방식으로 어떻게 이 문제를 해결하는지 정리한다.
+thumbnail: /thumbnails/keyset-pagination.svg
+---
+
+"더보기" 버튼이나 무한 스크롤을 구현할 때 가장 먼저 떠오르는 방법이 `LIMIT/OFFSET`이다. 하지만 수백만 행이 쌓이면 뒤 페이지로 갈수록 쿼리가 느려진다.
+
+## OFFSET의 구조적 문제
+
+```sql
+SELECT * FROM posts ORDER BY created_at DESC LIMIT 20 OFFSET 1000000;
+```
+
+이 쿼리는 **1,000,020개 행을 읽은 뒤 앞의 1,000,000개를 버린다.** OFFSET은 건너뛰는 게 아니라 읽고 버리는 것이다.
+
+```
+OFFSET 실행 과정:
+  1. ORDER BY 기준으로 1,000,020개 정렬
+  2. 앞 1,000,000개 버림
+  3. 나머지 20개 반환
+
+→ 페이지 번호가 클수록 읽는 양이 선형으로 증가
+```
+
+인덱스가 있어도 정렬된 순서로 OFFSET 수만큼 스캔해야 한다.
+
+---
+
+## Keyset Pagination 원리
+
+마지막으로 읽은 행의 값을 기억해 다음 페이지의 시작점으로 사용한다.
+
+```sql
+-- 첫 페이지
+SELECT * FROM posts
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+
+-- 두 번째 페이지 (마지막 행의 created_at, id 기억)
+SELECT * FROM posts
+WHERE (created_at, id) < ('2026-04-01 12:00:00', 12345)
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+```
+
+```
+Keyset 실행 과정:
+  1. WHERE 조건으로 시작 지점 바로 탐색 (인덱스 사용)
+  2. 20개만 읽고 반환
+
+→ 페이지 번호와 무관하게 항상 O(log n) + 20개 읽기
+```
+
+---
+
+## id만 있는 단순한 경우
+
+```sql
+-- 첫 페이지
+SELECT * FROM posts ORDER BY id DESC LIMIT 20;
+-- 마지막 id: 980
+
+-- 두 번째 페이지
+SELECT * FROM posts WHERE id < 980 ORDER BY id DESC LIMIT 20;
+-- 마지막 id: 960
+
+-- 세 번째 페이지
+SELECT * FROM posts WHERE id < 960 ORDER BY id DESC LIMIT 20;
+```
+
+---
+
+## 복합 정렬 조건 처리
+
+`created_at` + `id` 복합 정렬 시 두 값을 모두 커서에 포함해야 한다.
+
+```sql
+-- Row Value Syntax (PostgreSQL, MySQL 8.0+)
+WHERE (created_at, id) < (?, ?)
+ORDER BY created_at DESC, id DESC
+
+-- 호환성이 필요한 경우 풀어서 작성
+WHERE created_at < ?
+   OR (created_at = ? AND id < ?)
+ORDER BY created_at DESC, id DESC
+```
+
+---
+
+## Spring Data JPA 구현
+
+```java
+public interface PostRepository extends JpaRepository<Post, Long> {
+
+    // 첫 페이지
+    List<Post> findTop20ByOrderByCreatedAtDescIdDesc();
+
+    // 다음 페이지
+    @Query("""
+        SELECT p FROM Post p
+        WHERE p.createdAt < :createdAt
+           OR (p.createdAt = :createdAt AND p.id < :id)
+        ORDER BY p.createdAt DESC, p.id DESC
+        LIMIT 20
+        """)
+    List<Post> findNextPage(
+        @Param("createdAt") LocalDateTime createdAt,
+        @Param("id") Long id
+    );
+}
+```
+
+```java
+@Service
+public class PostService {
+
+    public PostPage getPosts(String cursor) {
+        List<Post> posts;
+
+        if (cursor == null) {
+            posts = postRepository.findTop20ByOrderByCreatedAtDescIdDesc();
+        } else {
+            CursorValue cv = decodeCursor(cursor);
+            posts = postRepository.findNextPage(cv.createdAt(), cv.id());
+        }
+
+        String nextCursor = posts.size() < 20 ? null
+            : encodeCursor(posts.getLast().getCreatedAt(), posts.getLast().getId());
+
+        return new PostPage(posts, nextCursor);
+    }
+
+    // 커서 인코딩: "2026-04-01T12:00:00,12345" → Base64
+    private String encodeCursor(LocalDateTime createdAt, Long id) {
+        String raw = createdAt + "," + id;
+        return Base64.getUrlEncoder().encodeToString(raw.getBytes());
+    }
+
+    private CursorValue decodeCursor(String cursor) {
+        String raw = new String(Base64.getUrlDecoder().decode(cursor));
+        String[] parts = raw.split(",");
+        return new CursorValue(LocalDateTime.parse(parts[0]), Long.parseLong(parts[1]));
+    }
+}
+```
+
+---
+
+## API 응답 형식
+
+```json
+{
+  "data": [
+    { "id": 980, "title": "...", "createdAt": "2026-04-01T12:00:00" },
+    { "id": 979, "title": "...", "createdAt": "2026-04-01T11:55:00" },
+    "..."
+  ],
+  "nextCursor": "MjAyNi0wNC0wMVQxMTo1NTowMCw5Nzk=",
+  "hasNext": true
+}
+```
+
+`nextCursor`가 `null`이면 마지막 페이지다.
+
+---
+
+## 인덱스 설계
+
+keyset pagination의 성능은 인덱스에 달려 있다.
+
+```sql
+-- created_at + id 복합 인덱스 필수
+CREATE INDEX idx_posts_created_at_id ON posts (created_at DESC, id DESC);
+```
+
+```
+실행 계획 확인 (EXPLAIN):
+  type: range → 인덱스 범위 스캔 (좋음)
+  type: ALL   → 풀 테이블 스캔 (나쁨, 인덱스 확인 필요)
+```
+
+---
+
+## OFFSET vs Keyset 비교
+
+| | OFFSET | Keyset |
+|---|---|---|
+| 구현 난이도 | 쉬움 (페이지 번호) | 중간 (커서 관리) |
+| 대용량 성능 | 뒤 페이지일수록 느림 | 항상 일정 |
+| 페이지 번호 이동 | 가능 (3페이지 → 10페이지) | 불가 (순차만) |
+| 실시간 데이터 삽입 시 | 중복/누락 발생 가능 | 안정적 |
+| 적합한 곳 | 관리자 목록, 소량 데이터 | 무한 스크롤, 피드, 대용량 |
+
+---
+
+OFFSET은 구현하기 쉽지만 데이터가 쌓이면 성능이 무너진다. 무한 스크롤이나 "더보기" 방식의 피드라면 처음부터 keyset pagination을 사용하는 것이 옳다. 마지막으로 읽은 행의 값을 커서로 삼아 인덱스를 정확히 타도록 쿼리를 설계하는 것이 핵심이다.
