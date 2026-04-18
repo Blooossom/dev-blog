@@ -6,12 +6,12 @@ import Footer from '@/components/Footer'
 
 export const metadata: Metadata = {
   title: {
-    default: "Architect's Library",
-    template: "%s | Architect's Library",
+    default: "Developer's Library",
+    template: "%s | Developer's Library",
   },
   description: '개발과 아키텍처에 대한 생각을 기록하는 공간',
   openGraph: {
-    siteName: "Architect's Library",
+    siteName: "Developer's Library",
     locale: 'ko_KR',
     type: 'website',
   },

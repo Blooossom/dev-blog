@@ -8,7 +8,7 @@ export default function Footer() {
       <div className="max-w-5xl mx-auto px-6 lg:px-8 py-16 grid grid-cols-1 md:grid-cols-3 gap-12">
         <div>
           <p className="font-headline italic font-bold text-xl text-rose-900 mb-3">
-            Architect&#39;s Library
+            Developer&#39;s Library
           </p>
           <p className="font-body text-on-surface-variant text-sm leading-relaxed">
             개발과 아키텍처에 대한 생각을 기록하는 공간입니다.
@@ -53,7 +53,7 @@ export default function Footer() {
       </div>
       <div className="border-t border-outline-variant/20">
         <p className="max-w-5xl mx-auto px-6 lg:px-8 py-6 font-label text-xs text-stone-500">
-          © {new Date().getFullYear()} Architect&#39;s Library
+          © {new Date().getFullYear()} Developer&#39;s Library
         </p>
       </div>
     </footer>
