@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useState, useEffect } from 'react'
+import VisitorCount from './VisitorCount'
 
 const TAXONOMY = [
   {
@@ -147,7 +148,10 @@ export default function Sidebar() {
           })}
         </nav>
 
-        <div className="mt-auto pt-6 px-4">
+        <div className="mt-auto pt-6">
+          <VisitorCount />
+        </div>
+        <div className="px-4">
           <Link
             href="/"
             className="block w-full primary-gradient text-on-primary py-3 rounded-xl font-label font-bold text-xs tracking-widest uppercase text-center hover:opacity-90 transition-opacity"
