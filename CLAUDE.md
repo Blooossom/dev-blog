@@ -133,6 +133,26 @@ git push origin main
 
 ---
 
+## Codex 질문 리스트 기반 작성 규칙
+
+`~/Desktop/Codex_MD/fields/` 의 질문 리스트를 기반으로 글을 작성할 때는 **주제(포스트) 하나마다 별도 커밋**한다.
+
+```
+각 포스트 작성 후:
+  git add <해당 포스트 파일들>
+  git commit -m "feat: <주제> 포스트 추가"
+
+모든 포스트가 완료된 후:
+  썸네일 일괄 생성 → 검색 인덱스 갱신 → 빌드 검증
+  → 나머지 파일(thumbnails, search-index, generate-thumbnails.ts) 별도 커밋
+
+절대 여러 포스트를 한 커밋에 묶지 않는다.
+```
+
+또한 작성 완료한 주제는 해당 `fields/*.md` 파일에서 취소선 + `` `작성완료` `` 표시한다.
+
+---
+
 ## 기존 포스트 확인
 
 새 주제 작성 전 `content/posts/` 를 확인해 중복 여부를 먼저 체크한다.
