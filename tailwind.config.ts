@@ -58,9 +58,9 @@ const config: Config = {
         'inverse-primary': '#e3bebd',
       },
       fontFamily: {
-        headline: ['Noto Serif', 'serif'],
-        body: ['Manrope', 'sans-serif'],
-        label: ['Manrope', 'sans-serif'],
+        headline: ['GangwonEduAll', 'sans-serif'],
+        body: ['GangwonEduAll', 'sans-serif'],
+        label: ['GangwonEduAll', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
       },
       borderRadius: {
