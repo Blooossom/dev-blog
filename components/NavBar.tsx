@@ -21,8 +21,8 @@ export default function NavBar() {
   return (
     <nav className="fixed top-0 w-full z-50 glass-nav transition-colors duration-300 border-b border-outline-variant/10">
       <div className="max-w-screen-2xl mx-auto flex justify-between items-center px-8 py-4">
-        <Link href="/" className="text-2xl font-headline italic font-bold text-rose-900">
-          Developer&#39;s Library
+        <Link href="/" className="text-2xl font-headline font-bold text-rose-900">
+          개발자의 도서관
         </Link>
 
         {/* Desktop nav */}
