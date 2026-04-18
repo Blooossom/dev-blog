@@ -4,10 +4,10 @@ const CATEGORIES = ['Frontend', 'Backend', 'Architecture', 'DevOps', 'AI']
 
 export default function Footer() {
   return (
-    <footer className="bg-surface-container mt-32">
-      <div className="max-w-7xl mx-auto px-6 lg:px-8 py-16 grid grid-cols-1 md:grid-cols-3 gap-12">
+    <footer className="bg-stone-100 md:ml-64 mt-32">
+      <div className="max-w-5xl mx-auto px-6 lg:px-8 py-16 grid grid-cols-1 md:grid-cols-3 gap-12">
         <div>
-          <p className="font-headline font-black text-xl text-on-surface tracking-tighter mb-3">
+          <p className="font-headline italic font-bold text-xl text-rose-900 mb-3">
             Architect&#39;s Library
           </p>
           <p className="font-body text-on-surface-variant text-sm leading-relaxed">
@@ -24,7 +24,7 @@ export default function Footer() {
               <li key={cat}>
                 <Link
                   href={`/categories/${cat.toLowerCase()}`}
-                  className="font-body text-sm text-on-surface-variant hover:text-primary transition-colors"
+                  className="font-body text-sm text-stone-500 hover:text-rose-700 hover:underline decoration-rose-300 underline-offset-4 transition-all"
                 >
                   {cat}
                 </Link>
@@ -39,20 +39,20 @@ export default function Footer() {
           </p>
           <ul className="space-y-2">
             <li>
-              <Link href="/about" className="font-body text-sm text-on-surface-variant hover:text-primary transition-colors">
+              <Link href="/about" className="font-body text-sm text-stone-500 hover:text-rose-700 hover:underline decoration-rose-300 underline-offset-4 transition-all">
                 About
               </Link>
             </li>
             <li>
-              <Link href="/search" className="font-body text-sm text-on-surface-variant hover:text-primary transition-colors">
+              <Link href="/search" className="font-body text-sm text-stone-500 hover:text-rose-700 hover:underline decoration-rose-300 underline-offset-4 transition-all">
                 Search
               </Link>
             </li>
           </ul>
         </div>
       </div>
-      <div className="bg-surface-container-high">
-        <p className="max-w-7xl mx-auto px-6 lg:px-8 py-6 font-label text-xs text-on-surface-variant">
+      <div className="border-t border-outline-variant/20">
+        <p className="max-w-5xl mx-auto px-6 lg:px-8 py-6 font-label text-xs text-stone-500">
           © {new Date().getFullYear()} Architect&#39;s Library
         </p>
       </div>

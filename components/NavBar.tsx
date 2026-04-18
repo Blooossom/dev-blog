@@ -26,8 +26,8 @@ export default function NavBar() {
   const linkClass = (href: string) =>
     `transition-colors duration-200 ${
       isActive(href)
-        ? 'text-primary font-extrabold'
-        : 'text-on-surface-variant hover:text-primary'
+        ? 'text-rose-900 font-bold border-b-2 border-rose-800 pb-0.5'
+        : 'text-stone-500 hover:text-rose-700'
     }`
 
   const isTopicsActive = CATEGORIES.some((c) => pathname.startsWith(c.href))
@@ -47,7 +47,7 @@ export default function NavBar() {
       <div className="max-w-7xl mx-auto flex justify-between items-center px-6 lg:px-8 py-5">
         <Link
           href="/"
-          className="text-2xl font-black text-on-surface tracking-tighter font-headline"
+          className="text-2xl font-headline italic font-bold text-rose-900"
         >
           Architect&#39;s Library
         </Link>
@@ -64,8 +64,8 @@ export default function NavBar() {
               onClick={() => setTopicsOpen((prev) => !prev)}
               className={`flex items-center gap-1 transition-colors duration-200 ${
                 isTopicsActive
-                  ? 'text-primary font-extrabold'
-                  : 'text-on-surface-variant hover:text-primary'
+                  ? 'text-rose-900 font-bold'
+                  : 'text-stone-500 hover:text-rose-700'
               }`}
             >
               Topics

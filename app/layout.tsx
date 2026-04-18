@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import '@/styles/globals.css'
 import NavBar from '@/components/NavBar'
+import Sidebar from '@/components/Sidebar'
 import Footer from '@/components/Footer'
 
 export const metadata: Metadata = {
@@ -21,7 +22,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="ko">
       <body className="bg-background text-on-surface font-body min-h-screen flex flex-col">
         <NavBar />
-        <main className="flex-1 pt-24">{children}</main>
+        <Sidebar />
+        <main className="flex-1 pt-24 md:ml-64">{children}</main>
         <Footer />
       </body>
     </html>

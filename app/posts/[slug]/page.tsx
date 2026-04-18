@@ -52,35 +52,89 @@ export default async function PostPage({ params }: Props) {
   }
 
   return (
-    <article className="max-w-3xl mx-auto px-6 lg:px-8 py-12">
-      <header className="mb-12">
-        <div className="flex items-center gap-3 mb-5">
-          <span className="font-label font-bold text-xs tracking-widest text-primary uppercase">
-            {post.category}
-          </span>
-          <span className="h-px w-8 bg-outline-variant/40" />
-          <span className="font-label text-xs text-on-surface-variant uppercase tracking-widest">
-            {post.readingTime} min read
-          </span>
-        </div>
-        <h1 className="font-headline text-4xl lg:text-6xl font-extrabold tracking-tighter text-on-surface leading-tight mb-6">
-          {post.title}
-        </h1>
-        <p className="font-body text-xl text-on-surface-variant italic leading-relaxed mb-8">
-          {post.summary}
-        </p>
-        <time className="font-label text-sm text-on-surface-variant">
-          {new Date(post.date).toLocaleDateString('ko-KR', {
-            year: 'numeric', month: 'long', day: 'numeric',
-          })}
-        </time>
-      </header>
+    <div className="max-w-6xl mx-auto px-6 lg:px-8 py-12">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
+        {/* Article */}
+        <article className="lg:col-span-9">
+          <header className="mb-12">
+            <div className="flex items-center gap-3 mb-5">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-primary px-2 py-1 bg-primary-fixed rounded">
+                {post.category}
+              </span>
+              <span className="font-label text-xs text-stone-500 uppercase tracking-widest">
+                {post.readingTime} min read
+              </span>
+            </div>
+            <h1 className="font-headline text-4xl lg:text-5xl font-bold tracking-tight text-on-surface leading-tight mb-6">
+              {post.title}
+            </h1>
+            <p className="font-body text-xl text-on-surface-variant leading-relaxed mb-8">
+              {post.summary}
+            </p>
+            <time className="font-label text-sm text-stone-500">
+              {new Date(post.date).toLocaleDateString('ko-KR', {
+                year: 'numeric', month: 'long', day: 'numeric',
+              })}
+            </time>
+          </header>
 
-      <div className="prose prose-stone max-w-none font-body leading-relaxed">
-        <MDXRemote source={content} options={{ mdxOptions: { remarkPlugins: [remarkGfm] } }} />
+          <div className="prose prose-stone max-w-none font-body leading-relaxed
+            prose-headings:font-headline prose-headings:font-bold prose-headings:tracking-tight
+            prose-a:text-primary prose-a:no-underline hover:prose-a:underline
+            prose-code:font-mono prose-code:text-sm
+            prose-pre:bg-surface-container-highest prose-pre:rounded-xl">
+            <MDXRemote source={content} options={{ mdxOptions: { remarkPlugins: [remarkGfm] } }} />
+          </div>
+
+          <Comments />
+        </article>
+
+        {/* Sidebar: post metadata */}
+        <aside className="hidden lg:block lg:col-span-3">
+          <div className="sticky top-28 space-y-6">
+            <div className="bg-surface-container-low rounded-xl p-6">
+              <p className="font-label font-bold text-xs uppercase tracking-widest text-on-surface-variant mb-3">
+                About this post
+              </p>
+              <div className="space-y-3 text-sm">
+                <div>
+                  <p className="text-xs text-stone-400 uppercase tracking-wider mb-1">Category</p>
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-primary px-2 py-1 bg-primary-fixed rounded">
+                    {post.category}
+                  </span>
+                </div>
+                <div>
+                  <p className="text-xs text-stone-400 uppercase tracking-wider mb-1">Reading Time</p>
+                  <p className="font-semibold text-on-surface">{post.readingTime} min</p>
+                </div>
+                <div>
+                  <p className="text-xs text-stone-400 uppercase tracking-wider mb-1">Published</p>
+                  <p className="font-semibold text-on-surface">
+                    {new Date(post.date).toLocaleDateString('ko-KR', {
+                      year: 'numeric', month: 'long', day: 'numeric',
+                    })}
+                  </p>
+                </div>
+                {post.tags.length > 0 && (
+                  <div>
+                    <p className="text-xs text-stone-400 uppercase tracking-wider mb-2">Tags</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {post.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="text-[10px] px-2 py-1 bg-surface-container rounded text-on-surface-variant font-medium"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </aside>
       </div>
-
-      <Comments />
-    </article>
+    </div>
   )
 }
