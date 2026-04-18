@@ -1,0 +1,458 @@
+---
+title: Claude 토큰 절약 전략 — 비용과 속도를 동시에 잡는 법
+date: '2026-04-18'
+category: AI
+tags:
+  - Claude
+  - 토큰 최적화
+  - Anthropic API
+  - 프롬프트 엔지니어링
+  - 비용 절감
+summary: >-
+  Claude API 비용은 토큰 수에 비례한다. 프롬프트 압축, 캐싱, 모델 선택, 출력 제어까지 실제로 토큰을 아끼는 방법들을 구체적인 예시와 함께 정리한다.
+thumbnail: /thumbnails/claude-token-optimization.svg
+---
+
+Claude API를 사용하다 보면 청구서를 보고 놀라는 순간이 온다. 토큰은 입력과 출력 모두에서 소비되고, 시스템 프롬프트가 길면 모든 요청마다 그 비용이 곱해진다. 프롬프트 설계 하나로 같은 결과를 절반의 비용으로 얻을 수 있다.
+
+## 토큰 기본 이해
+
+```
+1 토큰 ≈ 영어 단어 0.75개, 한국어 글자 0.5~1개
+
+"Hello, how are you?" → 약 5토큰
+"안녕하세요, 잘 지내세요?" → 약 10~14토큰
+
+비용 발생 위치:
+  Input tokens:  시스템 프롬프트 + 대화 기록 + 사용자 메시지
+  Output tokens: Claude의 응답 (input보다 3~5배 비싼 경우 많음)
+```
+
+Claude 3.5 Sonnet 기준 output이 input보다 약 3배 비싸다. **출력을 줄이는 것이 가장 효과적이다.**
+
+---
+
+## 1. 모델을 용도에 맞게 선택
+
+가장 빠르고 확실한 절약법이다. 모든 작업에 최고 모델을 쓸 필요가 없다.
+
+```
+Claude 3.5 Haiku   → 단순 분류, 요약, 추출, 번역
+                     빠르고 저렴, 간단한 작업에 충분
+
+Claude 3.5 Sonnet  → 코드 생성, 분석, 복잡한 추론
+                     성능과 비용의 균형점
+
+Claude 3 Opus      → 복잡한 전략 수립, 고난이도 연구
+                     가장 비쌈, 정말 필요할 때만
+```
+
+```python
+# 라우팅 패턴: 작업 복잡도에 따라 모델 선택
+def get_model(task_type: str) -> str:
+    simple_tasks = {"classify", "extract", "translate", "summarize"}
+    complex_tasks = {"analyze", "reason", "generate_code", "research"}
+
+    if task_type in simple_tasks:
+        return "claude-haiku-4-5-20251001"      # 저렴
+    elif task_type in complex_tasks:
+        return "claude-sonnet-4-6"              # 균형
+    else:
+        return "claude-opus-4-6"                # 고품질 필요 시
+```
+
+---
+
+## 2. 시스템 프롬프트 압축
+
+시스템 프롬프트는 **모든 요청마다** input token으로 소비된다. 100줄 시스템 프롬프트는 하루 1만 요청이면 100만 줄 분량의 토큰이 된다.
+
+### 불필요한 설명 제거
+
+```
+❌ 길고 중복된 시스템 프롬프트
+"당신은 친절하고 도움이 되는 고객 서비스 담당자입니다.
+고객의 질문에 항상 정중하게 답변해야 합니다.
+고객이 무례하게 굴더라도 항상 친절하게 대응해야 합니다.
+모든 답변은 공손한 어조로 작성해야 하며, 고객의 문제를
+해결하기 위해 최선을 다해야 합니다. 고객의 만족을 최우선으로
+생각하며, 가능한 한 빠르고 정확한 답변을 제공해야 합니다."
+
+✅ 압축된 시스템 프롬프트
+"고객 서비스 담당자. 항상 친절하고 간결하게 답변."
+```
+
+### 구조화된 형식 사용
+
+산문보다 구조화된 형식이 같은 정보를 더 적은 토큰으로 전달한다.
+
+```
+❌ 산문형
+"당신은 코드 리뷰어입니다. 코드를 검토할 때 버그, 성능,
+보안 세 가지 관점에서 분석하고, 각 문제를 심각도에 따라
+Critical, Warning, Info로 분류해야 합니다."
+
+✅ 구조형
+역할: 코드 리뷰어
+분석 관점: 버그, 성능, 보안
+분류: Critical/Warning/Info
+```
+
+---
+
+## 3. 프롬프트 캐싱 (Prompt Caching)
+
+Anthropic API의 **Prompt Caching** 기능을 사용하면 반복되는 컨텍스트(시스템 프롬프트, 긴 문서)를 서버에 캐싱해 재사용한다. 캐시 히트 시 input token 비용이 **90% 절감**된다.
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+# 긴 문서를 캐싱 대상으로 표시
+response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    system=[
+        {
+            "type": "text",
+            "text": "당신은 문서 분석 전문가입니다.",
+        },
+        {
+            "type": "text",
+            "text": long_document,   # 수만 토큰짜리 문서
+            "cache_control": {"type": "ephemeral"},  # 캐싱 지정
+        },
+    ],
+    messages=[{"role": "user", "content": "이 문서의 핵심 주장 3가지는?"}],
+)
+```
+
+```
+캐싱 효과:
+  첫 번째 요청: 전체 토큰 비용 + 캐시 저장 비용(약 25% 추가)
+  이후 요청:    캐시 히트 → 90% 비용 절감
+
+적합한 대상:
+  - 긴 시스템 프롬프트 (5000토큰 이상)
+  - RAG의 참조 문서
+  - 코드베이스 분석 시 전체 파일
+  - 반복 사용되는 예시(Few-shot)
+```
+
+캐시 유효 시간은 약 5분이며, TTL 리셋은 마지막 히트로부터 5분이다.
+
+---
+
+## 4. 출력 길이 제어
+
+output token이 비싸므로 응답 형식을 명시적으로 제한한다.
+
+### max_tokens 설정
+
+```python
+# 필요한 길이보다 여유 있게 설정하되 무한정 열어두지 않는다
+response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=256,   # 짧은 답변이 필요한 경우 명시
+    messages=[...]
+)
+```
+
+### 프롬프트로 출력 형식 제한
+
+```
+❌ 열린 질문
+"이 코드의 문제점을 설명해줘"
+→ Claude가 장문으로 설명할 수 있음
+
+✅ 형식 지정
+"이 코드의 문제점을 JSON 배열로 반환해. 각 항목은 {issue, severity} 형식."
+→ 구조화된 짧은 응답
+```
+
+```
+❌ 서론·결론 포함
+"안녕하세요! 질문 주셨군요. 이 코드를 분석해보겠습니다.
+먼저... [본론] ...이상으로 분석을 마칩니다."
+
+✅ 바로 본론만
+프롬프트에 추가: "서론, 인사말, 결론 없이 바로 답변만."
+```
+
+### 구조화된 출력 요청
+
+JSON처럼 파싱 가능한 형식은 자연어 설명보다 훨씬 짧다.
+
+```python
+# 자연어 응답 → 불필요한 토큰 포함
+# "이 텍스트의 감정은 긍정적입니다. 신뢰도는 높으며..."
+
+# JSON 응답 → 필요한 정보만
+prompt = """
+텍스트의 감정을 분석해줘. 반드시 아래 JSON만 반환:
+{"sentiment": "positive|negative|neutral", "confidence": 0.0~1.0}
+
+텍스트: {text}
+"""
+```
+
+---
+
+## 5. 대화 기록 관리
+
+멀티턴 대화에서 전체 기록을 매번 보내면 토큰이 눈덩이처럼 불어난다.
+
+### 슬라이딩 윈도우
+
+```python
+def trim_messages(messages: list, max_tokens: int = 4000) -> list:
+    """최근 N개 메시지만 유지"""
+    total = 0
+    result = []
+
+    for msg in reversed(messages):
+        # 대략적인 토큰 수 추정 (정확한 계산은 tiktoken 등 사용)
+        estimated = len(msg["content"]) // 4
+        if total + estimated > max_tokens:
+            break
+        result.insert(0, msg)
+        total += estimated
+
+    return result
+
+# 사용
+trimmed = trim_messages(conversation_history, max_tokens=4000)
+response = client.messages.create(
+    messages=trimmed,
+    ...
+)
+```
+
+### 대화 요약
+
+긴 대화는 중간에 요약으로 압축한다.
+
+```python
+def summarize_conversation(messages: list) -> str:
+    """오래된 대화를 요약으로 압축"""
+    summary_prompt = f"""
+다음 대화를 3~5문장으로 요약해. 중요한 결정, 맥락, 합의 사항만 포함:
+
+{format_messages(messages)}
+"""
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",  # 요약엔 저렴한 모델
+        max_tokens=200,
+        messages=[{"role": "user", "content": summary_prompt}]
+    )
+    return response.content[0].text
+
+# 20턴 이상 쌓이면 앞 부분 요약
+if len(messages) > 20:
+    old_messages = messages[:-10]
+    recent_messages = messages[-10:]
+    summary = summarize_conversation(old_messages)
+
+    messages = [
+        {"role": "user", "content": f"[이전 대화 요약]\n{summary}"},
+        {"role": "assistant", "content": "이전 맥락을 파악했습니다."},
+        *recent_messages
+    ]
+```
+
+---
+
+## 6. Few-shot 예시 최적화
+
+Few-shot 예시는 토큰을 많이 소비하지만 품질을 높인다. 균형을 찾는다.
+
+```
+❌ 불필요하게 많은 예시
+예시 1: ...
+예시 2: ...
+예시 3: ...
+예시 4: ...  ← 3개로도 충분한 경우가 대부분
+
+✅ 핵심 예시만
+- 모델이 헷갈리는 엣지 케이스 위주로 선택
+- 1~3개로 충분한 경우가 많음
+- 예시 대신 명확한 규칙 명세로 대체 가능한지 먼저 시도
+```
+
+### 예시를 캐싱 대상으로 지정
+
+```python
+system = [
+    {"type": "text", "text": "분류 기준: ..."},
+    {
+        "type": "text",
+        "text": few_shot_examples,   # 예시는 고정이므로 캐싱 효과 큼
+        "cache_control": {"type": "ephemeral"},
+    },
+]
+```
+
+---
+
+## 7. 배치 처리 (Batch API)
+
+실시간 응답이 필요 없는 작업은 Batch API를 사용하면 **50% 비용 절감**된다.
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+# 여러 요청을 한 번에 묶어서 전송
+requests = [
+    {
+        "custom_id": f"req-{i}",
+        "params": {
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 100,
+            "messages": [
+                {"role": "user", "content": f"'{text}'의 감정을 positive/negative/neutral 중 하나로만 답해."}
+            ],
+        },
+    }
+    for i, text in enumerate(texts_to_analyze)
+]
+
+batch = client.messages.batches.create(requests=requests)
+
+# 결과는 수분~수시간 후 비동기 수신
+print(f"Batch ID: {batch.id}")
+```
+
+```
+Batch API 적합한 작업:
+  - 대량 데이터 분류·분석
+  - 오프라인 리포트 생성
+  - 데이터 전처리 파이프라인
+  - 야간 배치 작업
+```
+
+---
+
+## 8. 불필요한 컨텍스트 제거
+
+### 코드 분석 시 관련 파일만
+
+```
+❌ 프로젝트 전체 코드 첨부
+"이 함수의 버그를 찾아줘" + 200개 파일
+
+✅ 관련 파일만 첨부
+버그가 있는 함수 + 직접 호출하는 파일 1~2개
+```
+
+### RAG에서 청크 크기 조절
+
+```python
+# 너무 큰 청크 → 불필요한 내용까지 포함
+# 너무 작은 청크 → 맥락 부족
+
+# 적절한 청크: 200~500토큰
+# 검색 결과: 상위 3~5개만 전달 (10개 전부 X)
+
+relevant_chunks = vector_db.search(query, top_k=3)  # 3개로 제한
+context = "\n\n".join(chunk.text for chunk in relevant_chunks)
+```
+
+---
+
+## 9. 응답 스트리밍의 역할
+
+스트리밍은 토큰을 절약하지 않지만 **UX를 개선**해 실제 필요한 시점에 응답을 중단할 수 있다.
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+with client.messages.stream(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "긴 보고서 작성해줘"}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+
+        # 필요한 정보를 얻었으면 중단 가능
+        if "원하는 키워드" in text:
+            break  # 불필요한 나머지 생성 중단
+```
+
+---
+
+## 10. 토큰 사용량 모니터링
+
+최적화는 측정에서 시작한다.
+
+```python
+response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": prompt}],
+)
+
+# 사용량 추적
+usage = response.usage
+print(f"Input: {usage.input_tokens}")
+print(f"Output: {usage.output_tokens}")
+print(f"Cache read: {getattr(usage, 'cache_read_input_tokens', 0)}")
+print(f"Cache write: {getattr(usage, 'cache_creation_input_tokens', 0)}")
+
+# 비용 계산 (Sonnet 기준, 가격은 변동 가능)
+INPUT_PRICE  = 3.0   # $3 / 1M tokens
+OUTPUT_PRICE = 15.0  # $15 / 1M tokens
+CACHE_PRICE  = 0.3   # $0.30 / 1M tokens (캐시 히트)
+
+cost = (
+    usage.input_tokens * INPUT_PRICE / 1_000_000
+    + usage.output_tokens * OUTPUT_PRICE / 1_000_000
+)
+print(f"Estimated cost: ${cost:.6f}")
+```
+
+---
+
+## 전략 선택 가이드
+
+```
+즉시 적용, 효과 큼
+  ✓ 모델 다운그레이드 (Sonnet → Haiku)
+  ✓ max_tokens 명시
+  ✓ 출력 형식 지정 (JSON, 간결한 답변)
+  ✓ 시스템 프롬프트 압축
+
+설정 한 번, 지속 효과
+  ✓ Prompt Caching (시스템 프롬프트, 문서)
+  ✓ 대화 기록 슬라이딩 윈도우
+
+비동기 작업에 한해
+  ✓ Batch API (50% 절감)
+
+RAG / 장기 프로젝트
+  ✓ 청크 크기 최적화
+  ✓ 대화 요약 압축
+```
+
+---
+
+## 절약 효과 비교
+
+```
+기본 설정으로 1만 요청:
+  시스템 프롬프트 500토큰 × 10,000 = 5,000,000 input tokens
+
+최적화 후:
+  시스템 프롬프트 압축 → 150토큰 (70% 감소)
+  Prompt Caching 적용 → 캐시 히트 시 90% 비용 절감
+  모델 Haiku 전환     → Sonnet 대비 약 80% 절감
+
+세 가지 적용 시 비용이 원래의 1~3% 수준까지 줄어들 수 있다.
+```
+
+토큰 최적화는 "적게 보내고, 적게 받자"는 단순한 원칙에서 시작한다. 시스템 프롬프트 압축과 모델 선택만으로도 비용의 절반 이상이 줄어드는 경우가 많다. 캐싱과 배치 API는 그 위에 얹는 추가 최적화다.
