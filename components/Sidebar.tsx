@@ -104,7 +104,6 @@ export default function Sidebar() {
                         : 'text-on-surface-variant hover:bg-surface-container-low'
                     }`}
                   >
-                    <span className="material-symbols-outlined text-base select-none">{cat.icon}</span>
                     <span className="font-headline text-sm font-semibold">
                       {cat.label}
                     </span>
