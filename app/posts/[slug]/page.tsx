@@ -81,8 +81,8 @@ export default async function PostPage({ params }: Props) {
           <div className="prose prose-stone max-w-none font-body leading-relaxed
             prose-headings:font-headline prose-headings:font-bold prose-headings:tracking-tight
             prose-a:text-primary prose-a:no-underline hover:prose-a:underline
-            prose-code:font-mono prose-code:text-sm
-            prose-pre:bg-surface-container-highest prose-pre:rounded-xl">
+            prose-code:font-mono prose-code:text-sm prose-code:text-stone-800
+            prose-pre:bg-stone-100 prose-pre:text-stone-800 prose-pre:rounded-xl">
             <MDXRemote source={content} options={{ mdxOptions: { remarkPlugins: [remarkGfm] } }} />
           </div>
 

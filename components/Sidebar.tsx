@@ -81,14 +81,7 @@ export default function Sidebar() {
   return (
     <aside className="fixed left-0 h-screen w-64 pt-24 bg-stone-50 border-r border-outline-variant/20 z-40 hidden md:flex flex-col overflow-y-auto">
       <div className="flex flex-col flex-1 px-4 pb-6">
-        <div className="mb-6 px-4">
-          <h3 className="font-label font-medium uppercase tracking-widest text-xs text-on-surface-variant">
-            Categories
-          </h3>
-          <p className="text-base font-headline font-bold text-rose-900 mt-1">Technical Taxonomy</p>
-        </div>
-
-        <nav className="flex flex-col gap-0.5">
+        <nav className="flex flex-col gap-0.5 pt-2">
           {TAXONOMY.map((cat, idx) => {
             const isOpen = openIndex === idx
             const catActive = isCatActive(cat.href)
@@ -105,7 +98,7 @@ export default function Sidebar() {
                         : 'text-on-surface-variant hover:bg-surface-container-low'
                     }`}
                   >
-                    <span className="font-headline text-sm font-semibold">
+                    <span className="font-headline text-base font-semibold">
                       {cat.label}
                     </span>
                   </Link>
@@ -132,7 +125,7 @@ export default function Sidebar() {
                       <Link
                         key={tag}
                         href={`/tags/${tag}`}
-                        className={`px-3 py-1.5 rounded-r-full font-label font-medium uppercase tracking-widest text-[10px] transition-all duration-150 ${
+                        className={`px-3 py-1.5 rounded-r-full font-label font-medium uppercase tracking-widest text-xs transition-all duration-150 ${
                           isTagActive(tag)
                             ? 'text-rose-900 font-bold bg-rose-50'
                             : 'text-on-surface-variant hover:text-rose-800 hover:bg-surface-container-low'
