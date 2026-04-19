@@ -9,6 +9,7 @@ export interface PostMeta {
   title: string
   date: string
   category: string
+  subcategory?: string
   tags: string[]
   summary: string
   thumbnail?: string
@@ -31,6 +32,7 @@ export async function getAllPosts(): Promise<PostMeta[]> {
       title: data.title ?? '',
       date: data.date ?? '',
       category: data.category ?? '',
+      subcategory: data.subcategory,
       tags: data.tags ?? [],
       summary: data.summary ?? '',
       thumbnail: data.thumbnail,
@@ -50,6 +52,7 @@ export async function getPostBySlug(slug: string): Promise<PostMeta | null> {
     title: data.title ?? '',
     date: data.date ?? '',
     category: data.category ?? '',
+    subcategory: data.subcategory,
     tags: data.tags ?? [],
     summary: data.summary ?? '',
     thumbnail: data.thumbnail,
