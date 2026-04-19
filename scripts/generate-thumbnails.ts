@@ -406,6 +406,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'timeseries-db':                  { pattern: 'chart',    colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#34d399', accent2: '#6ee7b7' } },
   'engineering-cost':               { pattern: 'gauge',    colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
   'transaction-boundary':           { pattern: 'flow',     colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'transaction-isolation-level':    { pattern: 'layers',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'optimistic-pessimistic-update':  { pattern: 'browser',  colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'kubernetes-basics':              { pattern: 'network',  colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
   'redis-caching-strategy':         { pattern: 'layers',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
