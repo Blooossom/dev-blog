@@ -7,7 +7,7 @@ interface Props {
 }
 
 // 실제 카테고리 순서 고정
-const CATEGORY_ORDER = ['Backend', 'Frontend', 'DevOps', 'Network', 'DB', 'Architecture', 'AI', 'General']
+const CATEGORY_ORDER = ['Backend', 'Frontend', 'Infra', 'Network', 'CS', 'DB', 'Architecture', 'Security', 'AI', 'General']
 
 export default function CategoryFilter({ posts, activeCategory }: Props) {
   const usedCategories = CATEGORY_ORDER.filter((cat) =>
