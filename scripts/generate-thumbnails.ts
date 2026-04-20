@@ -498,6 +498,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'claude-skills-superpowers':      { pattern: 'shield',   colors: { bg1: '#1a0730', bg2: '#3b1070', accent: '#e879f9' } },
   'spring-aop-proxy':               { pattern: 'spring',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'jpa-dirty-checking':             { pattern: 'spring',   colors: { bg1: '#042712', bg2: '#155235', accent: '#4ade80', accent2: '#86efac' } },
+  'java-thread-pool':               { pattern: 'threads',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
