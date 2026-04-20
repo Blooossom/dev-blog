@@ -1,0 +1,210 @@
+---
+title: Spring AOP — 프록시가 끼어드는 방식
+date: '2026-04-20'
+category: Backend
+subcategory: Spring
+tags:
+  - Spring
+  - AOP
+  - Proxy
+  - CGLIB
+  - JDK Dynamic Proxy
+summary: >-
+  Spring AOP는 실제 객체를 건드리지 않고 프록시를 사이에 끼워 부가 기능을 적용한다.
+  JDK 동적 프록시와 CGLIB의 차이, 자기 호출 문제, 그리고 @Transactional이 AOP로 동작하는 원리를 정리한다.
+thumbnail: /thumbnails/spring-aop-proxy.svg
+---
+
+`@Transactional`, `@Cacheable`, `@Async`는 메서드에 어노테이션 하나만 붙이면 동작한다. 코드 어디에도 트랜잭션 시작·종료 로직이 없는데 어떻게 적용되는 걸까. 그 답이 Spring AOP의 프록시 메커니즘이다.
+
+## AOP란
+
+AOP(Aspect-Oriented Programming)는 핵심 비즈니스 로직과 횡단 관심사(cross-cutting concern)를 분리하는 프로그래밍 패러다임이다. 로깅, 트랜잭션, 보안, 캐싱처럼 여러 클래스에 반복 적용되는 기능을 한 곳에 정의하고 원하는 지점에 자동으로 끼워 넣는다.
+
+Spring AOP의 핵심 용어:
+
+| 용어 | 설명 |
+|------|------|
+| Aspect | 횡단 관심사를 모은 모듈 (`@Aspect` 클래스) |
+| Advice | 실제 실행 로직 (Before, After, Around 등) |
+| Pointcut | Advice를 적용할 지점 조건 (패키지, 메서드 등) |
+| Join Point | Advice가 끼어들 수 있는 실행 지점 (Spring AOP는 메서드 실행만 지원) |
+| Weaving | Aspect를 대상 객체에 적용하는 과정 |
+
+## Spring AOP는 프록시다
+
+Spring AOP는 바이트코드를 직접 수정하지 않는다. 대신 **대상 객체를 감싸는 프록시 객체**를 만들어 빈으로 등록한다.
+
+```
+[클라이언트]
+    │
+    ▼
+[프록시 객체]  ← Spring이 생성한 가짜 객체
+    │  before advice 실행
+    ▼
+[실제 객체]    ← 핵심 로직
+    │  after advice 실행
+    ▼
+[프록시 객체]
+    │
+    ▼
+[클라이언트]
+```
+
+스프링 컨테이너는 `@Transactional`이 붙은 빈을 만들 때 원본 객체가 아니라 프록시 객체를 대신 등록한다. 클라이언트가 빈을 주입받으면 실제로는 프록시를 받게 된다.
+
+## 두 가지 프록시 구현
+
+Spring AOP는 상황에 따라 두 가지 방식 중 하나로 프록시를 만든다.
+
+### JDK 동적 프록시
+
+대상 클래스가 인터페이스를 구현했을 때 사용한다. Java 표준 라이브러리(`java.lang.reflect.Proxy`)로 인터페이스 기반 프록시를 생성한다.
+
+```java
+public interface OrderService {
+    void createOrder(Order order);
+}
+
+@Service
+public class OrderServiceImpl implements OrderService {
+    @Transactional
+    @Override
+    public void createOrder(Order order) { ... }
+}
+```
+
+```
+주입되는 객체 타입: OrderService (인터페이스)
+실제 런타임 타입: $Proxy42 (JDK 동적 프록시)
+```
+
+`OrderServiceImpl`로 캐스팅하면 `ClassCastException`이 발생한다.
+
+### CGLIB
+
+인터페이스가 없거나 `proxyTargetClass = true`로 설정하면 CGLIB을 사용한다. 대상 클래스를 상속한 서브클래스를 런타임에 생성한다.
+
+```java
+@Service
+public class ProductService {  // 인터페이스 없음
+    @Transactional
+    public void updatePrice(Long id, int price) { ... }
+}
+```
+
+```
+주입되는 객체 타입: ProductService
+실제 런타임 타입: ProductService$$EnhancerBySpringCGLIB$$1a2b3c4d
+```
+
+Spring Boot 2.x부터는 `proxyTargetClass`의 기본값이 `true`로 바뀌어 인터페이스가 있어도 CGLIB을 기본으로 사용한다. 이 때문에 `final` 클래스나 `final` 메서드는 프록시가 불가능하다 — CGLIB은 상속으로 동작하기 때문이다.
+
+```java
+// 프록시 생성 불가 — AOP 적용 안 됨
+@Service
+public final class PaymentService {
+    @Transactional
+    public void process() { ... }
+}
+```
+
+## 자기 호출 문제
+
+프록시 기반 AOP의 가장 자주 마주치는 함정이다.
+
+```java
+@Service
+public class OrderService {
+
+    public void createOrder(Order order) {
+        validate(order);      // 직접 호출 — 프록시 우회
+        save(order);
+    }
+
+    @Transactional
+    public void validate(Order order) { ... }
+}
+```
+
+`createOrder`에서 `validate`를 `this.validate()`로 호출한다. 클라이언트는 프록시를 통해 `createOrder`를 호출했지만, 메서드 내부에서 `this`는 프록시가 아닌 **실제 객체**를 가리킨다. 그래서 `validate`의 `@Transactional`이 동작하지 않는다.
+
+```
+클라이언트 → 프록시.createOrder() → 실제객체.createOrder()
+                                         └→ this.validate()  ← 프록시 경유 없음
+```
+
+해결 방법은 세 가지다:
+
+**1. 책임 분리** — `validate`를 별도 서비스 빈으로 분리해 주입받는다. 가장 권장하는 방법이다.
+
+```java
+@Service
+public class OrderService {
+    private final OrderValidator validator;
+
+    public void createOrder(Order order) {
+        validator.validate(order);  // 프록시 경유
+        save(order);
+    }
+}
+```
+
+**2. `AopContext` 사용** — 컨텍스트에서 현재 프록시를 꺼내 호출한다.
+
+```java
+@Service
+public class OrderService {
+    public void createOrder(Order order) {
+        ((OrderService) AopContext.currentProxy()).validate(order);
+        save(order);
+    }
+
+    @Transactional
+    public void validate(Order order) { ... }
+}
+```
+
+`@EnableAspectJAutoProxy(exposeProxy = true)` 설정이 필요하다. 코드 가독성이 떨어진다.
+
+**3. 자기 참조 주입** — 빈이 자기 자신을 주입받는다. 순환 참조 경고가 발생할 수 있다.
+
+## Around Advice로 동작하는 @Transactional
+
+`@Transactional`은 내부적으로 AOP `@Around` Advice로 구현된다.
+
+```java
+// 실제 동작 방식을 의사 코드로 표현
+@Around("@annotation(Transactional)")
+public Object applyTransaction(ProceedingJoinPoint pjp) throws Throwable {
+    TransactionStatus status = txManager.getTransaction(txDef);
+    try {
+        Object result = pjp.proceed();  // 실제 메서드 실행
+        txManager.commit(status);
+        return result;
+    } catch (RuntimeException e) {
+        txManager.rollback(status);
+        throw e;
+    }
+}
+```
+
+프록시가 메서드 호출을 가로채 트랜잭션을 시작하고, 실제 메서드를 실행하고, 결과에 따라 커밋 또는 롤백한다.
+
+## AspectJ와의 차이
+
+Spring AOP는 런타임 프록시 방식이라 메서드 실행만 가로챌 수 있다. AspectJ는 컴파일 타임 또는 클래스 로드 타임에 바이트코드를 직접 수정(weaving)해서 필드 접근, 생성자 호출 등 더 다양한 Join Point를 지원한다.
+
+| | Spring AOP | AspectJ |
+|---|---|---|
+| 적용 방식 | 런타임 프록시 | 컴파일/클래스로드 타임 위빙 |
+| Join Point | 메서드 실행만 | 필드, 생성자 등 전체 |
+| 자기 호출 | 동작 안 함 | 동작함 |
+| 설정 복잡도 | 낮음 | 높음 |
+| 성능 | 약간의 프록시 오버헤드 | 위빙 후 직접 실행 |
+
+대부분의 Spring 애플리케이션에서 AspectJ 전체 위빙은 과도한 설정 비용을 치른다. Spring AOP만으로 충분한 경우가 많고, 자기 호출 문제는 서비스 분리로 해결하는 것이 더 깔끔하다.
+
+---
+
+Spring AOP는 프록시라는 간단한 원칙 하나로 동작한다. 이 원칙을 이해하면 `@Transactional`이 왜 자기 호출에서 동작하지 않는지, `final` 클래스에 왜 적용이 안 되는지, 런타임 타입이 왜 이상한 클래스명으로 나오는지가 모두 설명된다.
