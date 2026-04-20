@@ -1,0 +1,149 @@
+---
+title: JPA Dirty Checking — 변경 감지가 SQL을 만드는 시점
+date: '2026-04-20'
+category: Backend
+subcategory: Spring
+tags:
+  - JPA
+  - Hibernate
+  - Dirty Checking
+  - 영속성 컨텍스트
+  - Spring
+summary: >-
+  JPA는 엔티티를 수정해도 save()를 호출하지 않아도 된다. 영속성 컨텍스트가 스냅샷과 현재 상태를 비교해
+  변경을 감지하고, 트랜잭션 커밋 시점에 UPDATE SQL을 자동으로 날린다.
+thumbnail: /thumbnails/jpa-dirty-checking.svg
+---
+
+JPA를 처음 쓰는 개발자가 자주 놀라는 지점이 있다. 엔티티 필드를 바꾸고 `save()`를 호출하지 않았는데 DB에 UPDATE가 나간다. 또는 반대로, UPDATE가 나가길 기대했는데 아무 SQL도 실행되지 않는다. 두 경우 모두 dirty checking을 이해하면 설명된다.
+
+## 영속성 컨텍스트와 스냅샷
+
+JPA는 엔티티를 조회하는 순간 두 가지를 저장한다.
+
+1. **1차 캐시** — 엔티티 객체 자체
+2. **스냅샷** — 조회 시점의 필드 값 복사본
+
+```java
+@Transactional
+public void updatePrice(Long id, int newPrice) {
+    Product product = productRepository.findById(id).orElseThrow();
+    // 이 시점에 스냅샷: { id: 1, price: 5000, name: "노트북" }
+
+    product.setPrice(newPrice);
+    // product 객체: { id: 1, price: 7000, name: "노트북" }
+    // 스냅샷은 그대로: { id: 1, price: 5000, name: "노트북" }
+
+    // save() 없음 — 그래도 UPDATE 나감
+}
+```
+
+트랜잭션이 커밋되기 직전에 Hibernate는 1차 캐시의 모든 엔티티를 스냅샷과 비교한다. 달라진 필드가 있으면 UPDATE SQL을 생성한다. 이 과정이 **dirty checking**이다.
+
+## flush가 발생하는 시점
+
+dirty checking은 flush 시점에 실행된다. flush는 영속성 컨텍스트의 변경 내용을 DB에 반영하는 동작이다.
+
+```
+flush 발생 시점:
+  1. 트랜잭션 커밋
+  2. JPQL 쿼리 실행 직전 (FlushModeType.AUTO, 기본값)
+  3. entityManager.flush() 직접 호출
+```
+
+JPQL 실행 전에 flush가 발생하는 이유는 정합성 때문이다. 아직 DB에 반영되지 않은 변경이 있는 상태에서 JPQL을 실행하면 오래된 데이터를 읽을 수 있기 때문에, Hibernate는 JPQL 실행 전에 먼저 flush해서 변경을 DB에 쓴다.
+
+```java
+@Transactional
+public void example(Long id) {
+    Product product = productRepository.findById(id).orElseThrow();
+    product.setPrice(9000);
+
+    // 여기서 JPQL 실행 → 그 전에 flush 발생 → UPDATE 먼저 나감
+    List<Product> expensiveProducts = productRepository
+        .findByPriceGreaterThan(8000);  // 방금 바꾼 9000짜리도 포함됨
+}
+```
+
+## save()를 호출해도 괜찮은 이유
+
+`productRepository.save(product)`를 호출하면 어떻게 될까? 이미 영속 상태인 엔티티에 `save()`를 호출하면 `EntityManager.merge()`가 실행되는데, 이미 1차 캐시에 있는 엔티티라면 merge도 사실상 아무것도 하지 않는다. 트랜잭션 커밋 시점에 dirty checking이 동일하게 작동한다.
+
+```java
+// 아래 두 코드의 동작 결과는 같다
+
+// 1. save() 없음
+product.setPrice(9000);
+
+// 2. save() 있음
+product.setPrice(9000);
+productRepository.save(product);  // merge → 이미 영속 상태라 의미 없음
+```
+
+save()를 습관적으로 호출하는 건 의도를 명확히 드러낸다는 점에서 나쁘지 않지만, 내부 동작을 이해하지 못한 채 "저장하려면 save()를 불러야 한다"고 생각하면 잘못된 메커니즘 이해다.
+
+## dirty checking이 동작하지 않는 경우
+
+### 비영속 상태 엔티티
+
+`new`로 생성한 엔티티는 영속성 컨텍스트가 관리하지 않는다. 스냅샷이 없으므로 dirty checking도 없다. 이 경우에는 `save()`를 명시적으로 호출해야 INSERT가 나간다.
+
+```java
+Product product = new Product("노트북", 5000);  // 비영속 상태
+product.setPrice(7000);
+// save() 없으면 아무 SQL도 안 나감
+
+productRepository.save(product);  // 여기서 INSERT
+```
+
+### @Transactional 없는 경우
+
+트랜잭션 없이 엔티티를 조회하면 영속성 컨텍스트의 생명주기가 해당 메서드 호출 단위로 끝난다. 메서드가 반환되는 시점에 영속성 컨텍스트가 닫히고, 스냅샷도 함께 사라진다.
+
+```java
+// @Transactional 없음
+public void updatePrice(Long id, int newPrice) {
+    Product product = productRepository.findById(id).orElseThrow();
+    // findById 내부에서 짧은 트랜잭션이 열리고 닫힘 → 영속성 컨텍스트 종료
+    
+    product.setPrice(newPrice);
+    // 이미 준영속 상태 — dirty checking 대상 아님 → UPDATE 안 나감
+}
+```
+
+### FlushModeType.COMMIT
+
+flush 모드를 COMMIT으로 변경하면 JPQL 실행 전 자동 flush가 꺼진다.
+
+```java
+entityManager.setFlushMode(FlushModeType.COMMIT);
+```
+
+읽기 작업이 많고 JPQL 앞마다 불필요한 flush를 피하고 싶을 때 사용한다. 단, 변경 내용이 JPQL 결과에 반영되지 않아 정합성 문제가 생길 수 있다.
+
+## UPDATE 쿼리의 범위
+
+Hibernate는 기본적으로 변경된 필드만 UPDATE하지 않는다. **모든 필드를 UPDATE**한다.
+
+```sql
+-- price만 바꿨어도 전체 컬럼 UPDATE
+UPDATE product SET name = ?, price = ?, stock = ?, category = ? WHERE id = ?
+```
+
+이유는 SQL 캐싱이다. 엔티티마다 하나의 UPDATE 문 형태를 캐싱해두면 어느 필드가 바뀌든 같은 SQL을 재사용할 수 있다.
+
+변경된 필드만 UPDATE하고 싶다면 `@DynamicUpdate`를 사용한다.
+
+```java
+@Entity
+@DynamicUpdate
+public class Product {
+    // price만 바꾸면 SET price = ? 만 포함된 UPDATE 생성
+}
+```
+
+컬럼이 많고 자주 변경되는 엔티티, 또는 UPDATE 충돌을 최소화해야 하는 상황에서 유용하다. 단, SQL을 매번 동적으로 생성하므로 캐싱 이점이 없어진다.
+
+---
+
+dirty checking은 "명시적으로 save를 호출해야 저장된다"는 직관을 깨는 개념이다. 트랜잭션 안에서 영속 상태 엔티티의 필드를 바꾸면 커밋 시점에 자동으로 반영된다는 동작 원리를 이해하면, 의도치 않은 UPDATE나 누락된 UPDATE의 원인을 빠르게 찾을 수 있다.
