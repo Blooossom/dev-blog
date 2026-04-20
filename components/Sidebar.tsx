@@ -10,61 +10,61 @@ const TAXONOMY = [
     label: 'Backend',
     href: '/categories/backend',
     icon: 'code',
-    tags: ['Java', 'Spring', 'JPA', '동시성'],
+    tags: ['Java', 'Spring', 'API'],
   },
   {
     label: 'Frontend',
     href: '/categories/frontend',
     icon: 'web',
-    tags: ['React', 'TypeScript', 'Next.js', 'CSS', '성능'],
+    tags: ['React', 'TypeScript', 'JavaScript', 'UI', 'Browser', 'Tooling'],
   },
   {
     label: 'Infra',
     href: '/categories/infra',
     icon: 'cloud',
-    tags: ['Docker', 'Kubernetes', 'CI/CD', 'Nginx', 'Linux', 'AWS'],
+    tags: ['Docker', 'Kubernetes', 'CI/CD', 'Nginx', 'Monitoring', 'Linux', 'AWS', 'Common'],
   },
   {
     label: 'Network',
     href: '/categories/network',
     icon: 'router',
-    tags: ['HTTP', 'TCP', 'TLS', 'DNS', '프록시'],
+    tags: [],
   },
   {
     label: 'CS',
     href: '/categories/cs',
     icon: 'memory',
-    tags: ['운영체제', '자료구조', '알고리즘', '동시성'],
+    tags: [],
   },
   {
     label: 'DB',
     href: '/categories/db',
     icon: 'database',
-    tags: ['SQL', 'Redis', 'MySQL', 'Transaction', 'NoSQL'],
+    tags: ['SQL', 'NoSQL'],
   },
   {
     label: 'Architecture',
     href: '/categories/architecture',
     icon: 'architecture',
-    tags: ['DDD', 'MSA', 'CQRS', '디자인 패턴', 'Clean Architecture'],
+    tags: [],
   },
   {
     label: 'Security',
     href: '/categories/security',
     icon: 'shield',
-    tags: ['인증', '인가', 'JWT', 'OAuth'],
+    tags: [],
   },
   {
     label: 'AI',
     href: '/categories/ai',
     icon: 'psychology',
-    tags: ['LLM', 'Claude', '프롬프트 엔지니어링', 'MCP'],
+    tags: ['Claude', 'Common'],
   },
   {
     label: 'General',
     href: '/categories/general',
     icon: 'layers',
-    tags: ['Git', '코드 리뷰', '소프트웨어 설계', '모노레포'],
+    tags: [],
   },
 ]
 
@@ -114,7 +114,7 @@ export default function Sidebar() {
                       {cat.label}
                     </span>
                   </Link>
-                  <button
+                  {cat.tags.length > 0 && <button
                     onClick={() => setOpenIndex(isOpen ? null : idx)}
                     className="p-1 text-on-surface-variant hover:text-primary transition-colors"
                     aria-label={isOpen ? '접기' : '펼치기'}
@@ -127,11 +127,11 @@ export default function Sidebar() {
                     >
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
                     </svg>
-                  </button>
+                  </button>}
                 </div>
 
                 {/* 소분류 태그 */}
-                {isOpen && (
+                {isOpen && cat.tags.length > 0 && (
                   <div className="ml-4 mt-0.5 mb-1 flex flex-col gap-0.5 border-l-2 border-rose-100 pl-3 pr-4 animate-fade-in">
                     {cat.tags.map((tag) => (
                       <Link
