@@ -499,6 +499,9 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'spring-aop-proxy':               { pattern: 'spring',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'jpa-dirty-checking':             { pattern: 'spring',   colors: { bg1: '#042712', bg2: '#155235', accent: '#4ade80', accent2: '#86efac' } },
   'java-thread-pool':               { pattern: 'threads',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'jpa-n-plus-one':                 { pattern: 'spring',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'process-vs-thread':              { pattern: 'threads',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'http-versions-connection':       { pattern: 'layers',   colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
