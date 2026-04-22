@@ -1,0 +1,115 @@
+---
+title: B-Tree 인덱스 — 범위 검색과 정렬에 유리한 이유
+date: '2026-04-22'
+category: Backend
+tags:
+  - Database
+  - Index
+  - B-Tree
+  - MySQL
+  - PostgreSQL
+summary: >-
+  B-Tree 인덱스가 왜 범위 검색과 정렬에 유리한지, 내부 구조를 통해 이해한다.
+  해시 인덱스와의 차이, 복합 인덱스 설계까지 함께 살펴본다.
+thumbnail: /thumbnails/btree-index.svg
+---
+
+인덱스를 "빠른 조회를 위한 것"이라고만 알고 있으면, 어떤 쿼리에 인덱스가 효과적인지 판단하기 어렵다. B-Tree 인덱스의 구조를 이해하면 왜 `WHERE age > 30`은 인덱스를 잘 타고, `WHERE YEAR(created_at) = 2024`는 타지 못하는지 자연스럽게 설명된다.
+
+## B-Tree 구조
+
+B-Tree(Balanced Tree)는 모든 리프 노드가 같은 깊이에 있는 균형 트리다. RDBMS의 인덱스는 정확히는 **B+Tree**를 사용하는데, 리프 노드만 실제 데이터 포인터를 갖고, 리프 노드들이 연결 리스트로 이어져 있다는 점이 특징이다.
+
+```
+           [30 | 70]                 ← 루트 (내부 노드)
+          /    |    \
+    [10|20] [40|60] [80|90]          ← 내부 노드
+      ↓↓↓     ↓↓↓     ↓↓↓
+  [리프]←→[리프]←→[리프]←→[리프]   ← 리프 노드 (정렬된 연결 리스트)
+```
+
+리프 노드에는 **인덱스 컬럼 값 + 레코드 위치(ROWID 또는 PK)**가 정렬된 순서로 저장된다.
+
+## 왜 범위 검색에 유리한가
+
+`WHERE age BETWEEN 25 AND 40` 쿼리를 생각해보자.
+
+1. 트리를 타고 내려가 `age = 25`인 리프 노드를 찾는다 — **O(log N)**
+2. 리프 노드는 연결 리스트로 이어져 있으므로, 오른쪽으로 순서대로 스캔하면 `age = 40`까지 한 번에 읽힌다
+
+핵심은 **리프 노드가 정렬된 연결 리스트**라는 점이다. 범위의 시작점만 찾으면, 이후 구간은 포인터를 따라가며 선형 스캔으로 처리된다.
+
+```sql
+-- 인덱스를 잘 활용하는 범위 쿼리
+SELECT * FROM users WHERE age BETWEEN 25 AND 40;
+SELECT * FROM orders WHERE created_at >= '2024-01-01';
+SELECT * FROM products WHERE price < 10000;
+```
+
+## 왜 정렬에 유리한가
+
+`ORDER BY age ASC`는 정렬 작업처럼 보이지만, B-Tree 인덱스가 있으면 이미 정렬된 리프 노드를 처음부터 끝까지 순서대로 읽는 것으로 끝난다. 별도의 정렬 연산(`filesort`)이 필요 없다.
+
+```
+실행 계획 비교:
+  인덱스 없음 → type: ALL, Extra: Using filesort
+  인덱스 있음 → type: index, Extra: (없음)
+```
+
+`EXPLAIN` 결과에서 `Using filesort`가 사라지는 것이 이 덕분이다.
+
+## 해시 인덱스와의 차이
+
+| 구분 | B-Tree | 해시 |
+|------|--------|------|
+| 등치 검색 (`=`) | O(log N) | O(1) |
+| 범위 검색 (`>`, `BETWEEN`) | 가능 | 불가능 |
+| 정렬 (`ORDER BY`) | 인덱스로 처리 | 불가능 |
+| 자료 구조 | 정렬된 트리 | 해시 테이블 |
+
+해시 인덱스는 값을 해시 함수로 변환해 저장하기 때문에 원래 순서 정보가 사라진다. `age = 30` 같은 등치 조건에서는 더 빠르지만, 범위나 정렬에는 전혀 쓸 수 없다.
+
+MySQL InnoDB는 기본적으로 B-Tree 인덱스만 지원한다(Adaptive Hash Index는 내부 최적화용). PostgreSQL은 해시 인덱스도 명시적으로 생성할 수 있다.
+
+## 인덱스가 동작하지 않는 경우
+
+B-Tree 인덱스는 **컬럼 값 자체를 정렬해 저장**한다. 컬럼에 함수를 씌우거나 변환하면 정렬 기준이 달라지기 때문에 인덱스를 탈 수 없다.
+
+```sql
+-- 인덱스 못 씀: 함수 적용
+WHERE YEAR(created_at) = 2024
+WHERE LOWER(email) = 'test@example.com'
+WHERE age + 1 = 31
+
+-- 인덱스 씀: 컬럼 값 그대로 비교
+WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'
+WHERE email = 'test@example.com'   -- (email이 이미 소문자 저장이라면)
+WHERE age = 30
+```
+
+## 복합 인덱스와 leftmost prefix rule
+
+`(last_name, first_name, age)` 복합 인덱스는 리프 노드에서 이 순서로 정렬된다.
+
+```
+활용 가능:
+  WHERE last_name = 'Kim'
+  WHERE last_name = 'Kim' AND first_name = 'Minsu'
+  WHERE last_name = 'Kim' AND first_name = 'Minsu' AND age > 20
+
+활용 불가 (첫 번째 컬럼 빠짐):
+  WHERE first_name = 'Minsu'
+  WHERE age > 20
+```
+
+첫 번째 컬럼이 조건에 없으면 정렬 순서의 시작점을 찾을 수 없어 인덱스를 쓰지 못한다. 복합 인덱스 설계 시 **가장 자주 쓰이는 조건 컬럼을 앞에** 두어야 하는 이유다.
+
+## 인덱스의 비용
+
+인덱스는 공짜가 아니다.
+
+- **쓰기 비용**: INSERT/UPDATE/DELETE 시 B-Tree를 갱신해야 한다. 인덱스가 많을수록 쓰기가 느려진다.
+- **저장 공간**: 인덱스 트리 자체가 별도 공간을 차지한다.
+- **옵티마이저 오판**: 인덱스가 있어도 레코드 수가 적거나 선택도가 낮으면 풀 스캔이 더 빠를 수 있다.
+
+B-Tree 인덱스의 가치는 "정렬된 구조 덕분에 범위의 시작점만 찾으면 나머지는 순서대로 읽힌다"는 한 가지 사실에서 출발한다. 이를 기억하면 어떤 쿼리가 인덱스를 활용할 수 있는지, 어떤 컬럼을 앞에 두어야 하는지 판단하기 훨씬 쉬워진다.
