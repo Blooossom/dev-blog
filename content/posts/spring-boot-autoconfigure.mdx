@@ -1,0 +1,136 @@
+---
+title: Spring Boot 자동 구성 — 설정 없이 동작하는 원리
+date: '2026-04-22'
+category: Backend
+tags:
+  - Spring Boot
+  - Spring
+  - Auto-configuration
+  - Java
+summary: >-
+  Spring Boot가 의존성만 추가해도 많은 것을 자동으로 구성해주는 원리를 살펴본다.
+  @EnableAutoConfiguration, 조건부 빈 등록, 커스터마이징 방법까지 정리한다.
+thumbnail: /thumbnails/spring-boot-autoconfigure.svg
+---
+
+Spring Boot 프로젝트에 `spring-boot-starter-data-jpa` 의존성 하나만 추가하면 `DataSource`, `EntityManagerFactory`, `TransactionManager`가 자동으로 등록된다. `application.properties`에 DB URL만 적으면 된다. 이것이 어떻게 가능할까?
+
+## @SpringBootApplication의 정체
+
+`@SpringBootApplication`은 세 어노테이션의 합성이다.
+
+```java
+@SpringBootConfiguration   // @Configuration과 동일
+@EnableAutoConfiguration   // 자동 구성 활성화
+@ComponentScan             // 현재 패키지 이하 컴포넌트 스캔
+public @interface SpringBootApplication {}
+```
+
+핵심은 `@EnableAutoConfiguration`이다.
+
+## AutoConfiguration 후보 목록
+
+`@EnableAutoConfiguration`은 내부적으로 `AutoConfigurationImportSelector`를 동작시킨다. 이 선택자는 클래스패스에서 다음 파일을 읽는다.
+
+**Spring Boot 2.x:**
+```
+META-INF/spring.factories
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+  ...DataSourceAutoConfiguration,\
+  ...JpaRepositoriesAutoConfiguration,\
+  ...WebMvcAutoConfiguration,\
+  ...
+```
+
+**Spring Boot 3.x (변경됨):**
+```
+META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
+```
+
+`spring-boot-autoconfigure` 모듈 안에 140개 이상의 자동 구성 클래스가 등록돼 있다. 애플리케이션 시작 시 이 목록 전체를 후보로 가져온다.
+
+## @Conditional — 조건부 빈 등록
+
+후보 목록을 가져왔다고 전부 등록하지 않는다. 각 AutoConfiguration 클래스는 `@Conditional` 어노테이션으로 활성화 조건을 명시한다.
+
+```java
+@AutoConfiguration
+@ConditionalOnClass({ DataSource.class, EmbeddedDatabaseType.class })
+@ConditionalOnMissingBean(type = "io.r2dbc.spi.ConnectionFactory")
+@EnableConfigurationProperties(DataSourceProperties.class)
+public class DataSourceAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean
+    public DataSource dataSource(DataSourceProperties properties) {
+        return properties.initializeDataSourceBuilder().build();
+    }
+}
+```
+
+| 어노테이션 | 활성화 조건 |
+|-----------|-----------|
+| `@ConditionalOnClass` | 클래스패스에 해당 클래스가 있을 때 |
+| `@ConditionalOnMissingBean` | 해당 타입의 빈이 아직 없을 때 |
+| `@ConditionalOnProperty` | 특정 프로퍼티가 설정됐을 때 |
+| `@ConditionalOnWebApplication` | 웹 애플리케이션일 때 |
+| `@ConditionalOnMissingClass` | 클래스패스에 해당 클래스가 없을 때 |
+
+`DataSourceAutoConfiguration`은 `DataSource.class`가 클래스패스에 있을 때만(= JDBC 의존성이 있을 때만) 활성화된다. 없으면 조용히 건너뛴다.
+
+## 동작 흐름 요약
+
+```
+1. 애플리케이션 시작
+2. @EnableAutoConfiguration → AutoConfigurationImportSelector 실행
+3. imports 파일에서 AutoConfiguration 클래스 목록 로드 (140개+)
+4. 각 클래스의 @Conditional 조건 평가
+5. 조건을 통과한 클래스만 @Configuration으로 처리
+6. @Bean 메서드 실행 → 빈 등록
+```
+
+## 커스터마이징 — 사용자 빈이 우선
+
+`@ConditionalOnMissingBean`의 의미가 중요하다. **이미 해당 타입의 빈이 등록돼 있으면 자동 구성을 건너뛴다.**
+
+```java
+// 사용자가 직접 DataSource를 정의하면 자동 구성의 DataSource는 등록되지 않음
+@Bean
+public DataSource dataSource() {
+    HikariDataSource ds = new HikariDataSource();
+    ds.setJdbcUrl("jdbc:postgresql://...");
+    return ds;
+}
+```
+
+이 패턴 덕분에 Spring Boot는 **"관례가 기본, 구성은 선택"** 원칙을 구현한다. 아무것도 안 하면 Spring Boot가 알아서 합리적인 기본값으로 구성하고, 필요한 부분만 직접 재정의할 수 있다.
+
+## Properties로 세밀한 조정
+
+자동 구성 클래스는 `@EnableConfigurationProperties`로 프로퍼티 클래스를 연결한다.
+
+```properties
+# application.properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/mydb
+spring.datasource.username=user
+spring.datasource.password=secret
+spring.datasource.hikari.maximum-pool-size=20
+```
+
+`DataSourceProperties`, `HikariProperties` 같은 클래스가 이 값들을 바인딩해 자동 구성 빈에 주입한다. 빈 자체를 재정의하지 않고 프로퍼티만으로 대부분의 설정을 조절할 수 있는 이유다.
+
+## 어떤 자동 구성이 적용됐는지 확인하기
+
+```bash
+# 자동 구성 보고서 출력
+java -jar app.jar --debug
+
+# 또는
+logging.level.org.springframework.boot.autoconfigure=DEBUG
+```
+
+실행 시 `CONDITIONS EVALUATION REPORT`가 출력되며, 어떤 AutoConfiguration이 활성화됐고(`Positive matches`) 어떤 것이 제외됐는지(`Negative matches`) 이유와 함께 보여준다.
+
+## 자동 구성의 경계
+
+Spring Boot 자동 구성은 "합리적인 기본값으로 시작하고, 필요할 때 직접 제어를 가져간다"는 철학을 구현한다. `@Conditional`로 클래스패스와 기존 빈을 감지해 적절한 구성을 선택하고, 사용자 빈이 있으면 조용히 비켜서는 구조가 이 철학의 기술적 구현이다.
