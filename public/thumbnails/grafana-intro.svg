@@ -1,17 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0d1b2e"/>
-      <stop offset="100%" stop-color="#1a3d6b"/>
+      <stop offset="0%" stop-color="#1c1714"/>
+      <stop offset="100%" stop-color="#3d302a"/>
     </linearGradient>
     <linearGradient id="lf" x1="100%" y1="0%" x2="20%" y2="0%">
-      <stop offset="0%"   stop-color="#0d1b2e" stop-opacity="0"/>
-      <stop offset="55%"  stop-color="#0d1b2e" stop-opacity="0.82"/>
-      <stop offset="100%" stop-color="#0d1b2e" stop-opacity="1"/>
+      <stop offset="0%"   stop-color="#1c1714" stop-opacity="0"/>
+      <stop offset="55%"  stop-color="#1c1714" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#1c1714" stop-opacity="1"/>
     </linearGradient>
     <linearGradient id="bf" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%"   stop-color="#1a3d6b" stop-opacity="0"/>
-      <stop offset="100%" stop-color="#0d1b2e" stop-opacity="0.9"/>
+      <stop offset="0%"   stop-color="#3d302a" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1c1714" stop-opacity="0.9"/>
     </linearGradient>
   </defs>
 
@@ -92,13 +92,13 @@
   <rect width="1200" height="630" fill="url(#bf)"/>
 
   <!-- Category badge -->
-  <rect x="60" y="52" width="88" height="32" rx="16"
+  <rect x="60" y="52" width="78" height="32" rx="16"
     fill="#f97316" fill-opacity="0.15"
     stroke="#f97316" stroke-width="1" stroke-opacity="0.5"/>
   <text x="74" y="73"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
     font-size="13" font-weight="700" letter-spacing="2.5"
-    fill="#f97316" fill-opacity="0.95">DEVOPS</text>
+    fill="#f97316" fill-opacity="0.95">INFRA</text>
 
   <!-- Title -->
   

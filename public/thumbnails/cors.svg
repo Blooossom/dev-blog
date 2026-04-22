@@ -34,13 +34,13 @@
   <rect width="1200" height="630" fill="url(#bf)"/>
 
   <!-- Category badge -->
-  <rect x="60" y="52" width="108" height="32" rx="16"
+  <rect x="60" y="52" width="98" height="32" rx="16"
     fill="#c4b5fd" fill-opacity="0.15"
     stroke="#c4b5fd" stroke-width="1" stroke-opacity="0.5"/>
   <text x="74" y="73"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
     font-size="13" font-weight="700" letter-spacing="2.5"
-    fill="#c4b5fd" fill-opacity="0.95">FRONTEND</text>
+    fill="#c4b5fd" fill-opacity="0.95">BACKEND</text>
 
   <!-- Title -->
   
