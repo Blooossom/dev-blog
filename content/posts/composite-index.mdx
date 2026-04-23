@@ -1,0 +1,131 @@
+---
+title: 복합 인덱스에서 컬럼 순서가 왜 중요한가
+date: '2026-04-23'
+category: Backend
+tags:
+  - Database
+  - 인덱스
+  - MySQL
+  - 쿼리 최적화
+  - B-Tree
+summary: >-
+  복합 인덱스는 여러 컬럼을 조합해 단일 인덱스로 만든 구조다. 컬럼 순서가 인덱스 활용 여부를 결정하며,
+  leftmost prefix rule을 이해하지 못하면 인덱스를 걸었음에도 풀 스캔이 발생한다.
+thumbnail: /thumbnails/composite-index.svg
+---
+
+인덱스를 걸었는데도 쿼리가 느리다면, 복합 인덱스의 컬럼 순서를 의심해볼 필요가 있다. `(a, b, c)`로 만든 인덱스는 `(b, c)` 조건만으로 사용할 수 없다.
+
+## 복합 인덱스의 물리 구조
+
+복합 인덱스는 B-Tree 구조에서 여러 컬럼을 **연결된 하나의 키**로 취급한다. `(last_name, first_name)` 인덱스라면 정렬 순서는 다음과 같다.
+
+```
+(Kim, Bom)
+(Kim, Dae)
+(Lee, Ari)
+(Lee, Bom)
+(Park, Ari)
+```
+
+먼저 `last_name`으로 정렬하고, 같은 `last_name` 안에서 `first_name`으로 정렬한다. 이 순서가 어떤 조건에서 인덱스를 활용할 수 있는지를 결정한다.
+
+## Leftmost Prefix Rule
+
+복합 인덱스 `(a, b, c)`는 다음 조건 조합에서 사용할 수 있다.
+
+| WHERE 조건 | 인덱스 사용 가능 여부 |
+|-----------|----------------------|
+| `a = ?` | ✅ |
+| `a = ? AND b = ?` | ✅ |
+| `a = ? AND b = ? AND c = ?` | ✅ |
+| `a = ? AND c = ?` | ✅ (a만 활용, c는 테이블 필터) |
+| `b = ?` | ❌ |
+| `b = ? AND c = ?` | ❌ |
+| `c = ?` | ❌ |
+
+인덱스의 **가장 왼쪽 컬럼(a)** 이 조건에 없으면 인덱스 자체를 사용할 수 없다. 이것이 leftmost prefix rule이다.
+
+```sql
+-- 인덱스: (last_name, first_name)
+
+-- ✅ 인덱스 활용
+SELECT * FROM users WHERE last_name = 'Kim';
+SELECT * FROM users WHERE last_name = 'Kim' AND first_name = 'Bom';
+
+-- ❌ 풀 스캔 또는 인덱스 스캔 불가
+SELECT * FROM users WHERE first_name = 'Bom';
+```
+
+## 범위 조건이 오른쪽을 막는다
+
+등치 조건(`=`)은 다음 컬럼까지 인덱스를 이어서 사용할 수 있지만, **범위 조건(BETWEEN, 부등호, LIKE 'prefix%')** 이 오면 그 이후 컬럼은 인덱스로 필터링하지 못한다.
+
+```sql
+-- 인덱스: (status, created_at, user_id)
+
+-- created_at은 범위, 이후 user_id는 인덱스 미사용
+SELECT * FROM orders
+WHERE status = 'DONE'
+  AND created_at BETWEEN '2024-01-01' AND '2024-12-31'
+  AND user_id = 100;
+```
+
+위 쿼리에서 `status`와 `created_at`까지는 인덱스를 활용하지만, `user_id`는 테이블 레코드를 직접 확인해 필터링한다. `user_id`의 선택도가 높다면 `(status, user_id, created_at)` 순서로 바꾸는 것이 더 효과적일 수 있다.
+
+## 컬럼 순서 결정 기준
+
+컬럼 순서를 정할 때 고려하는 요소들이다.
+
+**1. 등치 조건 컬럼을 앞에**
+
+`=` 조건은 뒤 컬럼까지 인덱스 탐색을 이어준다. 범위 조건보다 앞에 배치한다.
+
+**2. 선택도(Cardinality) 높은 컬럼**
+
+단일 인덱스라면 선택도가 높은 컬럼이 유리하다. 그러나 복합 인덱스에서는 쿼리 패턴이 우선이다. 항상 `status`와 함께 조회한다면 선택도가 낮아도 첫 번째에 둬야 할 수 있다.
+
+**3. ORDER BY / GROUP BY 활용**
+
+인덱스와 정렬 컬럼 순서가 일치하면 filesort 없이 정렬 결과를 반환할 수 있다.
+
+```sql
+-- 인덱스: (user_id, created_at)
+-- ORDER BY도 인덱스 순서와 일치 → filesort 없음
+SELECT * FROM orders
+WHERE user_id = 42
+ORDER BY created_at DESC;
+```
+
+## Covering Index와 복합 인덱스
+
+쿼리에서 필요한 컬럼이 모두 인덱스에 포함되어 있으면 **테이블을 전혀 조회하지 않는** covering index가 된다. 복합 인덱스는 이를 활용하기 좋다.
+
+```sql
+-- 인덱스: (user_id, status, created_at)
+-- SELECT 컬럼이 모두 인덱스 안에 있음 → 테이블 접근 없음
+SELECT status, created_at
+FROM orders
+WHERE user_id = 42;
+```
+
+EXPLAIN에서 `Extra: Using index`가 보이면 covering index가 동작 중이다.
+
+## 실행 계획으로 확인하기
+
+인덱스 활용 여부는 `EXPLAIN`으로 확인한다.
+
+```sql
+EXPLAIN SELECT * FROM orders
+WHERE status = 'DONE' AND created_at > '2024-01-01';
+```
+
+| key | key_len | Extra |
+|-----|---------|-------|
+| idx_status_created | 5 | Using index condition |
+
+`key_len`으로 실제 인덱스의 몇 바이트(몇 컬럼)가 사용됐는지 가늠할 수 있다. 예상보다 짧다면 일부 컬럼이 인덱스에서 제외됐다는 신호다.
+
+## 정리
+
+복합 인덱스는 컬럼 순서가 곧 사용 가능한 쿼리 패턴을 결정한다. 쿼리 조건에서 왼쪽 컬럼부터 연속으로 사용해야 인덱스를 활용할 수 있고, 범위 조건이 나타나는 순간 그 이후 컬럼은 인덱스 필터링에서 제외된다. 인덱스 설계는 스키마보다 실제 쿼리 패턴을 먼저 파악하는 것이 출발점이다.
