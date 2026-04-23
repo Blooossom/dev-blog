@@ -1,0 +1,114 @@
+---
+title: MVCC는 읽기와 쓰기 충돌을 어떻게 줄이는가
+date: '2026-04-23'
+category: Backend
+tags:
+  - Database
+  - MVCC
+  - 트랜잭션
+  - 동시성
+  - MySQL
+  - PostgreSQL
+summary: >-
+  MVCC(Multi-Version Concurrency Control)는 데이터의 여러 버전을 동시에 유지해 읽기와 쓰기가 서로를
+  막지 않도록 한다. 락 대신 버전을 통해 일관된 스냅샷을 제공하지만, 오래된 버전을 정리하는 비용이 발생한다.
+thumbnail: /thumbnails/mvcc.svg
+---
+
+읽기와 쓰기가 서로를 막지 않으면 동시성이 올라간다. MVCC는 이 목표를 데이터의 여러 버전을 유지하는 방식으로 달성한다. MySQL InnoDB와 PostgreSQL 모두 MVCC를 핵심 동시성 제어 메커니즘으로 사용한다.
+
+## 락 기반 방식의 한계
+
+락만으로 동시성을 제어하면, 읽기 트랜잭션도 쓰기 트랜잭션의 완료를 기다려야 한다.
+
+```
+T1: UPDATE users SET name='Kim' WHERE id=1  (쓰기 락 획득)
+T2: SELECT name FROM users WHERE id=1       (락 해제 대기 중...)
+```
+
+읽기가 많은 OLTP 환경에서는 이 대기 시간이 처리량을 크게 제한한다.
+
+## MVCC의 핵심 아이디어: 버전 관리
+
+MVCC는 레코드를 수정할 때 기존 데이터를 즉시 덮어쓰지 않고 **새 버전을 추가**한다. 각 버전에는 어떤 트랜잭션이 만들었는지 정보가 붙는다.
+
+```
+id=1 버전 이력
+  v1: name='Lee', created_by=tx10, deleted_by=null
+  v2: name='Kim', created_by=tx20, deleted_by=null  ← 최신
+```
+
+읽기 트랜잭션은 자신이 시작한 시점의 스냅샷을 기준으로 **자신에게 보여야 할 버전**을 선택해 읽는다. 쓰기가 진행 중이어도 이전 버전을 읽으면 되므로 대기가 없다.
+
+## 스냅샷 격리와 Read View
+
+트랜잭션이 시작될 때 **Read View**를 생성한다. Read View에는 현재 활성 중인 트랜잭션 ID 목록이 담긴다.
+
+```
+T3 시작 시 Read View = { active: [tx20, tx21] }
+→ tx20, tx21이 만든 버전은 아직 커밋되지 않았으므로 보이지 않음
+→ tx10 이하가 만든 버전은 이미 커밋됐으므로 보임
+```
+
+이 규칙 덕분에 **Repeatable Read** 수준에서 트랜잭션 내 어느 시점에 읽어도 같은 데이터가 반환된다. 중간에 다른 트랜잭션이 데이터를 바꿔도 스냅샷에는 영향이 없다.
+
+## MySQL InnoDB 구현
+
+InnoDB는 레코드에 **두 개의 숨겨진 컬럼**을 추가해 MVCC를 구현한다.
+
+| 컬럼 | 설명 |
+|------|------|
+| `DB_TRX_ID` | 이 버전을 만든 트랜잭션 ID |
+| `DB_ROLL_PTR` | 이전 버전(Undo Log)을 가리키는 포인터 |
+
+이전 버전은 **Undo Log**에 저장된다. 읽기 트랜잭션은 현재 레코드가 보여서는 안 되면 `DB_ROLL_PTR`을 따라 Undo Log에서 적절한 버전을 찾는다.
+
+```
+현재 레코드 (tx20 생성)
+    ↓ DB_ROLL_PTR
+Undo Log: 이전 버전 (tx10 생성)
+    ↓ DB_ROLL_PTR
+Undo Log: 더 이전 버전 (tx5 생성)
+```
+
+## PostgreSQL 구현
+
+PostgreSQL은 Undo Log 없이 **테이블 자체에 여러 버전을 저장**한다. 각 행에는 `xmin`(행을 생성한 트랜잭션 ID)과 `xmax`(행을 삭제·갱신한 트랜잭션 ID)가 있다.
+
+```sql
+-- 숨겨진 시스템 컬럼 확인
+SELECT xmin, xmax, name FROM users WHERE id = 1;
+```
+
+새 버전을 삽입하고 이전 버전의 `xmax`를 채우는 방식이므로, 오래된 버전이 테이블 내에 **dead tuple**로 남는다.
+
+## Vacuum: 오래된 버전 정리 비용
+
+MVCC의 대가는 **오래된 버전을 주기적으로 정리해야 한다**는 것이다.
+
+| DB | 정리 메커니즘 |
+|-----|-------------|
+| MySQL InnoDB | Purge Thread가 Undo Log를 주기적으로 정리 |
+| PostgreSQL | VACUUM이 dead tuple을 회수 |
+
+오랫동안 열려 있는 트랜잭션은 그 트랜잭션이 시작된 시점 이후의 모든 버전을 삭제할 수 없게 만든다. 버전이 쌓이면 스토리지가 증가하고, 버전 체인이 길어져 읽기 성능도 저하된다.
+
+```
+[주의] 긴 트랜잭션은 Undo Log / dead tuple 축적의 주요 원인이다.
+```
+
+PostgreSQL에서 VACUUM이 밀리면 테이블 파일이 과도하게 커지는 **테이블 bloat** 현상이 생기고, 극단적인 경우 Transaction ID Wraparound로 데이터가 손상될 수 있다.
+
+## MVCC와 격리 수준
+
+| 격리 수준 | MVCC 동작 |
+|----------|-----------|
+| Read Committed | 각 쿼리 실행 시마다 새 Read View 생성 |
+| Repeatable Read | 트랜잭션 시작 시 한 번만 Read View 생성 |
+| Serializable | MVCC + 직렬화 충돌 감지 (SSI) |
+
+MySQL의 기본 격리 수준은 Repeatable Read이며, InnoDB의 gap lock과 next-key lock이 phantom read도 방지한다.
+
+## 정리
+
+MVCC는 읽기와 쓰기가 서로를 막지 않도록 버전을 유지하는 방식으로 동시성을 높인다. 그 대가로 오래된 버전을 정리하는 Purge/VACUUM 작업이 필요하며, 긴 트랜잭션은 이 비용을 크게 늘린다. 긴 트랜잭션을 피하고 정기적인 VACUUM 상태를 모니터링하는 것이 MVCC 활용의 핵심이다.
