@@ -1,0 +1,122 @@
+---
+title: String은 왜 불변 객체로 설계되었을까
+date: '2026-04-25'
+category: Backend
+tags:
+  - Java
+  - String
+  - 불변객체
+  - JVM
+  - String Pool
+summary: >-
+  Java의 String이 불변으로 설계된 이유는 단순한 안전성 때문이 아니다. String Pool을 통한 메모리 절약,
+  해시코드 캐싱, 멀티스레드 환경에서의 안전성, 보안 취약점 방지까지 여러 설계 목표가 맞물려 있다.
+thumbnail: /thumbnails/java-string-immutable.svg
+---
+
+`String`은 왜 불변 객체로 설계되었을까. 단순히 "변경하면 안 되니까"가 아니라, JVM 설계와 보안, 성능을 동시에 고려한 결정이다.
+
+## String은 진짜 불변인가
+
+Java에서 `String` 객체는 한 번 생성되면 내부 값을 바꿀 수 없다. `String`을 수정하는 모든 메서드는 기존 객체를 바꾸는 것이 아니라 **새 객체를 반환**한다.
+
+```java
+String s = "hello";
+s.toUpperCase();       // s는 여전히 "hello"
+s = s.toUpperCase();   // s가 새 객체 "HELLO"를 참조하도록 재할당
+```
+
+내부적으로 `String`은 `private final char[] value` (Java 8 이하) 또는 `private final byte[] value` (Java 9+)로 구현된다. `final`이기 때문에 배열 참조 자체를 바꿀 수 없고, 배열 요소도 외부에 노출되지 않아 변경이 불가능하다.
+
+## 이유 1: String Pool과 메모리 효율
+
+JVM은 **String Pool**(Heap 내 특별한 영역)을 유지한다. 리터럴로 선언된 문자열은 Pool에 저장되고, 동일한 값이 다시 필요하면 새 객체를 만들지 않고 같은 인스턴스를 재사용한다.
+
+```java
+String a = "hello";
+String b = "hello";
+System.out.println(a == b);  // true — 같은 객체
+```
+
+String이 가변이라면 이 공유가 불가능하다. `a`를 수정하면 `b`도 영향을 받기 때문이다. 불변이기 때문에 여러 변수가 동일 인스턴스를 안전하게 가리킬 수 있고, 메모리 중복을 줄인다.
+
+`String.intern()`을 호출하면 `new`로 생성한 문자열도 Pool에 등록할 수 있다.
+
+```java
+String a = new String("hello");    // Heap의 새 객체
+String b = a.intern();             // Pool의 "hello"를 반환
+String c = "hello";
+System.out.println(b == c);        // true
+```
+
+## 이유 2: 해시코드 캐싱
+
+`HashMap`의 키로 `String`이 자주 쓰이는 이유 중 하나가 **해시코드 캐싱**이다. `String`은 내부적으로 `hash` 필드를 가지고, 첫 `hashCode()` 호출 시 계산한 뒤 저장한다.
+
+```java
+// String 내부 (개념적 표현)
+private int hash; // 기본값 0
+
+public int hashCode() {
+    int h = hash;
+    if (h == 0 && value.length > 0) {
+        h = 계산();
+        hash = h;
+    }
+    return h;
+}
+```
+
+String이 불변이므로 한 번 계산한 해시값은 영구적으로 유효하다. 가변이었다면 값이 바뀔 때마다 해시를 재계산하거나, 더 나쁘게는 `HashMap` 안에서 키가 변경돼 버킷 위치가 달라지는 버그가 생긴다.
+
+## 이유 3: 멀티스레드 안전성
+
+불변 객체는 별도의 동기화 없이 여러 스레드가 동시에 읽을 수 있다. `String`이 가변이었다면 공유 문자열을 읽는 모든 곳에서 락이 필요했을 것이다.
+
+```java
+// 어떤 스레드에서 동시에 읽어도 안전
+String config = "jdbc:mysql://host:3306/db";
+thread1.process(config);
+thread2.process(config);
+```
+
+`StringBuilder`는 가변이며 스레드 안전하지 않다. `StringBuffer`는 synchronized로 스레드 안전하지만 그만큼 느리다. 불변인 `String`은 이 트레이드오프를 아예 피한다.
+
+## 이유 4: 보안
+
+클래스 로딩, 네트워크 연결, 파일 접근에서 경로와 호스트명은 `String`으로 전달된다. 만약 `String`이 가변이라면 보안 검사를 통과한 직후 값을 바꾸는 **TOCTOU(Time-of-check to time-of-use)** 공격이 가능하다.
+
+```java
+// String이 가변이라면 가능했을 공격 (개념)
+String path = "/safe/path";
+securityCheck(path);       // 검사 통과
+path.mutate("/etc/passwd"); // 값 변경
+fileRead(path);             // 다른 파일 접근
+```
+
+불변이기 때문에 검사를 통과한 값은 절대 바뀌지 않는다.
+
+## StringBuilder와의 구분
+
+`String`의 불변성 때문에 문자열을 반복적으로 합치면 매번 새 객체가 생성된다. 이런 상황에는 가변인 `StringBuilder`를 써야 한다.
+
+```java
+// ❌ 반복 연결 — 매 반복마다 새 String 생성
+String result = "";
+for (String s : list) {
+    result += s;  // O(n²)
+}
+
+// ✅ StringBuilder 사용
+StringBuilder sb = new StringBuilder();
+for (String s : list) {
+    sb.append(s);
+}
+String result = sb.toString();
+```
+
+Java 컴파일러는 단순한 `+` 연산을 자동으로 `StringBuilder`로 최적화하지만, 반복문 안에서는 루프마다 새 `StringBuilder`를 생성하기 때문에 직접 사용하는 것이 맞다.
+
+## 정리
+
+`String`의 불변성은 String Pool을 통한 메모리 공유, 해시코드 안정성, 멀티스레드 안전성, 보안까지 다양한 설계 목표를 동시에 달성한다. 불변 객체는 공유와 캐싱이 가능하고 동기화가 필요 없다는 강점이 있으며, Java에서 `String`은 그 이점을 가장 잘 활용한 사례다.
