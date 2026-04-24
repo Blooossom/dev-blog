@@ -1,0 +1,115 @@
+---
+title: JPA 영속성 컨텍스트는 단순한 캐시와 무엇이 다를까
+date: '2026-04-25'
+category: Backend
+tags:
+  - JPA
+  - 영속성 컨텍스트
+  - Hibernate
+  - Spring
+  - ORM
+summary: >-
+  JPA의 영속성 컨텍스트는 단순한 1차 캐시가 아니다. 동일성 보장, 변경 감지, 지연 로딩, 쓰기 지연까지
+  트랜잭션 범위 안에서 도메인 객체의 생명주기를 관리하는 작업 단위(Unit of Work) 구현체다.
+thumbnail: /thumbnails/jpa-persistence-context.svg
+---
+
+JPA의 영속성 컨텍스트는 단순한 캐시와 무엇이 다를까. 데이터베이스 접근을 줄이는 캐시 역할도 하지만, 그보다 더 중요한 역할은 트랜잭션 안에서 도메인 객체의 상태를 일관되게 관리하는 것이다.
+
+## 영속성 컨텍스트란
+
+영속성 컨텍스트는 **엔티티 인스턴스를 관리하는 환경**이다. `EntityManager`가 이를 구현하며, 보통 트랜잭션과 생명주기를 같이 한다. Spring Data JPA 환경에서는 `@Transactional` 범위 안에서 자동으로 관리된다.
+
+엔티티는 아래 네 가지 상태를 가진다.
+
+| 상태 | 설명 |
+|------|------|
+| 비영속(transient) | 영속성 컨텍스트와 무관한 순수 Java 객체 |
+| 영속(managed) | 컨텍스트가 관리 중인 상태, DB와 동기화 대상 |
+| 준영속(detached) | 관리에서 벗어난 상태, 변경 감지 없음 |
+| 삭제(removed) | 삭제 예약 상태 |
+
+```java
+User user = new User("kim");       // 비영속
+em.persist(user);                  // 영속 — 이제 컨텍스트가 관리
+em.detach(user);                   // 준영속 — 관리에서 제외
+em.remove(user);                   // 삭제 예약
+```
+
+## 1차 캐시: 동일 트랜잭션 내 재조회
+
+영속성 컨텍스트는 내부에 `Map<@Id, Entity>` 형태의 **1차 캐시**를 유지한다. 같은 트랜잭션 안에서 동일 ID로 두 번 조회하면 DB를 다시 조회하지 않는다.
+
+```java
+User a = em.find(User.class, 1L); // DB 조회
+User b = em.find(User.class, 1L); // 캐시에서 반환
+System.out.println(a == b);       // true — 완전히 같은 인스턴스
+```
+
+일반 캐시는 객체의 복사본을 반환할 수 있지만, 영속성 컨텍스트는 **동일 인스턴스를 보장**한다. 이 덕분에 같은 트랜잭션 안에서 동일 엔티티를 비교할 때 `==` 연산이 성립한다.
+
+단, 1차 캐시는 **트랜잭션 범위**에서만 유효하다. 트랜잭션이 끝나면 컨텍스트가 초기화된다.
+
+## 변경 감지(Dirty Checking)
+
+영속성 컨텍스트가 캐시와 가장 크게 다른 점이 **변경 감지**다. 영속 상태인 엔티티를 수정하면 `save()`나 `update()` 없이도 트랜잭션 커밋 시 자동으로 UPDATE SQL이 나간다.
+
+```java
+@Transactional
+public void updateName(Long id, String newName) {
+    User user = userRepository.findById(id).orElseThrow();
+    user.setName(newName); // save() 호출 없음
+}   // 트랜잭션 커밋 시 UPDATE 자동 실행
+```
+
+이것이 가능한 이유는 영속성 컨텍스트가 엔티티를 영속 상태로 만들 때 **스냅샷**을 저장하기 때문이다. flush 시점에 현재 상태와 스냅샷을 비교해 변경된 필드가 있으면 UPDATE SQL을 생성한다.
+
+```
+엔티티 로드 → 스냅샷 저장
+트랜잭션 내 변경
+flush → 스냅샷과 현재 상태 비교 → UPDATE SQL 생성
+커밋 → DB 반영
+```
+
+## 쓰기 지연(Write-Behind)
+
+영속성 컨텍스트는 변경 쿼리를 즉시 DB에 보내지 않는다. 내부 **SQL 저장소**에 모아뒀다가 flush 시점에 한꺼번에 보낸다.
+
+```java
+em.persist(new User("kim"));  // INSERT 저장만
+em.persist(new User("lee"));  // INSERT 저장만
+// ...
+em.flush();  // 이때 INSERT 2건 DB로 전송
+```
+
+이 덕분에 불필요한 DB 왕복을 줄이고, 배치 처리를 활용할 수 있다.
+
+## 지연 로딩(Lazy Loading)
+
+연관 엔티티를 `FetchType.LAZY`로 설정하면 실제 필드 접근 전까지 DB 조회를 미룬다. 영속성 컨텍스트가 살아 있는 동안은 프록시가 필요 시점에 쿼리를 날린다.
+
+```java
+@Transactional
+public void process(Long orderId) {
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    // order.getItems()는 아직 DB 조회 안 함
+
+    List<Item> items = order.getItems(); // 이 시점에 SELECT
+}
+```
+
+영속성 컨텍스트 밖(트랜잭션 종료 후)에서 지연 로딩을 시도하면 `LazyInitializationException`이 발생한다. 준영속 상태이므로 컨텍스트가 쿼리를 대신 날려줄 수 없기 때문이다.
+
+## 일반 캐시와의 차이 정리
+
+| 항목 | 일반 캐시 | 영속성 컨텍스트 |
+|------|----------|----------------|
+| 수명 | 설정에 따라 다양 | 트랜잭션과 동일 |
+| 동일성 | 보통 복사본 반환 | 같은 인스턴스 보장 |
+| 변경 감지 | 없음 | 스냅샷 비교로 자동 감지 |
+| 쓰기 지연 | 없음 | flush 전까지 SQL 모아서 처리 |
+| 지연 로딩 | 없음 | 프록시 기반으로 지원 |
+
+## 정리
+
+영속성 컨텍스트는 조회 결과를 잠깐 저장하는 캐시가 아니라, 트랜잭션 안에서 도메인 객체의 전체 생명주기를 관리하는 **작업 단위(Unit of Work)** 구현체다. 변경 감지와 쓰기 지연 덕분에 도메인 로직에서 SQL을 직접 다루지 않아도 되지만, 영속 상태와 준영속 상태의 경계를 이해하지 못하면 변경이 반영되지 않거나 `LazyInitializationException`으로 이어진다.
