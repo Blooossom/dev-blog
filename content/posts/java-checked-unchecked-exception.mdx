@@ -1,0 +1,146 @@
+---
+title: Java 예외에서 checked와 unchecked는 왜 나뉘어 있을까
+date: '2026-04-25'
+category: Backend
+tags:
+  - Java
+  - Exception
+  - 예외처리
+  - 설계
+summary: >-
+  Java의 예외 중 checked exception과 unchecked exception은 왜 나뉘어 있을까.
+  두 예외 타입의 경계는 복구 가능성과 책임 소재에 관한 설계 결정이며,
+  현대 Java 개발에서는 unchecked 예외를 선호하는 이유도 여기에 있다.
+thumbnail: /thumbnails/java-checked-unchecked-exception.svg
+---
+
+Java의 예외 중 checked exception과 unchecked exception은 왜 나뉘어 있을까. 단순히 컴파일러가 강제하냐 아니냐의 차이가 아니라, 호출자에게 어떤 책임을 지울 것인가에 대한 설계 결정이다.
+
+## 예외 계층 구조
+
+```
+Throwable
+├── Error           (OutOfMemoryError, StackOverflowError ...)
+│   └── 복구 불가 — 처리하지 않는다
+└── Exception
+    ├── RuntimeException  ← unchecked
+    │   ├── NullPointerException
+    │   ├── IllegalArgumentException
+    │   └── IndexOutOfBoundsException ...
+    └── 그 외 Exception   ← checked
+        ├── IOException
+        ├── SQLException
+        └── ParseException ...
+```
+
+`RuntimeException`과 그 하위 클래스는 **unchecked**, 나머지 `Exception` 하위는 **checked**다.
+
+## Checked Exception: 복구 가능한 외부 상황
+
+Checked exception은 "호출자가 이 상황을 알고 처리해야 한다"는 의미를 컴파일러 수준에서 강제한다. 파일이 없거나 네트워크가 끊기는 등 **외부 환경에 의한 실패**가 대상이다.
+
+```java
+// 컴파일러가 처리를 강제한다
+public String readFile(String path) throws IOException {
+    return Files.readString(Path.of(path));
+}
+
+// 호출자는 반드시 처리하거나 전파해야 한다
+try {
+    String content = readFile("data.txt");
+} catch (IOException e) {
+    // 파일이 없는 경우 → 기본값 반환, 재시도, 사용자 안내 등 복구 로직
+}
+```
+
+설계 의도는 API 작성자가 "이런 실패가 발생할 수 있다"고 시그니처에 명시해, 호출자가 반드시 이를 인지하게 만드는 것이다.
+
+## Unchecked Exception: 프로그래밍 오류
+
+Unchecked exception(`RuntimeException` 하위)은 **코드 버그나 잘못된 사용**을 나타낸다. `null`을 역참조하거나, 배열 범위를 벗어나거나, 잘못된 인자를 전달하는 경우다.
+
+```java
+// 이런 상황은 호출자가 미리 막아야지, try-catch로 처리하는 게 아니다
+String s = null;
+s.length();  // NullPointerException
+
+int[] arr = new int[3];
+arr[5] = 1;  // ArrayIndexOutOfBoundsException
+```
+
+이 경우는 `catch`로 처리하기보다 **버그를 고치는 것**이 맞다. 따라서 컴파일러가 처리를 강제하지 않는다.
+
+## Checked Exception의 문제: 예외 누출과 API 오염
+
+Checked exception의 이론은 타당하지만, 실제로는 문제가 생긴다.
+
+**1. 의미 없는 전파**
+
+```java
+// 계층을 통과하면서 예외가 그대로 올라간다
+public void service() throws IOException { ... }
+public void controller() throws IOException { ... }  // 처리 못하고 전파
+```
+
+복구 로직이 없는데도 `throws IOException`을 계속 붙여야 한다. API 시그니처가 오염되고, 계층 사이의 의존이 생긴다.
+
+**2. 억지 try-catch**
+
+```java
+// 어차피 할 수 있는 게 없는데 억지로 catch
+try {
+    // ...
+} catch (IOException e) {
+    throw new RuntimeException(e); // 결국 unchecked로 감싼다
+}
+```
+
+이렇게 되면 checked의 이점이 사라진다.
+
+**3. 인터페이스 구현 제약**
+
+```java
+@FunctionalInterface
+public interface Processor {
+    void process() throws IOException; // checked가 있으면 람다 사용이 불편해진다
+}
+```
+
+## 현대 Java와 Spring의 선택
+
+Spring Framework는 초창기 JdbcTemplate에서 `SQLException`(checked)을 `DataAccessException`(unchecked)으로 감싸는 방식을 선택했다. 이유는 명확했다. `SQLException`을 잡아서 실제로 복구할 수 있는 호출자가 거의 없기 때문이다.
+
+현대 Java 개발에서는 대체로 다음 기준을 따른다.
+
+| 상황 | 권장 예외 타입 |
+|------|--------------|
+| 호출자가 복구 로직을 작성할 수 있는 경우 | Checked |
+| 프로그래밍 오류, 잘못된 입력 | Unchecked (IllegalArgumentException 등) |
+| 외부 시스템 실패 (DB, 파일, 네트워크) | Unchecked로 감싸서 전파 |
+| 비즈니스 규칙 위반 | Unchecked (커스텀 예외) |
+
+도메인 예외를 정의할 때는 `RuntimeException`을 상속한 커스텀 예외를 만드는 것이 일반적이다.
+
+```java
+public class OrderNotFoundException extends RuntimeException {
+    public OrderNotFoundException(Long orderId) {
+        super("Order not found: " + orderId);
+    }
+}
+```
+
+## Checked를 Unchecked로 전환할 때
+
+Checked exception을 Unchecked로 감쌀 때는 원인 예외를 반드시 함께 전달해야 스택 트레이스가 보존된다.
+
+```java
+try {
+    Files.readString(path);
+} catch (IOException e) {
+    throw new FileReadException("파일 읽기 실패: " + path, e); // cause 포함
+}
+```
+
+## 정리
+
+Checked exception은 "이 실패를 호출자가 반드시 인식해야 한다"는 설계 의도를 가지지만, 복구 가능성이 없는 곳에서 강제하면 코드만 복잡해진다. 핵심은 **호출자가 실제로 의미 있는 복구 로직을 작성할 수 있는가**로 판단하는 것이며, 대부분의 현대 Java 라이브러리와 프레임워크는 unchecked 예외를 선호하는 방향으로 수렴하고 있다.
