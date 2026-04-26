@@ -1,0 +1,143 @@
+---
+title: Java final 키워드 — 변수, 메서드, 클래스에서 무엇이 다를까
+date: '2026-04-26'
+category: Backend
+tags:
+  - Java
+  - final
+  - 불변성
+  - 객체지향
+summary: >-
+  Java의 `final` 키워드는 단 하나의 예약어지만 붙는 위치에 따라 의미가 완전히 달라진다.
+  변수의 재할당 금지, 메서드의 오버라이드 금지, 클래스의 상속 금지라는 세 가지 맥락을 정확히 이해해야
+  의도한 불변성 설계를 코드로 옮길 수 있다.
+thumbnail: /thumbnails/java-final-keyword.svg
+---
+
+Java의 `final`은 변수, 메서드, 클래스에서 각각 어떤 의미가 다를까? 같은 키워드가 맥락에 따라 전혀 다른 제약을 만들기 때문에, 정확히 구분하지 않으면 의도치 않은 버그나 설계 실수를 마주치게 된다.
+
+## final 변수 — 재할당 금지, 내용 변경은 별개
+
+`final` 변수는 **한 번만 초기화**할 수 있다. 이후 같은 변수에 다른 값을 재할당하면 컴파일 오류가 발생한다.
+
+```java
+final int MAX = 100;
+MAX = 200; // 컴파일 오류
+```
+
+핵심 주의점은 **객체 참조**에 `final`을 붙였을 때다. 참조 자체는 고정되지만, 참조가 가리키는 객체의 내부 상태는 여전히 변경 가능하다.
+
+```java
+final List<String> list = new ArrayList<>();
+list.add("item");  // 가능 — 객체 내부 변경
+list = new ArrayList<>(); // 컴파일 오류 — 참조 재할당
+```
+
+이 차이를 무시하면 `final`을 붙였는데도 데이터가 외부에서 바뀌는 상황을 만난다.
+
+### 지역 변수 vs 인스턴스 필드
+
+| 구분 | 초기화 시점 |
+|------|------------|
+| 지역 변수 | 선언 시점 또는 사용 전 한 번 |
+| 인스턴스 필드 | 선언 시점 또는 생성자 내 한 번 |
+| static 필드 | 선언 시점 또는 static 블록 내 한 번 |
+
+```java
+class Order {
+    private final String id;       // 인스턴스 필드
+    private static final int MAX_QTY = 999; // static 필드
+
+    Order(String id) {
+        this.id = id; // 생성자에서 초기화
+    }
+}
+```
+
+## final 메서드 — 오버라이드 금지
+
+메서드에 `final`을 붙이면 하위 클래스가 해당 메서드를 **오버라이드할 수 없다**. 템플릿 메서드 패턴에서 공통 알고리즘 뼈대를 고정할 때 활용한다.
+
+```java
+class BaseService {
+    public final void execute() {
+        validate();
+        doExecute();
+        audit();
+    }
+
+    protected void doExecute() {
+        // 하위 클래스가 이 부분만 교체
+    }
+
+    private void validate() { /* ... */ }
+    private void audit()    { /* ... */ }
+}
+```
+
+`execute()` 자체는 변경 불가이지만, `doExecute()`는 오버라이드 가능하다. 이렇게 하면 알고리즘의 뼈대는 유지하면서 세부 구현만 교체할 수 있다.
+
+### final 메서드와 성능
+
+JIT 컴파일러는 `final` 메서드를 인라인(inline) 최적화 대상으로 더 적극적으로 고려할 수 있다. 다만 현대 JVM은 오버라이드 이력이 없으면 `final`이 없어도 인라인하므로, 성능을 이유로 무분별하게 붙이는 것은 권장하지 않는다.
+
+## final 클래스 — 상속 금지
+
+클래스에 `final`을 붙이면 해당 클래스를 **상속할 수 없다**.
+
+```java
+public final class SSN {
+    private final String value;
+
+    SSN(String value) {
+        this.value = validate(value);
+    }
+    // ...
+}
+```
+
+`SSN`을 상속해 `validate()`를 우회하는 하위 클래스를 만들면 불변식이 깨진다. `final`로 막으면 이런 확장을 원천 차단한다.
+
+대표적인 예시가 JDK의 `String`이다. `String`이 `final`이기 때문에 누구도 상속해서 내부 동작을 바꿀 수 없고, JVM이 `String` 관련 최적화를 안전하게 적용할 수 있다.
+
+### 언제 final 클래스가 좋은 선택인가
+
+- 불변 값 객체(Value Object)를 설계할 때
+- 보안 상 확장을 막아야 하는 유틸리티 클래스
+- 내부 구현이 상속과 무관하게 완결된 경우
+
+반대로, 프레임워크가 CGLIB 프록시를 생성해야 하는 클래스에 `final`을 붙이면 Spring AOP나 JPA 지연 로딩이 동작하지 않아 런타임 오류가 발생한다.
+
+## 세 가지 final 비교 요약
+
+| 위치 | 제약 | 내부 상태 변경 |
+|------|------|--------------|
+| 변수 | 재할당 불가 | 참조 대상 객체는 변경 가능 |
+| 메서드 | 오버라이드 불가 | 메서드 로직 그대로 실행 |
+| 클래스 | 상속 불가 | 인스턴스 생성 및 사용 가능 |
+
+## 실무 활용 패턴
+
+```java
+// 1. 의존성 필드는 final로 선언해 생성자 주입 강제
+@Service
+public class OrderService {
+    private final OrderRepository orderRepository;
+
+    public OrderService(OrderRepository orderRepository) {
+        this.orderRepository = orderRepository;
+    }
+}
+
+// 2. 상수는 static final
+public class TimeoutConstants {
+    public static final int DB_TIMEOUT_MS    = 3_000;
+    public static final int REDIS_TIMEOUT_MS = 500;
+}
+
+// 3. 람다 캡처 변수는 effectively final
+int threshold = 100;
+list.stream().filter(x -> x > threshold); // threshold가 재할당되지 않으면 OK
+```
+
+`final`은 "이 값(또는 계약)은 변하지 않는다"는 의도를 컴파일러가 검증해주는 도구다. 재할당 금지, 오버라이드 금지, 상속 금지라는 세 맥락을 구분해 사용하면 코드의 의도가 명확해지고 실수를 컴파일 타임에 잡아낼 수 있다.
