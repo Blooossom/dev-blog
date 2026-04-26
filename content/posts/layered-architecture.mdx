@@ -1,0 +1,207 @@
+---
+title: Layered Architecture, 폴더 나누기가 아닌 의존성 방향의 문제
+date: '2026-04-26'
+category: Architecture
+tags:
+  - Layered Architecture
+  - 아키텍처
+  - Spring
+  - 설계 패턴
+summary: >-
+  Layered Architecture는 단순히 controller, service, repository 폴더를 만드는
+  관례가 아니다. 각 계층이 오직 아래 계층에만 의존하도록 강제하는 구조적 규칙이며,
+  이를 지키지 않으면 계층 분리가 이름뿐인 형식이 된다.
+thumbnail: /thumbnails/layered-architecture.svg
+---
+
+Layered Architecture는 단순히 controller, service, repository 폴더를 나누는 것일까? 많은 Spring 프로젝트가 이 세 폴더를 만드는 것으로 레이어드 아키텍처를 적용했다고 생각하지만, 정작 계층 간 의존성 방향을 지키지 않으면 구조적 이점을 전혀 얻지 못한다. 핵심은 **의존성이 한 방향으로만 흐르도록** 강제하는 규칙이다.
+
+## 계층 구조와 의존성 방향
+
+전통적인 4계층 아키텍처는 다음과 같다.
+
+```
+Presentation Layer  (Controller, View)
+        ↓
+Application Layer   (Service, Use Case)
+        ↓
+Domain Layer        (Entity, Domain Logic)
+        ↓
+Infrastructure Layer (Repository, DB, External API)
+```
+
+화살표 방향이 핵심이다. 상위 계층은 하위 계층을 사용(의존)하지만, 하위 계층은 상위 계층을 전혀 알지 못한다. Domain Layer는 HTTP나 DB를 모르고, Service는 Controller를 모른다.
+
+## 계층별 책임
+
+| 계층 | 책임 | Spring 구성 요소 |
+|---|---|---|
+| Presentation | 요청 수신, 응답 직렬화 | `@Controller`, `@RestController` |
+| Application | 유스케이스 조율, 트랜잭션 경계 | `@Service` |
+| Domain | 비즈니스 규칙, 도메인 객체 | Entity, Value Object |
+| Infrastructure | DB 접근, 외부 시스템 연동 | `@Repository`, JPA, HTTP Client |
+
+## 흔한 위반 패턴들
+
+### 위반 1: Service가 Controller 객체를 직접 참조
+
+```java
+// 잘못된 예: Service가 HttpServletRequest를 직접 받음
+@Service
+public class OrderService {
+    public OrderResponse create(HttpServletRequest request) {  // 위반
+        String userId = request.getHeader("X-User-Id");
+        // ...
+    }
+}
+```
+
+`HttpServletRequest`는 Presentation Layer 개념이다. Service가 이를 참조하면 Application Layer가 Presentation Layer에 역방향으로 의존하게 된다. HTTP 요청 방식이 바뀌면 Service도 바꿔야 한다.
+
+```java
+// 올바른 예: Controller에서 필요한 값만 추출해서 Service에 전달
+@RestController
+public class OrderController {
+    @PostMapping("/orders")
+    public OrderResponse create(@RequestHeader("X-User-Id") String userId,
+                                @RequestBody CreateOrderRequest req) {
+        return orderService.create(userId, req.toCommand());
+    }
+}
+```
+
+### 위반 2: Repository에서 Domain 로직 처리
+
+```java
+// 잘못된 예: Repository가 비즈니스 판단을 포함
+@Repository
+public class OrderRepository {
+    public void save(Order order) {
+        if (order.getStatus() == PENDING && order.getAmount() > 1_000_000) {
+            // 대금 검증 로직?? → Domain이 담당해야 할 책임
+        }
+        em.persist(order);
+    }
+}
+```
+
+Repository는 데이터 저장/조회에만 집중해야 한다. 비즈니스 판단은 Domain 또는 Application Layer에 있어야 한다.
+
+### 위반 3: Controller에서 비즈니스 로직 처리
+
+```java
+// 잘못된 예: Controller가 할인율 계산
+@RestController
+public class ProductController {
+    @GetMapping("/products/{id}/price")
+    public PriceResponse getPrice(@PathVariable Long id) {
+        Product product = productRepository.findById(id).orElseThrow();
+        double discount = product.getCategory().equals("SALE") ? 0.1 : 0.0;
+        double finalPrice = product.getPrice() * (1 - discount);  // 비즈니스 로직
+        return new PriceResponse(finalPrice);
+    }
+}
+```
+
+할인율 계산은 비즈니스 규칙이다. Controller가 Repository에 직접 접근하고 비즈니스 로직까지 처리하면 Application Layer와 Domain Layer가 사실상 없는 것이다.
+
+## 올바른 계층 구조 예제
+
+```java
+// Domain: 비즈니스 규칙 담당
+public class Order {
+    private Long id;
+    private OrderStatus status;
+    private Money amount;
+
+    public void cancel() {
+        if (status != PENDING) {
+            throw new IllegalStateException("PENDING 상태만 취소 가능합니다.");
+        }
+        this.status = CANCELLED;
+    }
+}
+
+// Application: 유스케이스 조율
+@Service
+@Transactional
+public class OrderService {
+    private final OrderRepository orderRepository;
+
+    public void cancelOrder(Long orderId) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new OrderNotFoundException(orderId));
+        order.cancel();  // 비즈니스 로직은 Domain에 위임
+        orderRepository.save(order);
+    }
+}
+
+// Presentation: 요청/응답 처리
+@RestController
+public class OrderController {
+    private final OrderService orderService;
+
+    @DeleteMapping("/orders/{id}")
+    public ResponseEntity<Void> cancel(@PathVariable Long id) {
+        orderService.cancelOrder(id);
+        return ResponseEntity.noContent().build();
+    }
+}
+```
+
+각 계층이 자신의 책임만 수행하고, 의존성은 위에서 아래로만 흐른다.
+
+## 계층 경계를 강제하는 방법
+
+### 패키지 구조로 가시화
+
+```
+com.example.order
+├── presentation
+│   ├── OrderController.java
+│   └── dto/
+├── application
+│   ├── OrderService.java
+│   └── command/
+├── domain
+│   ├── Order.java
+│   ├── OrderStatus.java
+│   └── OrderRepository.java  ← 인터페이스만 (구현은 infrastructure에)
+└── infrastructure
+    ├── JpaOrderRepository.java
+    └── OrderMapper.java
+```
+
+Domain Layer에는 `OrderRepository` 인터페이스만 선언하고, 실제 JPA 구현은 Infrastructure Layer에 둔다. 이 방식으로 Domain이 JPA에 의존하지 않는다.
+
+### ArchUnit으로 규칙 검증
+
+```java
+@Test
+void domainShouldNotDependOnInfrastructure() {
+    JavaClasses classes = new ClassFileImporter()
+        .importPackages("com.example.order");
+
+    ArchRule rule = noClasses()
+        .that().resideInAPackage("..domain..")
+        .should().dependOnClassesThat()
+        .resideInAPackage("..infrastructure..");
+
+    rule.check(classes);
+}
+```
+
+ArchUnit 같은 라이브러리로 의존성 방향 위반을 테스트로 검출할 수 있다.
+
+## 폴더 나누기와 아키텍처의 차이
+
+| 구분 | 폴더 구분 | 레이어드 아키텍처 |
+|---|---|---|
+| 목적 | 파일 분류 | 의존성 방향 통제 |
+| 강제 | 없음 (관례) | 있음 (규칙 위반 시 구조 붕괴) |
+| 효과 | 코드 찾기 편함 | 변경 파급 범위 예측 가능 |
+| 검증 | 없음 | ArchUnit, 코드 리뷰 |
+
+## 정리
+
+레이어드 아키텍처의 본질은 의존성이 단방향으로 흐르도록 강제하는 것이다. 폴더를 controller/service/repository로 나누는 것은 시작일 뿐이며, 각 계층이 자신의 위 계층을 전혀 알지 못하고 아래 계층에만 의존하는 규칙이 지켜질 때 비로소 유지보수 가능한 구조가 된다.
