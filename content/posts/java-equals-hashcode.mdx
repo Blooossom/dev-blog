@@ -1,0 +1,171 @@
+---
+title: 'equals()와 hashCode()를 잘못 구현하면 HashMap이 망가지는 이유'
+date: '2026-04-26'
+category: Backend
+tags:
+  - Java
+  - HashMap
+  - equals
+  - hashCode
+summary: >-
+  HashMap에서 equals()와 hashCode()를 잘못 구현하면 키 조회가 실패하거나 중복 키가 쌓이는 심각한 버그가 발생한다.
+  두 메서드가 어떤 계약을 맺고 있는지, 그리고 위반 시 어떤 증상이 나타나는지 살펴본다.
+thumbnail: /thumbnails/java-equals-hashcode.svg
+---
+
+`HashMap`에서 `equals()`와 `hashCode()`를 잘못 구현하면 키를 넣었는데도 꺼낼 수 없는 기이한 버그가 생긴다. 이 두 메서드는 단순히 "같은 객체인지 확인하는 도구"가 아니라, Java 컬렉션 전체가 의존하는 불변 계약이다.
+
+## HashMap이 키를 찾는 방식
+
+`HashMap`은 키를 버킷(bucket) 배열에 저장한다. 키를 넣거나 찾을 때 다음 두 단계를 거친다.
+
+```
+1. hashCode() → 버킷 인덱스 계산
+2. equals()   → 같은 버킷 안에서 실제 키 비교
+```
+
+```
+버킷 배열
+ [0] → null
+ [1] → (key="A", value=1) → (key="B", value=2)
+ [2] → null
+ ...
+```
+
+`put(key, value)` 호출 시:
+1. `key.hashCode()`로 버킷 위치를 결정한다.
+2. 해당 버킷에 이미 항목이 있으면 `equals()`로 기존 키와 비교한다.
+3. 같으면 값을 덮어쓰고, 다르면 연결 리스트(또는 트리)에 추가한다.
+
+`get(key)` 호출 시도 동일하다. `hashCode()`로 버킷을 찾고, 그 안에서 `equals()`로 정확한 키를 찾는다.
+
+## 계약: equals와 hashCode의 불변 규칙
+
+Java 공식 문서가 명시하는 계약은 다음과 같다.
+
+| 규칙 | 설명 |
+|------|------|
+| 일관성 | 객체가 변경되지 않는 한, `hashCode()`는 항상 같은 값을 반환해야 한다 |
+| equals가 true이면 hashCode도 같아야 한다 | `a.equals(b)`가 `true`면 `a.hashCode() == b.hashCode()`여야 한다 |
+| hashCode가 같아도 equals는 false일 수 있다 | 해시 충돌은 허용된다 |
+
+이 중 가장 중요한 것은 두 번째 규칙이다.
+
+## 잘못된 구현 사례 1: hashCode만 재정의하지 않음
+
+```java
+public class User {
+    private String name;
+    private int age;
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof User)) return false;
+        User user = (User) o;
+        return age == user.age && Objects.equals(name, user.name);
+    }
+    // hashCode 재정의 없음!
+}
+```
+
+```java
+Map<User, String> map = new HashMap<>();
+User u1 = new User("Alice", 30);
+User u2 = new User("Alice", 30);
+
+map.put(u1, "engineer");
+System.out.println(map.get(u2)); // null ← 찾지 못한다
+```
+
+`u1.equals(u2)`는 `true`이지만, `hashCode()`가 Object 기본 구현(메모리 주소 기반)이므로 두 값이 다르다. `get(u2)`은 엉뚱한 버킷을 탐색하므로 항상 `null`을 반환한다.
+
+## 잘못된 구현 사례 2: 가변 필드를 hashCode에 포함
+
+```java
+public class Order {
+    private String id;
+    private String status; // 변경 가능한 필드
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, status); // 위험
+    }
+
+    @Override
+    public boolean equals(Object o) { ... }
+}
+```
+
+```java
+Map<Order, List<Item>> orderMap = new HashMap<>();
+Order order = new Order("ORD-1", "PENDING");
+orderMap.put(order, items);
+
+order.setStatus("SHIPPED"); // status 변경
+
+orderMap.get(order); // null ← 버킷 위치가 달라졌다
+```
+
+객체를 맵에 넣은 뒤 해시 계산에 참여하는 필드를 변경하면, 원래 저장된 버킷과 현재 조회 버킷이 달라진다. 이 경우 값이 맵에 존재하는데도 찾지 못한다.
+
+## 올바른 구현
+
+불변 필드 또는 식별자 필드만 `equals()`와 `hashCode()`에 포함해야 한다.
+
+```java
+public class User {
+    private final String email; // 식별자, 불변
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof User)) return false;
+        User user = (User) o;
+        return Objects.equals(email, user.email);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(email);
+    }
+}
+```
+
+Lombok을 사용하는 경우:
+
+```java
+@EqualsAndHashCode(of = "email") // 불변 식별자 필드만 지정
+public class User {
+    private final String email;
+    private String name; // 포함하지 않음
+}
+```
+
+## HashSet에서도 동일한 문제가 발생한다
+
+`HashSet`도 내부적으로 `HashMap`을 사용하므로 같은 버그가 발생한다.
+
+```java
+Set<User> set = new HashSet<>();
+User u1 = new User("Alice", 30);
+User u2 = new User("Alice", 30);
+
+set.add(u1);
+System.out.println(set.contains(u2)); // hashCode 불일치 시 false
+set.add(u2);
+System.out.println(set.size()); // 2 ← 중복이 쌓인다
+```
+
+중복을 허용하지 않아야 하는 `Set`에 동일한 의미의 객체가 무한히 추가되는 심각한 버그다.
+
+## 계약 위반 요약
+
+| 위반 유형 | 증상 |
+|-----------|------|
+| `equals` 재정의, `hashCode` 미재정의 | `get()` 항상 null, `contains()` 항상 false |
+| 가변 필드를 `hashCode`에 포함 | 변경 후 조회 불가, 메모리 누수 |
+| `hashCode` 재정의, `equals` 미재정의 | 중복 키 허용, 의도치 않은 값 덮어쓰기 방지 실패 |
+| `hashCode`를 항상 같은 값으로 반환 | 모든 항목이 한 버킷에 쌓여 O(n) 성능 저하 |
+
+`equals()`와 `hashCode()`는 반드시 함께 재정의해야 하며, 불변 식별자 필드만을 기준으로 삼는 것이 안전하다. Java 컬렉션 프레임워크 전체가 이 계약 위에 작동한다는 사실을 기억해야 한다.
