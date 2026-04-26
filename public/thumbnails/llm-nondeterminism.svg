@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a0730"/>
+      <stop offset="100%" stop-color="#4a1070"/>
+    </linearGradient>
+    <linearGradient id="lf" x1="100%" y1="0%" x2="20%" y2="0%">
+      <stop offset="0%"   stop-color="#1a0730" stop-opacity="0"/>
+      <stop offset="55%"  stop-color="#1a0730" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#1a0730" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="bf" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#4a1070" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1a0730" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Pattern -->
+  <line x1="640" y1="220" x2="820" y2="180"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="220" x2="820" y2="270"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="220" x2="820" y2="360"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="220" x2="820" y2="450"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="320" x2="820" y2="180"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="320" x2="820" y2="270"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="320" x2="820" y2="360"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="320" x2="820" y2="450"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="420" x2="820" y2="180"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="420" x2="820" y2="270"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="420" x2="820" y2="360"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="640" y1="420" x2="820" y2="450"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="820" y1="180" x2="1000" y2="240"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="820" y1="180" x2="1000" y2="360"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="820" y1="270" x2="1000" y2="240"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="820" y1="270" x2="1000" y2="360"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="820" y1="360" x2="1000" y2="240"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="820" y1="360" x2="1000" y2="360"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="820" y1="450" x2="1000" y2="240"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="820" y1="450" x2="1000" y2="360"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="1000" y1="240" x2="1110" y2="300"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+<line x1="1000" y1="360" x2="1110" y2="300"
+          stroke="#f0abfc" stroke-width="1" stroke-opacity="0.14"/>
+    <circle cx="640" cy="220" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="640" cy="220" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+    <circle cx="640" cy="320" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="640" cy="320" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+    <circle cx="640" cy="420" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="640" cy="420" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+    <circle cx="820" cy="180" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="820" cy="180" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+    <circle cx="820" cy="270" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="820" cy="270" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+    <circle cx="820" cy="360" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="820" cy="360" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+    <circle cx="820" cy="450" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="820" cy="450" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+    <circle cx="1000" cy="240" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="1000" cy="240" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+    <circle cx="1000" cy="360" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="1000" cy="360" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+    <circle cx="1110" cy="300" r="18" fill="#f0abfc" fill-opacity="0.1"
+      stroke="#f0abfc" stroke-width="1.5" stroke-opacity="0.35"/>
+    <circle cx="1110" cy="300" r="9" fill="#f0abfc" fill-opacity="0.3"/>
+  
+
+  <!-- Left & bottom fade overlays -->
+  <rect width="1200" height="630" fill="url(#lf)"/>
+  <rect width="1200" height="630" fill="url(#bf)"/>
+
+  <!-- Category badge -->
+  <rect x="60" y="52" width="48" height="32" rx="16"
+    fill="#f0abfc" fill-opacity="0.15"
+    stroke="#f0abfc" stroke-width="1" stroke-opacity="0.5"/>
+  <text x="74" y="73"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="13" font-weight="700" letter-spacing="2.5"
+    fill="#f0abfc" fill-opacity="0.95">AI</text>
+
+  <!-- Title -->
+  
+  <text x="60" y="516"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="40" font-weight="800"
+    fill="white" fill-opacity="0.95">LLM 기반 애플리케이션의 비결정성</text>
+  <text x="60" y="562"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="40" font-weight="800"
+    fill="white" fill-opacity="0.95">왜 CRUD와 다른가</text>
+</svg>

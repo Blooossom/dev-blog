@@ -520,6 +520,11 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'sql-function-index':             { pattern: 'layers',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'layered-architecture':           { pattern: 'layers',   colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
   'prompt-engineering-contract':    { pattern: 'neural',   colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'java-final-keyword':             { pattern: 'code',     colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'kernel-user-mode':               { pattern: 'layers',   colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
+  'hashtable-collision':            { pattern: 'code',     colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
+  'read-heavy-write-heavy':         { pattern: 'layers',   colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'llm-nondeterminism':             { pattern: 'neural',   colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
