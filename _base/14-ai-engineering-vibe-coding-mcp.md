@@ -6,7 +6,7 @@
 
 451. LLM 기반 애플리케이션은 일반 CRUD 서비스와 비교해 왜 입력, 출력, 실패 모드가 더 비결정적인가?
 452. AI 기능을 제품에 넣을 때 모델 선택보다 먼저 정의해야 할 task boundary와 success metric은 무엇일까?
-453. prompt engineering은 단순 문장 튜닝일까, 입력 계약과 출력 계약을 설계하는 작업일까?
+~~453. prompt engineering은 단순 문장 튜닝일까, 입력 계약과 출력 계약을 설계하는 작업일까?~~ `작성완료`
 454. system prompt, developer prompt, user prompt는 각각 어떤 책임과 우선순위를 가져야 할까?
 455. structured output을 강제하면 후처리 파싱 문제는 줄지만, 모델 실패는 어떤 형태로 남을까?
 456. function calling과 tool calling은 모델이 직접 일을 처리하는 구조와 비교해 어떤 제어권을 애플리케이션에 돌려줄까?

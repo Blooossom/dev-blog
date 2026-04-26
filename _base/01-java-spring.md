@@ -6,7 +6,7 @@
 
 1. Java의 `Random`은 진짜 랜덤인가, 아니면 예측 가능한 값인가?
 ~~2. `String`은 왜 불변 객체로 설계되었을까?~~ `작성완료`
-3. `StringBuilder`와 `StringBuffer`는 실제로 어떤 차이가 있고, 언제 체감될까?
+~~3. `StringBuilder`와 `StringBuffer`는 실제로 어떤 차이가 있고, 언제 체감될까?~~ `작성완료`
 ~~4. `HashMap`은 키를 어떤 방식으로 저장하고 찾을까?~~ `작성완료`
 5. `HashMap`에서 `equals()`와 `hashCode()`를 잘못 구현하면 어떤 문제가 생길까?
 6. Java의 `final`은 변수, 메서드, 클래스에서 각각 어떤 의미가 다를까?

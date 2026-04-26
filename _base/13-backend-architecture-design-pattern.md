@@ -4,7 +4,7 @@
 
 ## Backend Architecture
 
-301. layered architecture는 단순히 controller, service, repository 폴더를 나누는 것일까?
+~~301. layered architecture는 단순히 controller, service, repository 폴더를 나누는 것일까?~~ `작성완료`
 302. domain layer가 application layer나 infrastructure layer에 의존하면 어떤 유지보수 문제가 생길까?
 ~~303. hexagonal architecture에서 port와 adapter는 외부 의존성을 어떻게 격리할까?~~ `작성완료`
 304. clean architecture는 모든 프로젝트에 필요한 구조일까, 복잡도 대비 이점은 언제 커질까?
