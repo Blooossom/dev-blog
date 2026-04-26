@@ -1,0 +1,178 @@
+---
+title: 'Event Sourcing: 이벤트로 상태를 저장할 때의 장점과 디버깅 난제'
+date: '2026-04-26'
+category: Architecture
+tags:
+  - Event Sourcing
+  - DDD
+  - CQRS
+  - Architecture
+summary: >-
+  Event Sourcing은 현재 상태 대신 상태 변화 이벤트를 저장하는 패턴이다.
+  완전한 감사 로그와 시간 여행 디버깅이 가능하지만, 이벤트 스키마 진화와 리플레이 성능 문제를 함께 다뤄야 한다.
+thumbnail: /thumbnails/event-sourcing.svg
+---
+
+Event Sourcing은 상태를 저장하는 대신 이벤트를 저장하면서 어떤 장점과 디버깅 난제를 만들까? 전통적인 CRUD 방식이 "현재 상태"를 저장한다면, Event Sourcing은 "무슨 일이 일어났는가"를 저장한다. 현재 상태는 이벤트를 순서대로 재생(replay)하여 도출한다.
+
+## 전통 방식 vs Event Sourcing
+
+```
+── 전통 방식 (CRUD) ──────────────────────────
+orders 테이블:
+  id=1, status=SHIPPED, total=50000, updated_at=2026-04-25
+
+→ 이 주문이 언제 PENDING이었는지, 왜 수정됐는지 알 수 없다
+
+── Event Sourcing ─────────────────────────────
+order_events 테이블:
+  seq=1, type=OrderPlaced,    payload={total:50000}, at=2026-04-20
+  seq=2, type=PaymentConfirmed, payload={...},       at=2026-04-21
+  seq=3, type=OrderShipped,   payload={trackingNo:X}, at=2026-04-25
+
+→ 현재 상태 = 이벤트 1 + 2 + 3을 순서대로 적용한 결과
+```
+
+## Java(Spring) 구현 예시
+
+```java
+// 이벤트 정의
+public sealed interface OrderEvent permits
+    OrderPlaced, PaymentConfirmed, OrderShipped, OrderCancelled {}
+
+public record OrderPlaced(String orderId, int total, Instant occurredAt)
+    implements OrderEvent {}
+
+public record OrderShipped(String orderId, String trackingNo, Instant occurredAt)
+    implements OrderEvent {}
+
+// Aggregate: 이벤트를 리플레이해 상태를 도출
+public class Order {
+    private String id;
+    private OrderStatus status;
+    private int total;
+    private String trackingNo;
+    private final List<OrderEvent> uncommittedEvents = new ArrayList<>();
+
+    // 리플레이 진입점
+    public static Order reconstitute(List<OrderEvent> history) {
+        Order order = new Order();
+        history.forEach(order::apply);
+        return order;
+    }
+
+    // 비즈니스 커맨드
+    public void ship(String trackingNo) {
+        if (status != OrderStatus.PAID) throw new IllegalStateException("결제 완료 상태에서만 배송 가능");
+        apply(new OrderShipped(id, trackingNo, Instant.now()));
+    }
+
+    // 이벤트 적용 로직 (순수 상태 변경)
+    private void apply(OrderEvent event) {
+        switch (event) {
+            case OrderPlaced e   -> { this.id = e.orderId(); this.total = e.total(); this.status = OrderStatus.PENDING; }
+            case PaymentConfirmed e -> this.status = OrderStatus.PAID;
+            case OrderShipped e  -> { this.status = OrderStatus.SHIPPED; this.trackingNo = e.trackingNo(); }
+            case OrderCancelled e -> this.status = OrderStatus.CANCELLED;
+        }
+        uncommittedEvents.add(event);
+    }
+}
+```
+
+## 장점
+
+### 1. 완전한 감사 로그 (Audit Log)
+
+```
+"2026-04-21 14:23에 결제가 승인됐습니까?" → 이벤트 스토어에서 즉시 확인 가능
+"이 주문의 금액이 왜 바뀌었나요?" → 모든 변경 이벤트가 기록되어 있음
+```
+
+상태 변경의 모든 히스토리가 이벤트로 남기 때문에, 별도 감사 테이블 없이도 완전한 추적이 가능하다.
+
+### 2. 시간 여행 디버깅
+
+특정 시점의 상태를 재현하려면, 그 시점 이전의 이벤트만 리플레이하면 된다.
+
+```java
+// 2026-04-21 이전 상태로 복원
+List<OrderEvent> eventsUntil = eventStore.getEvents(orderId)
+    .stream()
+    .filter(e -> e.occurredAt().isBefore(Instant.parse("2026-04-21T00:00:00Z")))
+    .toList();
+
+Order pastState = Order.reconstitute(eventsUntil);
+```
+
+### 3. 새로운 읽기 모델을 언제든 만들 수 있다
+
+이벤트 스트림은 불변이므로, 새로운 View가 필요하면 기존 이벤트를 다시 리플레이해 원하는 형태의 프로젝션을 생성한다.
+
+```
+OrderEvent 스트림
+  ├── 리플레이 → 주문 현황 뷰 (기존)
+  ├── 리플레이 → 월별 매출 집계 뷰 (신규)
+  └── 리플레이 → 배송 상태 뷰 (신규)
+```
+
+## 디버깅과 운영의 난제
+
+### 1. 이벤트 스키마 진화 문제
+
+이벤트는 불변이므로 과거 이벤트의 구조를 바꿀 수 없다.
+
+```
+// 기존 이벤트
+OrderPlaced { orderId, total }
+
+// 신규 요구사항: couponId 필드 추가
+OrderPlaced { orderId, total, couponId } ← 기존 이벤트와 구조가 다름
+```
+
+이 경우 upcasting(이벤트 마이그레이션)이 필요하다.
+
+```java
+// Upcaster: 리플레이 시 구버전 이벤트를 신버전으로 변환
+public OrderPlacedV2 upcast(OrderPlacedV1 v1) {
+    return new OrderPlacedV2(v1.orderId(), v1.total(), null); // couponId = null
+}
+```
+
+스키마 변경이 쌓이면 업캐스터 체인이 복잡해진다.
+
+### 2. 리플레이 성능
+
+이벤트가 수백만 건 쌓인 Aggregate를 매번 리플레이하면 성능이 저하된다. 이를 해결하기 위해 스냅샷(snapshot)을 활용한다.
+
+```
+이벤트 스토어:
+  seq 1~999: 과거 이벤트
+  seq 1000:  Snapshot (이 시점의 상태를 직렬화해 저장)
+  seq 1001~: 이후 이벤트
+
+리플레이:
+  스냅샷 로드 → 스냅샷 이후 이벤트만 적용 (seq 1001~)
+```
+
+### 3. 쿼리 복잡도
+
+현재 상태가 직접 저장되지 않으므로, "배송 중인 주문 목록 조회" 같은 쿼리를 이벤트 스토어에 직접 실행할 수 없다. CQRS와 함께 사용해 별도 Read Model을 유지해야 한다.
+
+```
+Write Side: 이벤트 저장 (Event Store)
+Read Side: 이벤트 구독 → Order 상태 DB에 반영 (Read Model)
+
+클라이언트 조회 → Read Model DB에서 직접 조회
+```
+
+## Event Sourcing 적합 기준
+
+| 적합한 경우 | 부적합한 경우 |
+|-------------|---------------|
+| 금융, 결제, 주문 (이력 보존 필수) | 단순 CRUD 서비스 |
+| 감사 로그가 규제 요건인 시스템 | 이벤트 스키마가 자주 바뀌는 초기 단계 |
+| 읽기 모델이 다양하게 필요한 경우 | 소규모 팀, 낮은 복잡도 요구 |
+| 이벤트 기반 마이크로서비스 | 높은 운영 복잡도를 감당하기 어려운 경우 |
+
+Event Sourcing은 강력한 감사 추적과 유연한 Read Model을 제공하지만, 스키마 진화·리플레이 성능·쿼리 모델 유지라는 운영 복잡도를 함께 안고 가야 한다. CQRS, 스냅샷, 업캐스터 전략을 처음부터 설계에 포함해야 지속 가능한 구조가 된다.
