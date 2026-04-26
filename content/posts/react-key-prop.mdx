@@ -1,0 +1,127 @@
+---
+title: 'React key는 경고 제거용이 아니라 재조정 알고리즘의 핵심이다'
+date: '2026-04-26'
+category: Frontend
+tags:
+  - React
+  - key
+  - Reconciliation
+  - 렌더링 최적화
+summary: >-
+  React의 key prop은 콘솔 경고를 없애기 위한 값이 아니라, 재조정(reconciliation) 알고리즘이
+  리스트 항목을 식별하는 유일한 수단이다. key를 잘못 쓰면 불필요한 DOM 재생성이나 상태 초기화가 발생한다.
+thumbnail: /thumbnails/react-key-prop.svg
+---
+
+React의 `key`는 단순히 콘솔 경고를 없애기 위한 값일까? 실제로는 재조정(reconciliation) 알고리즘이 컴포넌트 트리에서 각 항목을 식별하는 유일한 힌트다. key를 잘못 이해하면 상태 초기화나 불필요한 DOM 재생성 같은 미묘한 버그가 생긴다.
+
+## 재조정 알고리즘과 key의 역할
+
+React는 렌더링이 일어날 때마다 새 가상 DOM 트리를 만들고, 이전 트리와 비교해 최소한의 DOM 변경만 수행한다. 리스트를 비교할 때 두 가지 정보를 사용한다.
+
+1. **element type** - 같은 위치의 타입이 바뀌면 기존 DOM을 버리고 새로 마운트
+2. **key** - 타입이 같더라도 key가 다르면 다른 항목으로 간주
+
+```
+이전 트리          새 트리
+<li key="a">A    <li key="a">A   ← 같음, 재사용
+<li key="b">B    <li key="c">C   ← b 제거, c 새로 생성
+<li key="c">C
+```
+
+key가 없으면 React는 인덱스 순서로 비교한다.
+
+```
+이전 트리          새 트리 (맨 앞에 항목 추가)
+<li>A  [0]       <li>NEW [0]  ← A와 비교 → 내용 다름, 업데이트
+<li>B  [1]       <li>A   [1]  ← B와 비교 → 내용 다름, 업데이트
+                 <li>B   [2]  ← 신규 마운트
+```
+
+key 없이 인덱스 기반으로 비교하면, 리스트 앞에 항목을 추가할 때 모든 항목이 업데이트되고 맨 뒤에 새 항목이 추가된다.
+
+## 잘못된 key 사용 1: 인덱스를 key로 사용
+
+```jsx
+items.map((item, index) => (
+  <ListItem key={index} item={item} />
+))
+```
+
+정렬, 필터링, 앞쪽 삽입이 없는 정적 리스트라면 문제없다. 그러나 순서가 바뀌거나 항목이 추가·삭제되는 경우에는 심각한 버그가 발생한다.
+
+```jsx
+// 각 항목에 입력 상태가 있는 경우
+function TodoList({ items }) {
+  return (
+    <ul>
+      {items.map((item, i) => (
+        <li key={i}>
+          <input defaultValue={item.text} />
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+리스트 앞에 새 항목을 추가하면, React는 key가 동일하다고 판단해 기존 컴포넌트를 재사용한다. 결과적으로 input의 내부 상태(입력값)는 이전 항목 것이 그대로 남고, 새로 전달된 `defaultValue`는 무시된다.
+
+## 잘못된 key 사용 2: Math.random()
+
+```jsx
+items.map(item => (
+  <ListItem key={Math.random()} item={item} />
+))
+```
+
+렌더링마다 key가 바뀌므로 React는 매번 모든 항목을 언마운트하고 새로 마운트한다. 컴포넌트 상태가 매 렌더마다 초기화되고, 애니메이션과 포커스가 깨진다.
+
+## 올바른 key 사용: 안정적인 식별자
+
+```jsx
+items.map(item => (
+  <ListItem key={item.id} item={item} />
+))
+```
+
+데이터의 고유 ID를 key로 사용하면 React는 항목이 어디로 이동했는지 정확히 추적한다.
+
+```
+이전 트리                  새 트리 (a와 b 순서 바뀜)
+<li key="a">Alice          <li key="b">Bob    ← b를 찾아 재배치
+<li key="b">Bob            <li key="a">Alice  ← a를 찾아 재배치
+```
+
+DOM 조작은 이동만 발생하고, 두 항목 모두 재생성 없이 재사용된다.
+
+## key를 활용한 의도적 리셋
+
+반대로 key를 활용해 컴포넌트를 강제로 초기화할 수도 있다. 이는 React 공식 패턴이다.
+
+```jsx
+// userId가 바뀌면 UserProfile을 완전히 새로 마운트
+<UserProfile key={userId} userId={userId} />
+```
+
+`useEffect`에서 상태를 수동으로 초기화하는 대신, key를 바꾸는 방법이 더 단순하고 안전하다. 컴포넌트 내부 상태 전체가 자동으로 초기 상태로 돌아간다.
+
+## key가 prop이 아닌 이유
+
+`key`는 컴포넌트 내부에서 `props.key`로 접근할 수 없다. React가 내부 재조정 용도로만 사용하는 특수 속성이기 때문이다. 컴포넌트에 ID를 전달하려면 별도 prop으로 내려줘야 한다.
+
+```jsx
+<Item key={item.id} id={item.id} data={item} />
+//    ↑ React 전용  ↑ 컴포넌트가 받는 prop
+```
+
+## key 선택 기준 요약
+
+| 상황 | key 권장 값 |
+|------|-------------|
+| 서버에서 온 데이터 | 데이터베이스 ID |
+| 로컬 생성 목록 | `crypto.randomUUID()` (생성 시 한 번만) |
+| 정적이고 순서 변경 없음 | 인덱스도 허용 |
+| 렌더마다 재생성하면 안 됨 | `Math.random()` 사용 금지 |
+
+`key`는 React가 리스트 항목의 정체성을 추적하는 유일한 수단이다. 안정적이고 고유한 값으로 지정하는 것이 렌더링 정확성과 성능 모두를 보장하는 핵심 원칙이다.
