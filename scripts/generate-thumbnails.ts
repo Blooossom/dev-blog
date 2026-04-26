@@ -515,6 +515,11 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'jpa-persistence-context':        { pattern: 'spring',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'dns-cache-problem':              { pattern: 'network',  colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
   'dependency-inversion-principle': { pattern: 'hexagons', colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'java-stringbuilder-stringbuffer': { pattern: 'code',    colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'cpu-cache-locality':             { pattern: 'threads',  colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
+  'sql-function-index':             { pattern: 'layers',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'layered-architecture':           { pattern: 'layers',   colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'prompt-engineering-contract':    { pattern: 'neural',   colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
