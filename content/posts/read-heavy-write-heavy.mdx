@@ -1,0 +1,170 @@
+---
+title: Read-Heavy vs Write-Heavy — 트래픽 성격에 따른 설계 전략
+date: '2026-04-26'
+category: Architecture
+tags:
+  - 시스템설계
+  - 캐시
+  - 데이터베이스
+  - 아키텍처
+summary: >-
+  read-heavy 서비스와 write-heavy 서비스는 병목 지점이 다르기 때문에 캐시, DB, 큐의
+  배치 방식이 근본적으로 달라진다. 트래픽 성격을 먼저 파악하는 것이 모든 설계 결정의 출발점이다.
+thumbnail: /thumbnails/read-heavy-write-heavy.svg
+---
+
+read-heavy 서비스와 write-heavy 서비스는 캐시, DB, 큐 설계가 어떻게 달라질까? 두 유형은 병목이 발생하는 위치 자체가 다르기 때문에, 같은 패턴을 그대로 적용하면 오히려 성능이 나빠질 수 있다.
+
+## 트래픽 성격 진단
+
+먼저 서비스가 어떤 유형인지 파악해야 한다.
+
+| 특성 | Read-Heavy 예시 | Write-Heavy 예시 |
+|------|---------------|-----------------|
+| 비율 | 읽기 95% 이상 | 쓰기 50% 이상 |
+| 서비스 예 | 뉴스 피드, 제품 카탈로그, CDN | 로그 수집, 주문 처리, 센서 데이터 |
+| 주요 병목 | DB 읽기 처리량 | DB 쓰기 처리량, 잠금 경합 |
+
+QPS(초당 쿼리 수)를 읽기/쓰기로 구분해 측정하는 것이 진단의 첫 단계다.
+
+## Read-Heavy 설계
+
+### 캐시 계층 적극 활용
+
+읽기가 많은 경우 DB에 직접 쿼리하는 경로를 줄이는 것이 핵심이다.
+
+```
+클라이언트
+    │
+    ▼
+[CDN / Edge Cache]  ← 정적 자원, 불변 데이터
+    │
+    ▼
+[Application Server]
+    │
+    ▼
+[Redis / Memcached]  ← 자주 읽히는 동적 데이터
+    │  캐시 미스 시만
+    ▼
+[DB (Primary)]
+```
+
+**Cache-Aside 패턴**이 가장 일반적이다. 애플리케이션이 캐시를 먼저 확인하고, 없을 때만 DB를 조회 후 캐시에 저장한다.
+
+```java
+public Product getProduct(Long id) {
+    String key = "product:" + id;
+    Product cached = redis.get(key, Product.class);
+    if (cached != null) return cached;
+
+    Product product = productRepository.findById(id).orElseThrow();
+    redis.set(key, product, Duration.ofMinutes(10));
+    return product;
+}
+```
+
+### DB 읽기 복제본 활용
+
+단일 DB 인스턴스로 읽기 부하를 감당하기 어려워지면 **읽기 전용 복제본(Read Replica)** 을 추가해 읽기를 분산한다.
+
+```
+Write → Primary DB
+Read  → Replica 1, Replica 2, Replica 3
+```
+
+단, Primary → Replica 복제 지연(replication lag)이 있어 복제본에서 최신 데이터를 보장하지 않는다. 강한 일관성이 필요한 읽기는 Primary에서 처리해야 한다.
+
+### 비정규화와 읽기 최적화
+
+조인이 많은 쿼리는 읽기 성능의 적이다. 자주 읽히는 데이터는 비정규화해 단일 테이블 조회로 끝낼 수 있게 한다.
+
+```sql
+-- 정규화된 형태: 매번 JOIN 필요
+SELECT o.id, u.name, p.title
+FROM orders o JOIN users u JOIN products p ...
+
+-- 읽기 최적화: order_summary 테이블에 미리 조합
+SELECT id, user_name, product_title FROM order_summary WHERE ...
+```
+
+## Write-Heavy 설계
+
+### 쓰기 경로 비동기화
+
+쓰기가 많을 경우 동기 처리는 DB를 빠르게 포화시킨다. 메시지 큐를 통해 쓰기를 비동기화한다.
+
+```
+클라이언트
+    │
+    ▼
+[Application Server]
+    │  즉시 응답 (202 Accepted)
+    ▼
+[Message Queue (Kafka / RabbitMQ)]
+    │
+    ▼
+[Consumer (Worker)]
+    │
+    ▼
+[DB Write]
+```
+
+클라이언트는 빠르게 응답을 받고, 실제 DB 쓰기는 백그라운드에서 처리된다. 트래픽 급증 시 큐가 버퍼 역할을 한다.
+
+### 배치 쓰기
+
+개별 INSERT/UPDATE가 많다면 묶어서 한 번에 처리하면 DB 부하를 크게 줄일 수 있다.
+
+```java
+// 건별 쓰기 → DB 커넥션 1000번
+for (Event e : events) {
+    eventRepository.save(e);
+}
+
+// 배치 쓰기 → DB 커넥션 1번
+eventRepository.saveAll(events); // JPA batchSize 설정 필요
+```
+
+JPA에서 배치 쓰기를 활성화하려면 `spring.jpa.properties.hibernate.jdbc.batch_size`를 설정해야 한다.
+
+### 쓰기 DB 선택
+
+관계형 DB는 ACID를 보장하지만 높은 쓰기 처리량에서 잠금 경합이 발생한다. write-heavy 워크로드에 적합한 대안이 있다.
+
+| 솔루션 | 강점 |
+|--------|------|
+| Cassandra | 분산 쓰기, 선형 확장 |
+| TimescaleDB | 시계열 데이터 대량 INSERT |
+| ClickHouse | 분석용 대량 쓰기 |
+| Redis Streams | 실시간 이벤트 버퍼 |
+
+## 혼합 패턴 — CQRS
+
+많은 실제 서비스는 읽기와 쓰기 비율이 도메인마다 다르다. **CQRS(Command Query Responsibility Segregation)** 는 읽기 모델과 쓰기 모델을 완전히 분리한다.
+
+```
+Command (쓰기) → Write DB (PostgreSQL, 정규화)
+                      │ 이벤트 발행
+                      ▼
+Query  (읽기) ← Read DB (Elasticsearch, 비정규화)
+```
+
+쓰기 경로는 정확성을 위해 정규화된 RDBMS를 사용하고, 읽기 경로는 성능을 위해 비정규화된 읽기 전용 저장소를 사용한다.
+
+## 설계 결정 흐름
+
+```
+트래픽 분석
+    │
+    ├─ Read-Heavy?
+    │       ├─ 캐시 계층 추가 (Redis, CDN)
+    │       ├─ Read Replica 도입
+    │       └─ 비정규화 검토
+    │
+    └─ Write-Heavy?
+            ├─ 쓰기 비동기화 (MQ)
+            ├─ 배치 처리 적용
+            └─ write 특화 DB 검토
+```
+
+트래픽 성격을 먼저 측정하고, 그 결과에 따라 캐시, DB 토폴로지, 큐 도입 여부를 결정하는 것이 순서다. 성격이 다른 두 유형에 같은 처방을 내리면 불필요한 복잡도만 늘어난다.
