@@ -1,0 +1,135 @@
+---
+title: 'ACID는 무엇을 보장하고, 실제 DB에서는 어떤 보장이 약해지는가'
+date: '2026-04-26'
+category: Backend
+tags:
+  - Database
+  - ACID
+  - Transaction
+  - 격리 수준
+summary: >-
+  ACID는 트랜잭션이 지켜야 할 네 가지 속성이지만, 실제 데이터베이스 설정에서는
+  성능 트레이드오프로 인해 일부 보장이 완화되는 경우가 많다.
+thumbnail: /thumbnails/db-acid.svg
+---
+
+ACID는 각각 무엇을 보장하고, 실제 DB 설정에서는 어떤 보장이 약해질 수 있을까? ACID는 이론적 이상이지만, 실제 시스템에서는 성능을 위해 각 속성의 강도를 조절할 수 있다. 어떤 속성이 어떤 조건에서 약해지는지 이해해야 장애 상황을 정확히 분석할 수 있다.
+
+## ACID 각 속성의 의미
+
+| 속성 | 이름 | 보장하는 것 |
+|------|------|-------------|
+| A | Atomicity (원자성) | 트랜잭션의 모든 연산이 전부 성공하거나 전부 실패한다 |
+| C | Consistency (일관성) | 트랜잭션 전후로 DB가 정의된 제약 조건을 만족한다 |
+| I | Isolation (격리성) | 동시 트랜잭션이 서로에게 간섭하지 않는다 |
+| D | Durability (지속성) | 커밋된 트랜잭션은 시스템 장애 이후에도 유지된다 |
+
+### Atomicity: 원자성
+
+```
+트랜잭션 T1:
+  1. accounts에서 A 잔액 -10000 ← 성공
+  2. accounts에서 B 잔액 +10000 ← 실패 (네트워크 오류)
+  → A의 돈만 사라짐 (불완전 상태)
+
+원자성이 보장되면:
+  1번도 롤백 → A 잔액 원상복구
+```
+
+DB는 undo log(롤백 세그먼트)에 변경 전 상태를 기록해 실패 시 복구한다.
+
+### Consistency: 일관성
+
+```sql
+-- 제약 조건 예시
+ALTER TABLE accounts ADD CONSTRAINT chk_balance CHECK (balance >= 0);
+
+-- 트랜잭션이 balance를 음수로 만들려 하면 DB가 거부한다
+UPDATE accounts SET balance = balance - 999999 WHERE id = 1;
+-- ERROR: CHECK constraint violated
+```
+
+Consistency는 DB가 보장하는 부분(제약 조건)과 애플리케이션이 보장해야 하는 부분(비즈니스 규칙)이 섞여 있다. DB는 자신이 아는 제약만 검증한다.
+
+### Isolation: 격리성
+
+격리성은 수준(level)을 선택할 수 있다. 높을수록 정합성이 강해지고, 낮을수록 처리량이 높아진다.
+
+| 격리 수준 | Dirty Read | Non-repeatable Read | Phantom Read |
+|-----------|-----------|---------------------|--------------|
+| READ UNCOMMITTED | 허용 | 허용 | 허용 |
+| READ COMMITTED | 방지 | 허용 | 허용 |
+| REPEATABLE READ | 방지 | 방지 | 허용 (MySQL InnoDB는 방지) |
+| SERIALIZABLE | 방지 | 방지 | 방지 |
+
+대부분의 DB(PostgreSQL, MySQL)는 기본값으로 `READ COMMITTED` 또는 `REPEATABLE READ`를 사용한다. `SERIALIZABLE`은 완전한 격리를 보장하지만 처리량 저하가 크다.
+
+### Durability: 지속성
+
+```
+Write Ahead Log (WAL) 흐름:
+  1. 변경 내용을 WAL(로그)에 먼저 기록
+  2. WAL을 디스크에 fsync
+  3. 데이터 파일에 실제 반영
+
+→ 2단계까지 완료 후 크래시가 나도, 재시작 시 WAL로 복구 가능
+```
+
+## 실제 DB 설정에서 약해지는 보장
+
+### fsync를 끄면 Durability가 깨진다
+
+```sql
+-- PostgreSQL
+SET synchronous_commit = off;
+
+-- MySQL InnoDB
+SET innodb_flush_log_at_trx_commit = 0; -- 1초마다 flush
+```
+
+`synchronous_commit = off`로 설정하면 커밋 응답을 즉시 주되, WAL이 디스크에 확실히 기록되지 않은 상태에서 응답한다. 서버 크래시 시 최근 1~2초치 커밋이 유실될 수 있다. 성능은 크게 향상되지만 D가 약해진다.
+
+### Read Replica 사용 시 Consistency가 약해진다
+
+```
+Primary  → write 완료 → 응답 반환
+Primary  → WAL 전송 → Replica (비동기)
+
+클라이언트가 Replica에서 읽으면:
+  → 방금 쓴 데이터가 아직 없을 수 있다 (replication lag)
+```
+
+비동기 레플리케이션은 C(Consistency)의 실시간 보장을 포기한다. 읽기 일관성이 필요한 쿼리는 Primary에서 읽어야 한다.
+
+### 낮은 격리 수준 사용 시 Isolation이 약해진다
+
+```java
+// Spring: 격리 수준 명시
+@Transactional(isolation = Isolation.READ_COMMITTED)
+public Product getProduct(Long id) {
+    // 같은 트랜잭션에서 두 번 조회해도 결과가 다를 수 있다 (non-repeatable read)
+    Product p1 = repo.findById(id);
+    doSomethingElse();
+    Product p2 = repo.findById(id); // p1과 다를 수 있음
+    return p2;
+}
+```
+
+`READ COMMITTED`에서는 Non-repeatable Read가 발생한다. 재고 차감, 잔액 처리처럼 중간 변경이 치명적인 경우에는 격리 수준을 높이거나 별도 락 전략이 필요하다.
+
+## ACID와 BASE의 트레이드오프
+
+분산 시스템에서는 ACID 대신 BASE를 선택하기도 한다.
+
+| ACID | BASE |
+|------|------|
+| Atomicity | Basically Available |
+| Consistency | Soft state |
+| Isolation | Eventually consistent |
+| Durability | |
+
+NoSQL이나 분산 DB는 가용성과 성능을 위해 일부 ACID 보장을 포기한다. 어떤 보장을 얼마나 완화하는지 DB 문서에서 확인하고 애플리케이션 레벨 보상 로직을 설계해야 한다.
+
+## 핵심 원칙
+
+ACID는 이론적 보장이지만, 실제 DB는 성능과 가용성을 위해 각 속성의 강도를 설정으로 조정할 수 있다. 트랜잭션 격리 수준, WAL flush 정책, 레플리케이션 방식이 ACID의 어떤 속성을 얼마나 완화하는지 이해하고 시스템 설계에 반영해야 한다.
