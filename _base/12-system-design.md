@@ -18,7 +18,7 @@
 ~~260. API Gateway는 라우팅 외에 인증, rate limiting, observability에서 어떤 책임을 가질 수 있을까?~~ `작성완료`
 ~~261. 서비스 분리는 코드 규모가 커져서 하는 것일까, 배포와 데이터 ownership 경계를 나누기 위해 하는 것일까?~~ `작성완료`
 ~~262. 마이크로서비스로 나누면 팀 독립성은 좋아질 수 있지만, 트랜잭션과 디버깅은 왜 어려워질까?~~ `작성완료`
-263. BFF 패턴은 프론트엔드 요구사항과 백엔드 도메인 API 사이의 어떤 불일치를 줄여줄까?
+~~263. BFF 패턴은 프론트엔드 요구사항과 백엔드 도메인 API 사이의 어떤 불일치를 줄여줄까?~~ `작성완료`
 264. API versioning은 URL, header, schema evolution 중 어디에서 관리하는 것이 좋을까?
 265. backward compatible한 API 변경과 breaking change는 어떤 기준으로 구분할 수 있을까?
 266. rate limit을 사용자 단위, IP 단위, API key 단위로 걸 때 각각 어떤 우회와 오탐 문제가 생길까?
