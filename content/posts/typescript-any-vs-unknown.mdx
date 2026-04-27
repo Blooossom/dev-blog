@@ -1,0 +1,178 @@
+---
+title: TypeScript의 any와 unknown, 실제 안정성 차이는 무엇일까
+date: '2026-04-27'
+category: Frontend
+tags:
+  - TypeScript
+  - 타입 안정성
+  - any
+  - unknown
+summary: >-
+  TypeScript의 `any`와 `unknown`은 둘 다 "모든 타입을 받을 수 있다"는 점에서 비슷해 보이지만,
+  실제 안정성 측면에서 근본적으로 다르다. any는 타입 검사를 포기하는 반면, unknown은 사용 전 타입을 좁히도록 강제한다.
+thumbnail: /thumbnails/typescript-any-vs-unknown.svg
+---
+
+TypeScript의 `any`와 `unknown`은 실제 안정성 측면에서 무엇이 다를까? 둘 다 어떤 값이든 할당받을 수 있지만, 그 이후의 동작이 완전히 달라서 런타임 오류 방지 능력에 큰 차이를 만든다.
+
+## any — 타입 검사 포기 선언
+
+`any`는 TypeScript 컴파일러에게 "이 값은 신경 쓰지 마"라고 말하는 것과 같다. 어떤 프로퍼티에 접근하든, 어떤 메서드를 호출하든 컴파일러는 에러를 발생시키지 않는다.
+
+```typescript
+let value: any = "hello";
+
+value.toUpperCase();    // OK (string 메서드라 런타임에도 동작)
+value.notExist();       // OK (컴파일 에러 없음 — 런타임 에러 발생 가능)
+value[0].foo.bar.baz;   // OK (컴파일 에러 없음 — 런타임 에러 확실)
+
+const num: number = value; // OK — any는 어디에나 할당 가능
+```
+
+`any`를 쓰면 타입 시스템의 보호를 완전히 잃는다. 외부에서 들어온 `any`는 코드베이스 전체로 **전염**될 수 있다.
+
+```typescript
+function parse(raw: any) {
+    return raw.data; // 반환 타입도 any로 전파됨
+}
+
+const result = parse(response);
+result.user.name.toUpperCase(); // 모두 any — 오타가 있어도 컴파일 통과
+```
+
+## unknown — 안전한 최상위 타입
+
+`unknown`도 어떤 값이든 할당받을 수 있다. 하지만 타입을 먼저 좁히지 않으면 해당 값에 아무 연산도 수행할 수 없다.
+
+```typescript
+let value: unknown = "hello";
+
+value.toUpperCase();    // 컴파일 에러 — unknown에는 직접 접근 불가
+value.notExist();       // 컴파일 에러
+
+// 타입 가드로 좁혀야 사용 가능
+if (typeof value === "string") {
+    value.toUpperCase(); // OK — string으로 좁혀짐
+}
+```
+
+`unknown`은 number, string 등 구체적인 타입으로는 할당이 불가하다.
+
+```typescript
+const num: number = value; // 컴파일 에러 — unknown은 number에 할당 불가
+const str: unknown = "hello"; // OK — 반대 방향은 허용
+```
+
+## any vs unknown 비교표
+
+| 특성 | any | unknown |
+|------|-----|---------|
+| 어디에나 할당 가능 | O | X (unknown, any에만 가능) |
+| 어떤 값이든 받을 수 있음 | O | O |
+| 타입 가드 없이 접근 | O | X |
+| 타입 전파(전염) | 전파됨 | 전파되지 않음 |
+| 컴파일러 보호 | 없음 | 있음 |
+
+## 실무 적용 패턴
+
+### API 응답 처리
+
+외부 API 응답은 타입을 보장할 수 없으므로 `unknown`으로 받고 검증 후 사용한다.
+
+```typescript
+async function fetchUser(id: string): Promise<User> {
+    const response = await fetch(`/api/users/${id}`);
+    const data: unknown = await response.json();
+
+    // 런타임 검증 — zod, io-ts, 직접 가드 등 활용
+    if (!isUser(data)) {
+        throw new Error("Invalid user data");
+    }
+    return data; // User로 좁혀짐
+}
+
+function isUser(value: unknown): value is User {
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        "id" in value &&
+        "name" in value
+    );
+}
+```
+
+### 에러 핸들링
+
+catch 블록에서 잡힌 에러는 TypeScript 4.0부터 기본적으로 `unknown`이다.
+
+```typescript
+try {
+    riskyOperation();
+} catch (error: unknown) {
+    // error가 any였다면 error.message 바로 접근 가능했지만 위험했음
+    if (error instanceof Error) {
+        console.error(error.message); // 안전
+    } else {
+        console.error(String(error));
+    }
+}
+```
+
+### 제네릭과 unknown 조합
+
+타입 제약 없이 범용 유틸리티를 만들 때 `unknown`이 유용하다.
+
+```typescript
+function safeJsonParse(json: string): unknown {
+    try {
+        return JSON.parse(json);
+    } catch {
+        return undefined;
+    }
+}
+
+// 호출자가 타입 좁히기 책임을 가짐
+const raw = safeJsonParse(input);
+if (typeof raw === "object" && raw !== null && "items" in raw) {
+    // 안전하게 접근
+}
+```
+
+## any를 써야 할 때
+
+`any`가 완전히 나쁜 것은 아니다. 다음 상황에서는 신중하게 사용할 수 있다.
+
+- 점진적 마이그레이션 중 임시로 타입을 회피해야 할 때
+- 타입 정의가 없는 서드파티 라이브러리를 임시로 쓸 때
+- 타입 체계가 표현할 수 없는 매우 동적인 메타프로그래밍 코드
+
+이 경우에도 `// eslint-disable-next-line @typescript-eslint/no-explicit-any` 같은 주석으로 의도를 명시하고, 파일 경계에서 `unknown`으로 변환해 전염을 막는 것이 좋다.
+
+## 타입 좁히기 방법 정리
+
+```typescript
+function process(value: unknown) {
+    // typeof — 원시 타입
+    if (typeof value === "string") { /* string */ }
+    if (typeof value === "number") { /* number */ }
+
+    // instanceof — 클래스 인스턴스
+    if (value instanceof Date) { /* Date */ }
+    if (value instanceof Error) { /* Error */ }
+
+    // in 연산자 — 프로퍼티 존재 확인
+    if (typeof value === "object" && value !== null && "id" in value) {
+        // { id: unknown, ... }
+    }
+
+    // 사용자 정의 타입 가드
+    if (isUser(value)) { /* User */ }
+
+    // as const + 리터럴 타입
+    // assertion은 최후 수단 — (value as string)
+}
+```
+
+## 핵심 정리
+
+`any`는 타입 시스템을 끄는 탈출구이고, `unknown`은 타입 시스템을 유지하면서 유연성을 제공하는 안전한 최상위 타입이다. 외부 입력·API 응답·동적 데이터를 다룰 때는 항상 `unknown`으로 받고, 타입 가드로 좁혀서 사용하는 것이 런타임 오류를 막는 기본 원칙이다.
