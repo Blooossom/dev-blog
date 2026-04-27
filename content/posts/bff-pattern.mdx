@@ -1,0 +1,200 @@
+---
+title: BFF 패턴, 프론트엔드와 백엔드 사이의 불일치를 어떻게 줄일까
+date: '2026-04-27'
+category: Architecture
+tags:
+  - BFF
+  - MSA
+  - API 설계
+  - 아키텍처
+summary: >-
+  BFF(Backend for Frontend) 패턴은 프론트엔드 요구사항과 백엔드 도메인 API 사이의 불일치를 해소하는 중간 계층이다.
+  클라이언트 유형별로 최적화된 API를 제공하여 오버패칭·언더패칭 문제와 복잡한 클라이언트 로직을 서버로 이동시킨다.
+thumbnail: /thumbnails/bff-pattern.svg
+---
+
+BFF 패턴은 프론트엔드 요구사항과 백엔드 도메인 API 사이의 어떤 불일치를 줄여줄까? 마이크로서비스 아키텍처가 확산되면서 클라이언트가 여러 서비스를 직접 호출하는 구조의 한계가 드러났고, 이를 해결하기 위해 등장한 것이 BFF다.
+
+## 문제 — 클라이언트와 백엔드의 불일치
+
+### 오버패칭(Overfetching)
+
+백엔드 API가 도메인 중심으로 설계되어 있으면, 클라이언트가 필요한 것보다 더 많은 데이터를 받게 된다.
+
+```
+클라이언트: "주문 목록에서 주문번호, 상태, 총액만 필요해"
+백엔드 API: /orders → { id, status, totalAmount, items: [...], shippingAddress: {...}, ... }
+```
+
+### 언더패칭(Underfetching)
+
+반대로 한 화면을 그리기 위해 여러 API를 순차적으로 호출해야 하는 경우도 있다.
+
+```
+주문 상세 화면:
+  1. GET /orders/{id}         → 주문 정보
+  2. GET /products/{productId} → 상품 정보 (주문 내 각 상품마다)
+  3. GET /users/{userId}       → 구매자 정보
+  4. GET /shipping/{orderId}   → 배송 정보
+```
+
+모바일 클라이언트에서는 이런 연쇄 요청이 네트워크 레이턴시를 크게 키운다.
+
+### 클라이언트별 요구사항 차이
+
+웹 브라우저, iOS 앱, Android 앱, TV 앱은 동일한 기능이라도 데이터 구조와 표현 방식이 다르다.
+
+## BFF 패턴이란
+
+BFF(Backend for Frontend)는 클라이언트 유형별로 전용 백엔드 레이어를 두는 패턴이다.
+
+```
+┌──────────┐   ┌──────────┐   ┌──────────┐
+│  Web App │   │ iOS App  │   │Android   │
+└────┬─────┘   └────┬─────┘   └────┬─────┘
+     │              │              │
+┌────▼─────┐   ┌────▼─────┐   ┌────▼─────┐
+│  Web BFF │   │  iOS BFF │   │Android   │
+│          │   │          │   │BFF       │
+└────┬─────┘   └────┬─────┘   └────┬─────┘
+     │              │              │
+     └──────────────┴──────────────┘
+                    │
+     ┌──────────────┼──────────────┐
+     │              │              │
+┌────▼─────┐   ┌────▼─────┐   ┌────▼─────┐
+│  Order   │   │ Product  │   │Shipping  │
+│ Service  │   │ Service  │   │ Service  │
+└──────────┘   └──────────┘   └──────────┘
+```
+
+각 BFF는 해당 클라이언트의 요구에 맞게 여러 하위 서비스의 데이터를 집계·변환·필터링한다.
+
+## BFF가 해결하는 문제들
+
+### 1. API 집계 (Aggregation)
+
+여러 서비스 호출을 BFF에서 병렬로 처리하고 클라이언트는 단일 요청으로 필요한 데이터를 받는다.
+
+```typescript
+// Web BFF — 주문 상세 집계
+async function getOrderDetail(orderId: string, userId: string) {
+    const [order, user, shipping] = await Promise.all([
+        orderService.getOrder(orderId),
+        userService.getUser(userId),
+        shippingService.getShipping(orderId),
+    ]);
+
+    // 상품 정보는 주문 내 상품 ID 기준으로 병렬 조회
+    const products = await Promise.all(
+        order.items.map(item => productService.getProduct(item.productId))
+    );
+
+    return {
+        orderId: order.id,
+        status: order.status,
+        customer: { name: user.name, email: user.email },
+        items: order.items.map((item, i) => ({
+            name: products[i].name,
+            quantity: item.quantity,
+            price: item.price,
+        })),
+        delivery: { address: shipping.address, estimatedDate: shipping.eta },
+    };
+}
+```
+
+### 2. 클라이언트별 최적화
+
+```typescript
+// 모바일 BFF — 대역폭 제한을 고려해 이미지 URL에 크기 파라미터 추가
+function transformForMobile(product: Product) {
+    return {
+        id: product.id,
+        name: product.name,
+        // 모바일은 저해상도 이미지
+        imageUrl: `${product.imageUrl}?w=200&h=200&quality=70`,
+        price: product.price,
+        // 상세 설명 제외 — 모바일 목록에서 불필요
+    };
+}
+
+// 웹 BFF — 고해상도, 상세 데이터 포함
+function transformForWeb(product: Product) {
+    return {
+        ...product,
+        imageUrl: `${product.imageUrl}?w=800&h=600&quality=90`,
+    };
+}
+```
+
+### 3. 인증·인가 처리 일원화
+
+```typescript
+// BFF에서 토큰 검증 후 내부 서비스 호출
+async function handleRequest(req: Request) {
+    const user = await authService.verify(req.headers.authorization);
+
+    // 내부 서비스는 신뢰된 요청으로 간주
+    return orderService.getOrders({ userId: user.id });
+}
+```
+
+## BFF 적용 전후 비교
+
+| 측면 | 적용 전 | 적용 후 |
+|------|---------|---------|
+| 클라이언트 요청 수 | 화면당 3~5회 | 화면당 1~2회 |
+| 불필요 데이터 | 오버패칭 빈번 | 클라이언트 맞춤 응답 |
+| 클라이언트 로직 | 데이터 집계·변환 직접 수행 | BFF로 이동 |
+| 백엔드 변경 영향 | 클라이언트 직접 영향 | BFF에서 흡수 가능 |
+| 테스트 | 클라이언트에서 통합 테스트 | BFF 단위 테스트 가능 |
+
+## 주의해야 할 트레이드오프
+
+### 배포 및 관리 복잡도
+
+클라이언트 유형이 늘어날수록 BFF 수도 늘어난다. 각 BFF는 독립 배포가 필요하고, 공통 로직이 여러 BFF에 중복될 수 있다.
+
+```
+공통 인증 로직 → 각 BFF마다 중복 구현 위험
+해결책: 공통 미들웨어 라이브러리, API Gateway에서 인증 처리
+```
+
+### N+1 문제
+
+BFF에서 여러 서비스를 조회할 때 N+1 패턴이 발생하지 않도록 주의해야 한다.
+
+```typescript
+// 나쁜 예 — 주문마다 상품 조회 순차 실행
+for (const item of order.items) {
+    const product = await productService.getProduct(item.productId); // N번 호출
+}
+
+// 좋은 예 — 배치 조회
+const productIds = order.items.map(i => i.productId);
+const products = await productService.getProductsByIds(productIds); // 1번 호출
+```
+
+### 병목 지점이 됨
+
+BFF가 모든 요청을 처리하므로 BFF 자체가 단일 장애 지점이 될 수 있다. Circuit Breaker, Retry 전략을 BFF 레이어에 반드시 구현해야 한다.
+
+```typescript
+// Circuit Breaker 적용
+const orderResult = await circuitBreaker.fire(
+    () => orderService.getOrder(orderId),
+    { timeout: 3000, fallback: () => ({ status: 'UNKNOWN' }) }
+);
+```
+
+## BFF를 도입해야 할 신호
+
+- 클라이언트가 3개 이상의 서비스를 조합해 하나의 화면을 그릴 때
+- 웹/모바일/IoT 등 클라이언트별로 API 요구사항 차이가 클 때
+- 클라이언트 코드에 데이터 집계·변환 로직이 과도하게 쌓일 때
+- 모바일 앱의 네트워크 요청 횟수 줄이기가 성능 목표일 때
+
+## 핵심 정리
+
+BFF 패턴은 프론트엔드의 요구와 백엔드 도메인 경계 사이의 임피던스 불일치를 해소하는 레이어다. 클라이언트가 여러 서비스를 직접 조율하는 복잡도를 BFF로 옮기되, BFF 자체가 중복·장애 지점이 되지 않도록 공통 로직 관리와 장애 격리 전략을 함께 설계해야 한다.
