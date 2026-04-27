@@ -1,0 +1,221 @@
+---
+title: Spring Bean은 언제 생성되고 언제 사라질까
+date: '2026-04-27'
+category: Backend
+tags:
+  - Spring
+  - Java
+  - IoC
+  - Bean Lifecycle
+summary: >-
+  Spring Bean은 정확히 언제 생성되고 언제 사라질까? Bean의 생성 시점, 초기화 콜백, 소멸 시점을 이해하면
+  리소스 누수와 예기치 못한 초기화 순서 문제를 사전에 방지할 수 있다.
+thumbnail: /thumbnails/spring-bean-lifecycle.svg
+---
+
+Spring Bean은 정확히 언제 생성되고 언제 사라질까? 이 질문은 단순한 호기심이 아니라, 데이터베이스 커넥션·스케줄러·외부 리소스를 다루는 실무 코드에서 매우 중요한 설계 기반이 된다.
+
+## Bean의 생성 시점
+
+Spring의 기본 Bean 스코프는 **Singleton**이다. Singleton Bean은 ApplicationContext가 초기화될 때 **즉시(eagerly)** 생성된다. 즉, 애플리케이션이 구동되는 시점에 모든 Singleton Bean의 인스턴스가 만들어지고 의존성이 주입된다.
+
+```
+ApplicationContext 초기화
+  └─ BeanDefinition 로딩 (클래스패스 스캔, @Configuration 파싱)
+  └─ BeanFactory 생성
+  └─ Bean 인스턴스화 (생성자 호출)
+  └─ 의존성 주입 (DI)
+  └─ BeanPostProcessor 전처리
+  └─ 초기화 콜백 (@PostConstruct, InitializingBean, init-method)
+  └─ BeanPostProcessor 후처리
+  └─ Bean 사용 가능 상태
+```
+
+`@Lazy`를 붙이면 해당 Bean이 처음 요청될 때까지 생성을 미룰 수 있다.
+
+```java
+@Component
+@Lazy
+public class HeavyService {
+    // ApplicationContext 초기화 시에는 생성되지 않음
+    // 처음 주입·조회될 때 인스턴스화
+}
+```
+
+## Bean Scope별 생성·소멸 규칙
+
+| 스코프 | 생성 시점 | 소멸 시점 |
+|--------|-----------|-----------|
+| `singleton` | ApplicationContext 초기화 | Context 종료 |
+| `prototype` | 요청(getBean)마다 새 인스턴스 | **Spring이 관리하지 않음** |
+| `request` | HTTP 요청 시작 | 요청 종료 |
+| `session` | HTTP 세션 생성 | 세션 만료/종료 |
+
+Prototype 스코프는 Spring이 생성만 담당하고 소멸은 애플리케이션 코드에서 직접 처리해야 한다.
+
+## 초기화 콜백
+
+Bean 인스턴스화와 DI가 완료된 뒤, 실제 서비스 준비에 필요한 로직은 **초기화 콜백**에 넣는다.
+
+### @PostConstruct
+
+가장 권장되는 방식이다. JSR-250 표준 어노테이션으로 프레임워크 독립성이 높다.
+
+```java
+@Component
+public class CacheWarmer {
+
+    @Autowired
+    private ProductRepository productRepository;
+
+    @PostConstruct
+    public void init() {
+        // DI 완료 후 캐시 워밍업
+        productRepository.findTop100().forEach(this::loadToCache);
+    }
+}
+```
+
+### InitializingBean 인터페이스
+
+Spring 인터페이스에 결합되지만, 컴파일 타임 검증이 가능하다.
+
+```java
+@Component
+public class SchedulerService implements InitializingBean {
+
+    @Override
+    public void afterPropertiesSet() {
+        // @PostConstruct와 동일한 시점에 호출
+        startScheduler();
+    }
+}
+```
+
+### @Bean(initMethod)
+
+외부 라이브러리처럼 소스를 수정할 수 없을 때 활용한다.
+
+```java
+@Configuration
+public class DataSourceConfig {
+
+    @Bean(initMethod = "initialize", destroyMethod = "close")
+    public HikariDataSource dataSource() {
+        return new HikariDataSource(config());
+    }
+}
+```
+
+## 소멸 콜백
+
+ApplicationContext가 종료될 때 Singleton Bean의 소멸 콜백이 호출된다. `close()` 또는 JVM Shutdown Hook이 트리거한다.
+
+```
+Context.close() 호출
+  └─ @PreDestroy 메서드 실행
+  └─ DisposableBean.destroy() 실행
+  └─ destroyMethod 실행
+```
+
+```java
+@Component
+public class ConnectionHolder {
+
+    private Connection connection;
+
+    @PostConstruct
+    public void open() {
+        connection = openConnection();
+    }
+
+    @PreDestroy
+    public void close() {
+        // 애플리케이션 종료 시 커넥션 반환
+        if (connection != null) connection.close();
+    }
+}
+```
+
+## BeanPostProcessor와 생명주기 확장
+
+`BeanPostProcessor`는 모든 Bean의 초기화 전후에 가로채는 확장 지점이다. Spring AOP 프록시 생성, `@Autowired` 처리 등 핵심 기능이 여기에 구현되어 있다.
+
+```java
+@Component
+public class AuditBeanPostProcessor implements BeanPostProcessor {
+
+    @Override
+    public Object postProcessAfterInitialization(Object bean, String beanName) {
+        // 초기화 완료 후 호출 — 여기서 프록시로 교체 가능
+        return bean;
+    }
+}
+```
+
+## 생명주기 흐름 전체 요약
+
+```
+인스턴스화
+  → 의존성 주입
+  → Aware 인터페이스 콜백 (BeanNameAware, ApplicationContextAware …)
+  → BeanPostProcessor.postProcessBeforeInitialization
+  → @PostConstruct / afterPropertiesSet / init-method
+  → BeanPostProcessor.postProcessAfterInitialization
+  → [사용]
+  → @PreDestroy / destroy / destroyMethod
+```
+
+## 실무에서 자주 겪는 문제
+
+### 의존성이 아직 주입되지 않았는데 생성자에서 로직 실행
+
+```java
+// 잘못된 예
+@Component
+public class BadService {
+    @Autowired
+    private Repository repo;
+
+    public BadService() {
+        repo.findAll(); // NullPointerException — DI 전
+    }
+}
+
+// 올바른 예
+@Component
+public class GoodService {
+    @Autowired
+    private Repository repo;
+
+    @PostConstruct
+    public void init() {
+        repo.findAll(); // DI 완료 후
+    }
+}
+```
+
+### Prototype Bean의 소멸 누수
+
+```java
+@Component
+public class ProtoConsumer {
+    @Autowired
+    private ApplicationContext ctx;
+
+    public void process() {
+        // prototype이라 Spring이 destroy 콜백을 호출하지 않음
+        // 직접 DisposableBeanAdapter 또는 try-with-resources로 관리 필요
+        MyTask task = ctx.getBean(MyTask.class);
+        try {
+            task.run();
+        } finally {
+            ((DisposableBean) task).destroy();
+        }
+    }
+}
+```
+
+## 핵심 정리
+
+Spring Singleton Bean은 Context 초기화 시 생성되고 Context 종료 시 소멸된다. 초기화 로직은 반드시 `@PostConstruct`에, 정리 로직은 `@PreDestroy`에 두어야 DI가 완료된 안전한 상태에서 실행됨을 보장받을 수 있다.
