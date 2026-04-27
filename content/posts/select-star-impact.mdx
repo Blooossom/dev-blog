@@ -1,0 +1,174 @@
+---
+title: SELECT *는 단순히 컬럼을 많이 가져오는 문제일까
+date: '2026-04-27'
+category: Backend
+tags:
+  - SQL
+  - 쿼리 최적화
+  - 인덱스
+  - 데이터베이스
+summary: >-
+  `SELECT *`는 단순히 컬럼을 많이 가져오는 문제일까? 네트워크 전송량은 물론 인덱스 활용, 실행 계획, 코드 유지보수까지
+  다양한 측면에서 영향을 미치며, 대용량 테이블에서는 심각한 성능 병목이 될 수 있다.
+thumbnail: /thumbnails/select-star-impact.svg
+---
+
+`SELECT *`는 단순히 컬럼을 많이 가져오는 문제일까, 네트워크 전송량과 인덱스 활용에도 영향을 줄까? 많은 개발자가 편의상 `*`를 사용하지만, 이는 성능과 유지보수 양쪽에서 여러 문제를 만들어낸다.
+
+## 문제 1 — 불필요한 데이터 전송
+
+가장 직관적인 문제다. 테이블에 30개 컬럼이 있고 그 중 3개만 필요하다면, `SELECT *`는 27개 컬럼의 데이터를 DB에서 애플리케이션까지 전송한다.
+
+```
+users 테이블 — 30개 컬럼, 1,000,000 행
+  - id, name, email: 각 평균 20 bytes
+  - profile_image_url: 평균 200 bytes
+  - bio: 평균 500 bytes
+  - ...
+
+SELECT id, name, email FROM users WHERE active = true
+→ 전송량: 60 bytes × 행수
+
+SELECT * FROM users WHERE active = true
+→ 전송량: (컬럼 합산) × 행수 — 수십 배 차이 가능
+```
+
+TEXT, BLOB 컬럼이 포함된 테이블에서는 이 차이가 더욱 크다.
+
+## 문제 2 — Covering Index를 활용하지 못함
+
+Covering Index는 쿼리가 요구하는 모든 컬럼이 인덱스 안에 포함되어 있어 테이블 원본 데이터(힙)에 접근하지 않고 인덱스만으로 결과를 반환하는 최적화다.
+
+```sql
+-- 인덱스: (email, name) 복합 인덱스 존재
+CREATE INDEX idx_users_email_name ON users(email, name);
+
+-- Covering Index 활용 가능 — 테이블 접근 없음
+SELECT email, name FROM users WHERE email = 'user@example.com';
+
+-- Covering Index 활용 불가 — 나머지 컬럼 때문에 테이블 접근 필요
+SELECT * FROM users WHERE email = 'user@example.com';
+```
+
+실행 계획 비교:
+
+```
+-- 컬럼 지정 시
+id | select_type | type  | key                  | Extra
+1  | SIMPLE      | ref   | idx_users_email_name | Using index
+
+-- SELECT * 시
+id | select_type | type  | key                  | Extra
+1  | SIMPLE      | ref   | idx_users_email_name | (Using index 없음 — 테이블 접근)
+```
+
+인덱스 스캔 후 테이블 랜덤 I/O가 추가되므로 대용량 테이블에서 성능 차이가 크다.
+
+## 문제 3 — 실행 계획 영향
+
+옵티마이저는 선택하는 컬럼 수와 종류에 따라 다른 실행 계획을 선택할 수 있다. `SELECT *`는 모든 컬럼을 요구하므로 옵티마이저가 Index Only Scan을 포기하고 Full Table Scan이나 여러 번의 랜덤 I/O를 선택할 수 있다.
+
+```sql
+-- PostgreSQL: EXPLAIN으로 차이 확인
+EXPLAIN SELECT id, status FROM orders WHERE user_id = 123;
+-- Bitmap Heap Scan → Index Cond: (user_id = 123)
+-- Heap Fetches: 0  ← Index Only Scan 가능
+
+EXPLAIN SELECT * FROM orders WHERE user_id = 123;
+-- Bitmap Heap Scan → Index Cond: (user_id = 123)
+-- Heap Fetches: 150 ← 테이블 접근 추가
+```
+
+## 문제 4 — 컬럼 추가 시 동작 변화
+
+스키마가 변경되어 컬럼이 추가되면 `SELECT *`의 결과가 암묵적으로 바뀐다.
+
+```sql
+-- 이전: id, name, email 반환
+SELECT * FROM users;
+
+-- 컬럼 추가 후: id, name, email, profile_json (500KB) 반환
+ALTER TABLE users ADD COLUMN profile_json JSONB;
+SELECT * FROM users; -- 갑자기 전송량 폭증
+```
+
+ORM을 쓸 때도 마찬가지다. `findAll()`이 내부적으로 `SELECT *`를 날리면 새 컬럼이 추가될 때마다 의도치 않은 데이터가 로드된다.
+
+## 문제 5 — 네트워크와 메모리 부담
+
+```
+클라이언트 (앱 서버)
+  ↑
+  | 전송 데이터
+  ↓
+DB 서버
+  → 결과 버퍼 할당 — 컬럼 수 × 행 수
+  → 네트워크 패킷 생성
+  → TCP 전송
+```
+
+행 수가 많고 컬럼이 넓은 경우 DB 서버의 결과 버퍼, 네트워크 대역폭, 앱 서버의 메모리 파싱 비용이 모두 늘어난다.
+
+## 올바른 쿼리 작성 방법
+
+```sql
+-- 나쁜 예
+SELECT * FROM orders o
+JOIN order_items oi ON o.id = oi.order_id
+WHERE o.user_id = 123;
+
+-- 좋은 예 — 필요한 컬럼만 명시
+SELECT
+    o.id         AS order_id,
+    o.status,
+    o.created_at,
+    oi.product_id,
+    oi.quantity,
+    oi.price
+FROM orders o
+JOIN order_items oi ON o.id = oi.order_id
+WHERE o.user_id = 123;
+```
+
+JPA를 사용하는 경우:
+
+```java
+// 나쁜 예 — 엔티티 전체 로드
+List<Order> orders = orderRepository.findByUserId(userId);
+
+// 좋은 예 — Projection으로 필요한 필드만 조회
+@Query("SELECT new com.example.dto.OrderSummary(o.id, o.status, o.createdAt) " +
+       "FROM Order o WHERE o.userId = :userId")
+List<OrderSummary> findSummariesByUserId(@Param("userId") Long userId);
+
+// 또는 인터페이스 Projection
+public interface OrderSummary {
+    Long getId();
+    String getStatus();
+    LocalDateTime getCreatedAt();
+}
+List<OrderSummary> findByUserId(Long userId);
+```
+
+## SELECT *가 허용되는 상황
+
+모든 상황에서 `SELECT *`가 나쁜 것은 아니다. 다음 경우는 허용 범위다.
+
+- `COUNT(*)`처럼 집계 함수에서의 `*` — 컬럼 데이터 미전송
+- 스키마 탐색 목적의 임시 쿼리 (운영 DB가 아닌 개발/분석 환경)
+- CTE에서 결과를 다음 단계로 넘길 때 (최종 SELECT에서는 필터링)
+
+```sql
+-- COUNT(*) 는 문제없음
+SELECT COUNT(*) FROM users WHERE active = true;
+
+-- CTE 내부는 허용, 최종 출력에서 컬럼 명시
+WITH active_users AS (
+    SELECT * FROM users WHERE active = true
+)
+SELECT id, name, email FROM active_users;
+```
+
+## 핵심 정리
+
+`SELECT *`는 단순히 많은 데이터를 가져오는 문제가 아니라, Covering Index 활용 불가·실행 계획 비효율·스키마 변경에 취약한 코드라는 복합적인 문제를 만든다. 쿼리를 작성할 때는 항상 필요한 컬럼만 명시하는 것이 성능과 유지보수 모두에서 올바른 습관이다.
