@@ -18,7 +18,7 @@
 32. React에서 props drilling은 언제 실제 문제가 되고, Context는 언제 과한 선택일까?
 ~~33. TypeScript는 런타임에서도 타입을 검사해줄까?~~ `작성완료`
 ~~34. TypeScript의 `any`와 `unknown`은 실제 안정성 측면에서 무엇이 다를까?~~ `작성완료`
-35. interface와 type alias는 언제 구분해서 쓰는 것이 좋을까?
+~~35. interface와 type alias는 언제 구분해서 쓰는 것이 좋을까?~~ `작성완료`
 36. 프론트엔드에서 CORS 에러는 브라우저 문제일까, 서버 설정 문제일까?
 37. 브라우저의 localStorage, sessionStorage, cookie는 보안과 수명 측면에서 어떻게 다를까?
 ~~71. React 18의 concurrent rendering은 기존 렌더링 모델과 무엇이 다를까?~~ `작성완료`
