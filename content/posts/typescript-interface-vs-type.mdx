@@ -1,0 +1,148 @@
+---
+title: TypeScript에서 interface와 type alias를 구분해서 쓰는 기준
+date: '2026-04-28'
+category: Frontend
+tags:
+  - TypeScript
+  - Frontend
+  - 타입 시스템
+summary: >-
+  interface와 type alias는 언제 구분해서 쓰는 것이 좋을까. 두 가지는 대부분의 경우 치환 가능하지만,
+  확장 방식, 선언 병합, 유니온·교차 타입 표현력에서 차이가 나며 상황에 따라 선택 기준이 달라진다.
+thumbnail: /thumbnails/typescript-interface-vs-type.svg
+---
+
+interface와 type alias는 언제 구분해서 쓰는 것이 좋을까. TypeScript에서 이 두 가지는 겉보기에 매우 비슷해서 혼용하기 쉽다. 하지만 확장 방식, 선언 병합 가능 여부, 표현할 수 있는 타입의 범위에서 분명한 차이가 있다. 팀 코드베이스에서 일관된 기준을 갖추면 타입 설계가 훨씬 명확해진다.
+
+## 기본 문법 비교
+
+```typescript
+// interface
+interface User {
+  id: number
+  name: string
+}
+
+// type alias
+type User = {
+  id: number
+  name: string
+}
+```
+
+단순 객체 구조 정의에서는 동일하게 동작한다.
+
+## 주요 차이점
+
+### 1. 확장(Extension) 방식
+
+interface는 `extends`로 확장하고, type alias는 교차 타입(`&`)을 사용한다.
+
+```typescript
+// interface: extends
+interface Animal {
+  name: string
+}
+interface Dog extends Animal {
+  breed: string
+}
+
+// type alias: 교차 타입
+type Animal = { name: string }
+type Dog = Animal & { breed: string }
+```
+
+두 방식 모두 동작하지만, 에러 메시지 측면에서 차이가 있다. `interface extends`는 충돌하는 프로퍼티 타입을 컴파일 단계에서 즉시 에러로 잡아주지만, 교차 타입은 `never`로 추론되어 에러가 나중에 드러날 수 있다.
+
+```typescript
+interface A { x: number }
+interface B extends A { x: string } // 오류: 'x' 프로퍼티 타입 충돌 — 즉시 감지
+
+type A = { x: number }
+type B = A & { x: string } // x는 never — 사용 시점에 에러
+```
+
+### 2. 선언 병합 (Declaration Merging)
+
+interface는 같은 이름으로 여러 번 선언하면 자동으로 합쳐진다. type alias는 불가능하다.
+
+```typescript
+// interface: 선언 병합 가능
+interface Window {
+  myCustomProp: string
+}
+// 이제 Window에 myCustomProp이 추가됨 (라이브러리 타입 확장 시 유용)
+
+// type alias: 같은 이름 재선언 불가
+type Point = { x: number }
+type Point = { y: number } // 오류: 중복 식별자
+```
+
+라이브러리의 글로벌 타입을 확장할 때(예: `Express.Request`에 프로퍼티 추가) 선언 병합이 필수다.
+
+### 3. 유니온·튜플·조건 타입 표현
+
+type alias만 유니온 타입, 튜플, 조건 타입을 직접 표현할 수 있다.
+
+```typescript
+// 유니온 타입 — type alias만 가능
+type Status = 'pending' | 'success' | 'error'
+
+// 튜플 — type alias만 가능
+type Pair = [string, number]
+
+// 조건 타입 — type alias만 가능
+type IsArray<T> = T extends any[] ? true : false
+
+// Mapped Type — 둘 다 가능하지만 type alias가 더 자연스러움
+type Readonly<T> = { readonly [K in keyof T]: T[K] }
+```
+
+interface는 유니온이나 튜플의 alias가 될 수 없다.
+
+```typescript
+interface Status = 'pending' | 'success' // 불가능
+```
+
+## 선택 기준
+
+| 상황 | 권장 |
+|------|------|
+| 객체 형태의 공개 API 타입, 클래스가 구현하는 타입 | `interface` |
+| 라이브러리 타입 확장(선언 병합 필요) | `interface` |
+| 유니온, 튜플, 조건 타입, Mapped Type | `type alias` |
+| 함수 시그니처만 표현 | 둘 다 가능, 취향 |
+| 유틸리티 타입 조합 | `type alias` |
+
+### 클래스와 함께 쓸 때
+
+`implements`로 interface와 type alias 모두 사용 가능하지만, interface가 더 관용적이다.
+
+```typescript
+interface Serializable {
+  serialize(): string
+}
+
+class Order implements Serializable {
+  serialize() { return JSON.stringify(this) }
+}
+```
+
+## 팀 컨벤션 예시
+
+프로젝트 내에서 혼란을 줄이기 위해 규칙을 명문화하는 것이 좋다.
+
+```typescript
+// ✅ interface: 도메인 모델, API 응답 타입, 컴포넌트 Props
+interface UserDto { id: number; name: string }
+interface ButtonProps { label: string; onClick: () => void }
+
+// ✅ type alias: 유틸리티, 유니온, 함수 타입
+type Theme = 'light' | 'dark'
+type Callback = (event: MouseEvent) => void
+type Maybe<T> = T | null | undefined
+```
+
+## 핵심 정리
+
+interface는 객체 구조 정의와 확장에, type alias는 유니온·조건·유틸리티 타입 표현에 강점이 있다. 어느 하나가 절대적으로 우월하지 않으며, 팀 내에서 일관된 규칙을 정해두는 것이 타입 설계의 가독성을 높이는 가장 확실한 방법이다.
