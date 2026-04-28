@@ -1,0 +1,154 @@
+---
+title: GC 튜닝이 필요한 시점을 판단하는 법
+date: '2026-04-28'
+category: Backend
+tags:
+  - Java
+  - JVM
+  - GC
+  - 성능 튜닝
+summary: >-
+  GC 튜닝을 해야 한다는 판단은 어떤 지표를 보고 내릴 수 있을까. GC 로그와 메트릭에서 STW 시간, GC 빈도,
+  Old Gen 증가 패턴을 확인하는 것이 출발점이다.
+thumbnail: /thumbnails/java-gc-tuning.svg
+---
+
+GC 튜닝을 해야 한다는 판단은 어떤 지표를 보고 내릴 수 있을까. GC(Garbage Collection)는 JVM이 알아서 처리하지만, 잘못된 메모리 설정이나 객체 생성 패턴 때문에 Stop-The-World(STW) 시간이 길어지면 서비스 지연(latency spike)으로 직접 연결된다. 따라서 GC 튜닝은 로그와 메트릭을 근거로 판단해야 하며, 감에 의존해선 안 된다.
+
+## GC 튜닝이 필요한 신호
+
+다음 증상 중 하나라도 지속적으로 관측된다면 GC 튜닝을 고려한다.
+
+| 증상 | 의미 |
+|------|------|
+| API 응답 시간에 주기적인 spike 발생 | STW로 인한 지연 |
+| Full GC 빈도 증가 | Old Gen 메모리 압박 |
+| GC 시간이 전체 CPU 시간의 5% 초과 | GC 오버헤드 |
+| Heap 사용량이 GC 후에도 회복 불충분 | 메모리 누수 가능성 |
+| `OutOfMemoryError` 발생 | Heap 또는 Metaspace 부족 |
+
+## 핵심 지표 수집 방법
+
+### GC 로그 활성화
+
+```bash
+# JVM 실행 시 GC 로그 옵션 (Java 9 이상)
+java -Xlog:gc*:file=/var/log/app/gc.log:time,uptime,level,tags:filecount=5,filesize=20m \
+     -jar app.jar
+```
+
+### 주요 JVM 플래그로 현황 확인
+
+```bash
+# 실행 중인 JVM의 GC 통계 확인
+jstat -gcutil <pid> 1000 10
+
+# 출력 예시
+#  S0     S1     E      O      M     CCS    YGC     YGCT    FGC    FGCT     GCT
+#  0.00  34.12  71.23  45.67  93.45  88.12    142    2.341     3   0.834    3.175
+```
+
+각 컬럼의 의미:
+- `E`: Eden 사용률 (%)
+- `O`: Old Gen 사용률 (%)
+- `YGC`: Young GC 횟수
+- `YGCT`: Young GC 누적 시간 (초)
+- `FGC`: Full GC 횟수
+- `FGCT`: Full GC 누적 시간 (초)
+
+## 판단 기준별 분석
+
+### Young GC가 너무 자주 발생하는 경우
+
+Young GC 주기가 1초 미만이고 STW가 50ms를 넘으면 Young Gen 크기를 늘리는 것을 고려한다.
+
+```bash
+# Young Gen 크기 명시 조정
+-XX:NewRatio=2          # Old:Young = 2:1
+-XX:NewSize=512m        # Young Gen 초기 크기
+-XX:MaxNewSize=512m     # Young Gen 최대 크기
+```
+
+### Full GC가 자주 발생하는 경우
+
+Full GC는 Heap 전체를 대상으로 하기 때문에 STW 시간이 Young GC보다 훨씬 길다. 원인을 먼저 파악해야 한다.
+
+```
+Old Gen 증가 원인 분류:
+1. 수명이 긴 객체 축적 → 정상, Heap 크기 조절 필요
+2. Young Gen에서 promote가 과도함 → Survivor 공간 부족
+3. 메모리 누수 → 힙 덤프 분석 필요
+```
+
+힙 덤프로 메모리 누수를 확인한다.
+
+```bash
+# OOM 발생 시 자동으로 힙 덤프 생성
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath=/var/log/app/heapdump.hprof
+
+# 또는 실행 중인 JVM에서 수동 덤프
+jmap -dump:format=b,file=heap.hprof <pid>
+```
+
+### GC Collector 선택
+
+| GC | 특징 | 적합한 상황 |
+|----|------|------------|
+| G1GC (기본, Java 9+) | 지역 기반, 예측 가능한 STW | 대부분의 서버 애플리케이션 |
+| ZGC | STW 1ms 미만 목표 | 초저지연 요구 (Java 15+ 권장) |
+| Shenandoah | 동시 압축 | Red Hat 계열, 저지연 |
+| Serial/Parallel | 처리량 우선 | 배치, 단일 스레드 작업 |
+
+```bash
+# G1GC 튜닝 핵심 옵션
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=200     # 목표 STW 시간 (ms)
+-XX:G1HeapRegionSize=16m     # Region 크기 (1~32MB, 2의 거듭제곱)
+-XX:G1NewSizePercent=20      # Young 영역 최소 비율
+-XX:G1MaxNewSizePercent=40   # Young 영역 최대 비율
+```
+
+## Prometheus + Grafana로 GC 모니터링
+
+Spring Boot Actuator와 Micrometer를 연동하면 GC 메트릭을 실시간으로 수집할 수 있다.
+
+```yaml
+# application.yml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: prometheus
+  metrics:
+    enable:
+      jvm: true
+```
+
+Grafana에서 확인할 핵심 메트릭:
+
+```promql
+# Young GC STW 평균 시간
+rate(jvm_gc_pause_seconds_sum{action="end of minor GC"}[5m])
+/ rate(jvm_gc_pause_seconds_count{action="end of minor GC"}[5m])
+
+# Old Gen 사용률
+jvm_memory_used_bytes{area="heap", id="G1 Old Gen"}
+/ jvm_memory_max_bytes{area="heap", id="G1 Old Gen"}
+```
+
+## 튜닝 우선순위
+
+무작정 JVM 플래그를 건드리기보다 다음 순서로 접근한다.
+
+```
+1단계: 지표 수집 → GC 로그, jstat, Prometheus
+2단계: 병목 특정 → Young GC 과다? Full GC? 메모리 누수?
+3단계: 코드 개선 → 불필요한 객체 생성 줄이기, 캐시 TTL 점검
+4단계: Heap 크기 조정 → -Xms/-Xmx 설정
+5단계: Collector 변경 → 저지연 요구 시 ZGC 검토
+```
+
+## 핵심 정리
+
+GC 튜닝의 시작은 로그와 메트릭으로 현상을 정확히 진단하는 것이다. STW 목표 시간을 정하고, Full GC 원인(누수 vs 용량 부족)을 구분한 뒤 코드 개선을 먼저 시도하는 것이 JVM 플래그 조작보다 효과적인 경우가 많다.
