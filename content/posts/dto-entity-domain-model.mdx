@@ -1,0 +1,186 @@
+---
+title: DTO, Entity, Domain Model을 구분하지 않으면 생기는 문제
+date: '2026-04-28'
+category: Architecture
+tags:
+  - DDD
+  - DTO
+  - 백엔드 설계
+  - Spring
+summary: >-
+  backend에서 DTO, entity, domain model을 구분하지 않으면 어떤 API 변경 리스크가 생길까.
+  계층 간 객체를 혼용하면 외부 API 변경이 도메인 내부로 직접 전파되어 유지보수 비용이 급격히 높아진다.
+thumbnail: /thumbnails/dto-entity-domain-model.svg
+---
+
+backend에서 DTO, entity, domain model을 구분하지 않으면 어떤 API 변경 리스크가 생길까. 처음에는 클래스 수를 줄일 수 있어 편리해 보이지만, 서비스가 성장하면서 외부 API 스펙 변경이 DB 스키마 변경을 강제하거나, 도메인 로직이 API 응답 형식에 오염되는 문제가 나타난다.
+
+## 세 가지 객체의 역할
+
+### DTO (Data Transfer Object)
+
+계층 간 데이터를 전달하는 역할이다. 외부 API 요청·응답, 서비스 레이어 간 전달 등에 쓰인다. 비즈니스 로직을 갖지 않는 순수 데이터 컨테이너다.
+
+```java
+// API 응답용 DTO
+public record UserResponse(
+    Long id,
+    String name,
+    String email
+) {}
+
+// API 요청용 DTO
+public record CreateUserRequest(
+    String name,
+    String email,
+    String password
+) {}
+```
+
+### Entity
+
+JPA 같은 ORM에서 DB 테이블과 매핑되는 객체다. 영속성 컨텍스트에서 관리되며, 생명주기가 DB 트랜잭션과 결합되어 있다.
+
+```java
+@Entity
+@Table(name = "users")
+public class UserEntity {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false)
+    private String name;
+
+    @Column(nullable = false, unique = true)
+    private String email;
+
+    @Column(nullable = false)
+    private String hashedPassword;
+
+    // JPA 요구사항: 기본 생성자 필요
+    protected UserEntity() {}
+}
+```
+
+### Domain Model
+
+비즈니스 규칙과 불변식(invariant)을 담은 객체다. DB 스키마나 API 형식과 독립적으로 설계된다.
+
+```java
+public class User {
+    private final UserId id;
+    private String name;
+    private final Email email;
+
+    public void changeName(String newName) {
+        if (newName == null || newName.isBlank()) {
+            throw new IllegalArgumentException("이름은 비워둘 수 없습니다.");
+        }
+        this.name = newName;
+    }
+
+    public boolean isSameEmail(Email other) {
+        return this.email.equals(other);
+    }
+}
+```
+
+## 구분하지 않으면 생기는 문제
+
+### 1. API 변경이 DB 스키마 변경을 강제
+
+Entity를 그대로 API 응답으로 쓰면 API 필드명이 곧 DB 컬럼명이 된다. API 필드명을 바꾸면 DB 마이그레이션이 따라온다.
+
+```java
+// ❌ Entity를 직접 반환하는 컨트롤러
+@GetMapping("/users/{id}")
+public UserEntity getUser(@PathVariable Long id) {
+    return userRepository.findById(id).orElseThrow();
+}
+// → API 스펙 변경 = DB 컬럼 변경이 되어버림
+```
+
+### 2. 보안 취약점 — 의도치 않은 필드 노출
+
+Entity에 `hashedPassword`, 내부 플래그, 감사 필드 등이 포함된 채 직렬화되면 민감 정보가 유출된다.
+
+```java
+// @JsonIgnore를 엔티티에 덕지덕지 붙이는 패턴
+@JsonIgnore
+private String hashedPassword;
+
+// → 어느 API에서는 보내고 어느 API에서는 숨겨야 할 때 제어가 불가능
+```
+
+### 3. 도메인 로직이 API 형식에 종속
+
+도메인 모델과 DTO를 구분하지 않으면 비즈니스 규칙이 API 응답 형식 변경에 영향을 받는다.
+
+```java
+// ❌ DTO 안에 비즈니스 로직이 섞임
+public class UserDto {
+    public String name;
+
+    public boolean isValidName() {  // 도메인 로직
+        return name != null && name.length() >= 2;
+    }
+
+    public String getDisplayName() {  // API 표현 로직
+        return name.toUpperCase();
+    }
+}
+```
+
+## 올바른 레이어 구조
+
+```
+API Layer (Controller)
+  ↓ CreateUserRequest (DTO)
+Application Layer (Service)
+  ↓ User (Domain Model)
+Domain Layer (Repository Interface)
+  ↓ UserEntity (JPA Entity)
+Infrastructure Layer (Repository Impl, DB)
+```
+
+각 레이어 경계에서 객체를 변환한다.
+
+```java
+@Service
+@RequiredArgsConstructor
+public class UserService {
+
+    private final UserRepository userRepository;
+
+    public UserResponse createUser(CreateUserRequest request) {
+        // DTO → Domain Model 변환
+        User user = User.create(request.name(), request.email(), request.password());
+
+        // Domain Model → Entity 변환 후 저장
+        UserEntity entity = UserEntity.from(user);
+        UserEntity saved = userRepository.save(entity);
+
+        // Entity → DTO 변환 후 반환
+        return UserResponse.from(User.from(saved));
+    }
+}
+```
+
+## 변환 비용을 줄이는 팁
+
+변환 코드가 번거롭다고 느껴지면 정적 팩토리 메서드나 MapStruct를 활용한다.
+
+```java
+// MapStruct 매퍼 자동 생성
+@Mapper(componentModel = "spring")
+public interface UserMapper {
+    UserResponse toResponse(User user);
+    User toDomain(CreateUserRequest request);
+    UserEntity toEntity(User user);
+}
+```
+
+## 핵심 정리
+
+DTO, Entity, Domain Model을 명확히 분리하면 계층 간 변경 영향이 차단되어 API 스펙, DB 스키마, 도메인 규칙을 각각 독립적으로 발전시킬 수 있다. 초반에 클래스가 늘어나는 비용은 서비스가 성장할수록 유지보수 비용 감소로 상쇄된다.
