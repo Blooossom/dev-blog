@@ -1,0 +1,124 @@
+---
+title: SQL JOIN 순서와 옵티마이저의 실행 계획
+date: '2026-04-28'
+category: Backend
+tags:
+  - SQL
+  - Database
+  - 쿼리 최적화
+  - 실행 계획
+summary: >-
+  JOIN 순서는 SQL에 적은 순서대로 실행될까, 옵티마이저가 바꿀 수 있을까. 대부분의 RDBMS 옵티마이저는
+  통계 정보를 바탕으로 JOIN 순서를 자동으로 재배치하며, 이를 이해해야 실행 계획을 제대로 읽을 수 있다.
+thumbnail: /thumbnails/sql-join-optimizer.svg
+---
+
+JOIN 순서는 SQL에 적은 순서대로 실행될까, 옵티마이저가 바꿀 수 있을까. 정답은 "옵티마이저가 바꿀 수 있다"이다. MySQL, PostgreSQL, Oracle 등 대부분의 RDBMS는 쿼리를 실제로 실행하기 전에 Cost-Based Optimizer(CBO)가 통계 정보를 바탕으로 최적의 JOIN 순서와 조인 알고리즘을 선택한다. 개발자가 적은 순서가 아니라 옵티마이저가 판단한 순서대로 실행된다.
+
+## 옵티마이저가 JOIN 순서를 바꾸는 이유
+
+중첩 루프(Nested Loop Join)를 예로 들면, 바깥쪽(outer) 테이블의 로우 수가 적을수록 내부 루프 반복 횟수가 줄어든다. 옵티마이저는 각 테이블의 **카디널리티**(예상 결과 행 수)와 **인덱스 존재 여부**를 분석해 비용이 가장 낮은 순서를 선택한다.
+
+```
+예시: orders JOIN users JOIN products
+
+SQL 작성 순서: orders → users → products
+옵티마이저 선택: users(10행) → orders(100만 행) → products(1000행)
+이유: 가장 작은 테이블을 먼저 드라이빙 테이블로 사용
+```
+
+## JOIN 알고리즘 종류
+
+| 알고리즘 | 동작 방식 | 적합한 상황 |
+|----------|-----------|------------|
+| Nested Loop Join | 외부 테이블 행마다 내부 테이블 탐색 | 외부 결과 집합이 작고 내부에 인덱스 있을 때 |
+| Hash Join | 작은 쪽을 해시 테이블로 만들어 매칭 | 인덱스 없는 대용량 equi-join |
+| Merge Join | 두 테이블을 정렬 후 병합 | 두 쪽 모두 정렬된 상태거나 정렬 비용이 낮을 때 |
+
+## EXPLAIN으로 실행 계획 확인
+
+실제 옵티마이저가 어떤 순서와 방법을 선택했는지 `EXPLAIN`으로 확인할 수 있다.
+
+```sql
+EXPLAIN
+SELECT o.id, u.name, p.name
+FROM orders o
+JOIN users u ON o.user_id = u.id
+JOIN products p ON o.product_id = p.id
+WHERE o.status = 'COMPLETED';
+```
+
+MySQL 출력 예시:
+
+```
++----+-------------+-------+--------+------------------+------------+------+-------+
+| id | select_type | table | type   | possible_keys    | key        | rows | Extra |
++----+-------------+-------+--------+------------------+------------+------+-------+
+|  1 | SIMPLE      | u     | ALL    | PRIMARY          | NULL       |   10 |       |
+|  1 | SIMPLE      | o     | ref    | user_id,status   | user_id    |  500 |       |
+|  1 | SIMPLE      | p     | eq_ref | PRIMARY          | PRIMARY    |    1 |       |
++----+-------------+-------+--------+------------------+------------+------+-------+
+```
+
+SQL에는 `orders → users → products` 순서로 작성했지만, 옵티마이저는 `users → orders → products` 순서로 실행 계획을 세웠다.
+
+## 옵티마이저 힌트로 순서 강제
+
+통계 정보가 오래되거나 옵티마이저의 판단이 잘못된 경우, 개발자가 직접 순서를 제어할 수 있다.
+
+```sql
+-- MySQL: STRAIGHT_JOIN
+SELECT STRAIGHT_JOIN o.id, u.name
+FROM orders o
+JOIN users u ON o.user_id = u.id;
+
+-- MySQL 8.0+: JOIN_ORDER 힌트
+SELECT /*+ JOIN_ORDER(o, u) */ o.id, u.name
+FROM orders o
+JOIN users u ON o.user_id = u.id;
+
+-- PostgreSQL: enable_hashjoin, enable_nestloop 등 세션 파라미터
+SET enable_hashjoin = off;
+```
+
+힌트는 최후의 수단이다. 통계 업데이트나 인덱스 추가로 해결되지 않을 때만 사용한다.
+
+## 통계 정보의 중요성
+
+옵티마이저의 판단은 통계 정보 기반이다. 대량 DML 이후 통계가 오래되면 잘못된 실행 계획이 나올 수 있다.
+
+```sql
+-- MySQL: 테이블 통계 업데이트
+ANALYZE TABLE orders;
+
+-- PostgreSQL: 통계 수동 갱신
+ANALYZE orders;
+
+-- PostgreSQL: 상세 통계 확인
+SELECT tablename, attname, n_distinct, correlation
+FROM pg_stats
+WHERE tablename = 'orders';
+```
+
+## 서브쿼리 vs JOIN
+
+서브쿼리는 옵티마이저가 자동으로 JOIN으로 변환하는 경우가 많다. 다만 상관 서브쿼리(Correlated Subquery)는 최적화 대상에서 벗어날 수 있어 주의가 필요하다.
+
+```sql
+-- 상관 서브쿼리: 외부 행마다 반복 실행 가능성
+SELECT o.id
+FROM orders o
+WHERE o.user_id IN (
+    SELECT u.id FROM users u WHERE u.grade = 'VIP'
+);
+
+-- JOIN으로 변환 권장 (대부분 동일하게 최적화되지만 명시적으로 더 안전)
+SELECT o.id
+FROM orders o
+JOIN users u ON o.user_id = u.id
+WHERE u.grade = 'VIP';
+```
+
+## 핵심 정리
+
+SQL의 JOIN 순서는 개발자가 작성한 그대로 실행되지 않는다. 옵티마이저가 통계 정보를 바탕으로 비용이 낮은 순서를 선택하기 때문에, 실행 계획을 `EXPLAIN`으로 확인하고 통계 정보를 최신 상태로 유지하는 것이 쿼리 성능 관리의 핵심이다.
