@@ -18,7 +18,7 @@
 312. application service와 domain service는 책임이 어떻게 달라야 할까?
 313. command handler와 query handler를 분리하면 테스트와 변경 영향도에서 어떤 이점이 있을까?
 ~~314. dependency inversion은 인터페이스를 많이 만드는 것이 아니라 어떤 방향의 의존성을 바꾸는 원칙일까?~~ `작성완료`
-315. 모듈러 모놀리스는 마이크로서비스의 대안으로 어떤 상황에서 현실적인 선택이 될까?
+~~315. 모듈러 모놀리스는 마이크로서비스의 대안으로 어떤 상황에서 현실적인 선택이 될까?~~ `작성완료`
 316. shared library를 많이 만들면 중복은 줄지만 서비스 간 결합은 왜 강해질 수 있을까?
 ~~317. backend에서 DTO, entity, domain model을 구분하지 않으면 어떤 API 변경 리스크가 생길까?~~ `작성완료`
 ## Backend Design Pattern

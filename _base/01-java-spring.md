@@ -31,7 +31,7 @@
 ~~55. Java Thread Pool에서 core size, max size, queue size를 잘못 잡으면 어떤 장애가 생길까?~~ `작성완료`
 56. `CompletableFuture`를 사용할 때 기본 ForkJoinPool을 그대로 쓰면 어떤 위험이 있을까?
 ~~57. Spring MVC에서 요청 하나는 어떤 흐름으로 DispatcherServlet, HandlerMapping, Interceptor, Controller를 통과할까?~~ `작성완료`
-58. Spring Security의 인증과 인가는 필터 체인 안에서 어떤 순서로 처리될까?
+~~58. Spring Security의 인증과 인가는 필터 체인 안에서 어떤 순서로 처리될까?~~ `작성완료`
 ~~59. JWT를 사용하면 서버가 완전히 stateless해진다고 말할 수 있을까?~~ `작성완료`
 60. refresh token을 DB에 저장하는 방식과 Redis에 저장하는 방식은 어떤 트레이드오프가 있을까?
 ~~61. `@Transactional(readOnly = true)`는 단순히 개발자에게 읽기 전용 의도를 표시하는 것일까?~~ `작성완료`

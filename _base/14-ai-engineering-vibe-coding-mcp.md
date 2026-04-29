@@ -33,7 +33,7 @@
 473. tool calling에서 모델이 도구를 선택하게 할 때 permission, audit log, rate limit을 왜 함께 설계해야 할까?
 474. 외부 도구 실행 결과를 LLM context에 넣을 때 어떤 데이터 축약과 신뢰도 표시가 필요할까?
 475. context engineering은 긴 문서를 많이 넣는 일이 아니라 어떤 정보 선택과 우선순위 조정 문제일까?
-476. RAG에서 chunk size, overlap, embedding model, reranker 선택은 검색 품질에 어떤 영향을 줄까?
+~~476. RAG에서 chunk size, overlap, embedding model, reranker 선택은 검색 품질에 어떤 영향을 줄까?~~ `작성완료`
 477. vector search 결과가 의미적으로 비슷해도 task에 부적합할 수 있는 이유는 무엇일까?
 478. retrieval 결과를 모델이 인용하거나 근거로 사용할 때 citation과 source grounding은 어떻게 검증해야 할까?
 479. tool result가 stale하거나 partial failure일 때 모델이 확신 있게 잘못된 답을 내지 않게 하려면 어떻게 해야 할까?

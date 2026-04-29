@@ -23,7 +23,7 @@
 37. 브라우저의 localStorage, sessionStorage, cookie는 보안과 수명 측면에서 어떻게 다를까?
 ~~71. React 18의 concurrent rendering은 기존 렌더링 모델과 무엇이 다를까?~~ `작성완료`
 ~~72. `useMemo`와 `useCallback`은 성능 최적화 도구일까, 참조 안정성 도구일까?~~ `작성완료`
-73. React에서 불필요한 리렌더링을 줄이려면 state 위치를 어떻게 설계해야 할까?
+~~73. React에서 불필요한 리렌더링을 줄이려면 state 위치를 어떻게 설계해야 할까?~~ `작성완료`
 74. Context를 전역 상태 관리 도구처럼 많이 쓰면 어떤 성능 문제가 생길 수 있을까?
 75. React Query, SWR 같은 서버 상태 관리 라이브러리는 Redux와 해결하려는 문제가 어떻게 다를까?
 ~~76. optimistic update는 사용자 경험을 좋게 만들지만, 실패 시 어떤 보상 로직이 필요할까?~~ `작성완료`
