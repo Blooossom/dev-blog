@@ -1,0 +1,171 @@
+---
+title: 모듈러 모놀리스 — MSA의 현실적 대안
+date: '2026-04-29'
+category: Architecture
+tags:
+  - 모듈러 모놀리스
+  - MSA
+  - 아키텍처
+  - 모놀리스
+  - DDD
+summary: >-
+  모듈러 모놀리스는 마이크로서비스의 대안으로 어떤 상황에서 현실적인 선택이 될까. 단일 배포 단위를 유지하면서
+  내부를 모듈로 명확히 분리하면 MSA의 운영 복잡도 없이 적절한 수준의 분리를 얻을 수 있다.
+thumbnail: /thumbnails/modular-monolith.svg
+---
+
+모듈러 모놀리스는 마이크로서비스의 대안으로 어떤 상황에서 현실적인 선택이 될까. 많은 팀이 MSA(마이크로서비스 아키텍처)를 목표로 삼지만, 준비되지 않은 상태에서의 MSA는 분산 모놀리스라는 최악의 결과를 만든다. 모듈러 모놀리스는 그 중간 경로다.
+
+## 모놀리스의 문제와 MSA의 약속
+
+전통적인 모놀리스는 시간이 지날수록 코드 경계가 무너지고 모든 것이 얽히는 빅볼오브머드(Big Ball of Mud)가 된다. 이 문제를 해결하기 위해 MSA를 선택하지만, MSA는 다음 비용을 수반한다:
+
+| MSA 비용 | 설명 |
+|----------|------|
+| 네트워크 복잡도 | 서비스 간 통신이 HTTP/gRPC/메시지로 추가됨 |
+| 분산 트랜잭션 | ACID를 포기하거나 Saga, 2PC 같은 복잡한 패턴 필요 |
+| 운영 부담 | 서비스별 배포 파이프라인, 모니터링, 서비스 디스커버리 |
+| 로컬 개발 복잡도 | 여러 서비스를 동시에 띄워야 개발 가능 |
+| 데이터 일관성 | 서비스별 DB 분리 시 조회와 집계가 어려워짐 |
+
+MSA의 이점(독립 배포, 독립 스케일링, 팀 자율성)은 팀이 크고 서비스가 다른 주기로 변경될 때 의미 있다. 소규모 팀이나 초기 단계 제품에서는 이 비용이 이점을 초과한다.
+
+## 모듈러 모놀리스란
+
+모듈러 모놀리스는 **단일 배포 단위**를 유지하면서 내부를 **명시적으로 경계 지어진 모듈**로 나눈 구조다. 각 모듈은 자신의 도메인 로직, 데이터 접근, API를 소유한다. 모듈 간 의존성은 공개 인터페이스로만 허용한다.
+
+```
+monolith-app/
+├── modules/
+│   ├── order/
+│   │   ├── api/         (공개 인터페이스)
+│   │   ├── domain/
+│   │   ├── application/
+│   │   └── infra/
+│   ├── payment/
+│   │   ├── api/
+│   │   ├── domain/
+│   │   ├── application/
+│   │   └── infra/
+│   └── inventory/
+│       ├── api/
+│       ├── domain/
+│       ├── application/
+│       └── infra/
+└── shared/              (공통 유틸, 예외, 값객체)
+```
+
+MSA와 달리 모든 모듈이 하나의 프로세스에서 실행되므로 네트워크 홉이 없고, 메서드 호출로 모듈 간 통신이 이루어진다.
+
+## 핵심 규칙: 모듈 경계 강제
+
+모듈러 모놀리스가 일반 모놀리스와 다른 점은 경계를 기술적으로 강제한다는 것이다.
+
+### Spring Modulith로 경계 강제하기
+
+```java
+// order 모듈의 공개 API
+@ApplicationModuleListener
+public class OrderApplicationService {
+    public OrderResult placeOrder(PlaceOrderCommand command) { ... }
+}
+
+// payment 모듈에서 order 내부 클래스를 직접 참조하면
+// ArchUnit 기반 테스트가 실패한다
+@Test
+void order_module_should_not_expose_internals() {
+    ApplicationModules.of(Application.class).verify();
+}
+```
+
+Spring Modulith는 모듈 간 의존성을 분석하고, 내부 패키지(`internal`)에 있는 클래스를 다른 모듈이 참조하면 테스트 실패로 알려준다.
+
+### 모듈 간 통신 방식
+
+**동기 호출**: 같은 프로세스이므로 직접 메서드 호출이 가능하다. 단, 공개 인터페이스로만 접근해야 한다.
+
+```java
+// payment 모듈이 order 모듈의 공개 인터페이스만 사용
+@Service
+public class PaymentService {
+
+    private final OrderQueryPort orderQueryPort;  // order 모듈의 공개 포트
+
+    public void processPayment(Long orderId) {
+        Order order = orderQueryPort.findById(orderId);  // 내부 엔티티 직접 접근 금지
+        // ...
+    }
+}
+```
+
+**이벤트 기반 통신**: 도메인 이벤트를 통해 결합도를 낮춘다. Spring Modulith는 이벤트 발행/구독 구조도 지원한다.
+
+```java
+// order 모듈이 이벤트 발행
+@Service
+public class OrderService {
+    private final ApplicationEventPublisher eventPublisher;
+
+    public void placeOrder(PlaceOrderCommand command) {
+        Order order = Order.create(command);
+        orderRepository.save(order);
+        eventPublisher.publishEvent(new OrderPlacedEvent(order.getId()));
+    }
+}
+
+// inventory 모듈이 이벤트 구독
+@ApplicationModuleListener
+public class InventoryEventHandler {
+    public void on(OrderPlacedEvent event) {
+        inventoryService.reserve(event.getOrderId());
+    }
+}
+```
+
+## 데이터베이스 전략
+
+모듈러 모놀리스에서는 하나의 DB를 사용할 수도 있고, 스키마를 모듈별로 분리할 수도 있다.
+
+| 전략 | 장점 | 단점 |
+|------|------|------|
+| 단일 DB, 단일 스키마 | 구현 단순, JOIN 가능 | 모듈 경계가 DB 수준에서 없음 |
+| 단일 DB, 스키마 분리 | DB 수준 격리, 마이그레이션 시 분리 용이 | 크로스 스키마 JOIN 필요 |
+| 모듈별 별도 DB | MSA와 유사한 격리 | 조회 복잡도 증가, 운영 부담 |
+
+초기에는 단일 DB에 스키마 분리 전략이 실용적이다. 모듈이 성숙하고 분리 필요성이 생기면 그때 별도 DB로 이전할 수 있다.
+
+```sql
+-- PostgreSQL 스키마 분리 예시
+CREATE SCHEMA order_module;
+CREATE SCHEMA payment_module;
+CREATE SCHEMA inventory_module;
+
+CREATE TABLE order_module.orders ( ... );
+CREATE TABLE payment_module.payments ( ... );
+```
+
+## MSA로의 마이그레이션 경로
+
+모듈러 모놀리스는 MSA로 가는 준비 단계가 된다. 경계가 명확히 정의되어 있으므로 특정 모듈을 별도 서비스로 분리하기가 훨씬 쉽다.
+
+```
+단계 1: 모놀리스 → 모듈러 모놀리스 (경계 정의)
+단계 2: 특정 모듈 → 별도 서비스로 분리 (필요 시)
+단계 3: 나머지 모듈들도 필요에 따라 분리
+```
+
+분리 기준은 보통 다음이다:
+- 확장 요구사항이 다를 때 (결제 서비스만 스케일아웃 필요)
+- 배포 주기가 다를 때 (추천 모듈만 자주 배포)
+- 팀이 성장해 모듈별 독립 소유권이 필요할 때
+
+## 모듈러 모놀리스가 적합한 상황
+
+- 팀 규모가 10명 미만이거나, MSA 운영 전문성이 아직 없을 때
+- 도메인 경계가 아직 불명확하고 자주 바뀔 때
+- 빠른 배포 주기가 필요할 때 (단일 배포 파이프라인)
+- 비즈니스 로직이 여러 도메인에 걸쳐 강한 일관성을 요구할 때
+
+## 핵심 원칙
+
+모듈러 모놀리스의 핵심은 배포 단위가 아니라 경계의 명확성이다. 경계 없는 모놀리스는 시간이 지나면 빅볼오브머드가 되고, 경계 없는 MSA는 분산 모놀리스가 된다. 모듈러 모놀리스는 경계를 코드와 테스트로 강제하면서 운영 단순성을 유지하는 현실적인 선택이다.
