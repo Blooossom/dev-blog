@@ -525,6 +525,11 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'hashtable-collision':            { pattern: 'code',     colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
   'read-heavy-write-heavy':         { pattern: 'layers',   colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
   'llm-nondeterminism':             { pattern: 'neural',   colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'spring-security-filter-chain':   { pattern: 'spring',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'react-state-architecture':       { pattern: 'browser',  colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
+  'db-normalization':               { pattern: 'layers',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'rag-chunk-embedding':            { pattern: 'neural',   colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'modular-monolith':               { pattern: 'layers',   colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
