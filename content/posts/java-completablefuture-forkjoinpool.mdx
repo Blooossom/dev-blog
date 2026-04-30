@@ -1,0 +1,174 @@
+---
+title: CompletableFuture와 ForkJoinPool의 함정
+date: '2026-04-30'
+category: Backend
+tags:
+  - Java
+  - 동시성
+  - CompletableFuture
+  - ForkJoinPool
+  - 스레드풀
+summary: >-
+  CompletableFuture를 기본 ForkJoinPool로 운영하면 blocking I/O가 섞이는 순간 전체 서비스 처리량이
+  급격히 저하될 수 있다. 풀 분리 전략과 올바른 Executor 선택 기준을 살펴본다.
+thumbnail: /thumbnails/java-completablefuture-forkjoinpool.svg
+---
+
+`CompletableFuture`를 사용할 때 기본 `ForkJoinPool`을 그대로 쓰면 어떤 위험이 있을까? 코드 한 줄로 비동기 작업을 쉽게 시작할 수 있지만, 내부에서 어떤 스레드풀이 동작하는지 이해하지 못하면 예상치 못한 지연과 처리량 감소를 겪게 된다.
+
+## ForkJoinPool.commonPool이란
+
+`CompletableFuture.supplyAsync(supplier)` 처럼 Executor를 명시하지 않으면 JVM 전역 공유 풀인 `ForkJoinPool.commonPool()`을 사용한다.
+
+```
+ForkJoinPool.commonPool()
+  ├─ 스레드 수 = CPU 코어 수 - 1  (기본값)
+  ├─ JVM 프로세스 내 모든 호출자가 공유
+  └─ work-stealing 알고리즘으로 CPU-bound 작업에 최적화
+```
+
+4코어 머신이라면 commonPool의 병렬도는 3이다. 이 풀은 병렬 스트림(`stream().parallel()`)과도 공유되므로, 애플리케이션 어딘가에서 무거운 병렬 스트림을 돌리면 CompletableFuture의 가용 스레드도 함께 줄어든다.
+
+## blocking I/O가 섞이면 왜 문제인가
+
+ForkJoinPool은 CPU-bound 작업을 전제로 설계되었다. 스레드가 작업을 빠르게 처리하고 반환한다는 가정 아래 코어 수만큼만 스레드를 유지한다.
+
+그런데 아래처럼 외부 API 호출이나 JDBC 쿼리 같은 blocking I/O가 섞이면 어떻게 될까?
+
+```java
+CompletableFuture<String> cf = CompletableFuture.supplyAsync(() -> {
+    // 외부 REST API 호출 - 200ms 블로킹
+    return restTemplate.getForObject(url, String.class);
+});
+```
+
+스레드가 I/O 대기 중에 CPU를 점유하지 않지만 스레드 슬롯은 계속 잡고 있다. 3개 스레드가 동시에 블로킹되면 commonPool은 새 작업을 처리할 스레드가 없어진다.
+
+```
+시나리오: 4코어, commonPool 병렬도 3
+Task 1 ──blocking 200ms──────────┤
+Task 2 ──blocking 200ms──────────┤
+Task 3 ──blocking 200ms──────────┤
+Task 4 ⏸ 대기 중 (슬롯 없음)
+Task 5 ⏸ 대기 중 (슬롯 없음)
+```
+
+요청이 몇 개만 쌓여도 전체 commonPool이 포화 상태가 된다.
+
+## ForkJoinPool의 ManagedBlocker 메커니즘
+
+ForkJoinPool은 이를 보완하기 위해 `ManagedBlocker` 인터페이스를 제공한다. 블로킹이 예상되는 작업을 `ForkJoinPool.managedBlock(blocker)`로 감싸면 풀이 보상 스레드(compensating thread)를 추가로 생성해 처리량을 유지하려 한다.
+
+```java
+ForkJoinPool.managedBlock(new ForkJoinPool.ManagedBlocker() {
+    @Override public boolean block() {
+        result = restTemplate.getForObject(url, String.class);
+        return true;
+    }
+    @Override public boolean isReleasable() { return result != null; }
+});
+```
+
+하지만 보상 스레드는 무한정 늘어나지 않고, 컨텍스트 스위칭 비용이 발생한다. 근본적인 해결책이 아니다.
+
+## 올바른 Executor 분리 전략
+
+### I/O-bound 작업 전용 풀 분리
+
+```java
+// 애플리케이션 시작 시 한 번 생성
+private static final ExecutorService IO_POOL =
+    Executors.newFixedThreadPool(
+        Runtime.getRuntime().availableProcessors() * 4,  // I/O 대기 비율에 따라 조정
+        r -> {
+            Thread t = new Thread(r, "io-worker");
+            t.setDaemon(true);
+            return t;
+        }
+    );
+
+// 사용 시
+CompletableFuture<String> cf =
+    CompletableFuture.supplyAsync(() -> restTemplate.getForObject(url, String.class), IO_POOL);
+```
+
+### Spring 환경에서의 권장 방식
+
+Spring Boot 애플리케이션에서는 `TaskExecutor` 빈으로 관리하는 것이 편리하다.
+
+```java
+@Configuration
+public class AsyncConfig {
+
+    @Bean("ioTaskExecutor")
+    public Executor ioTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(50);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("io-async-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.initialize();
+        return executor;
+    }
+}
+```
+
+```java
+@Service
+public class ExternalApiService {
+
+    @Autowired
+    @Qualifier("ioTaskExecutor")
+    private Executor ioExecutor;
+
+    public CompletableFuture<String> fetchData(String url) {
+        return CompletableFuture.supplyAsync(
+            () -> restTemplate.getForObject(url, String.class),
+            ioExecutor
+        );
+    }
+}
+```
+
+### 작업 유형별 풀 선택 기준
+
+| 작업 유형 | 권장 Executor | 스레드 수 기준 |
+|-----------|--------------|---------------|
+| CPU 연산 (암호화, 파싱) | ForkJoinPool / commonPool | 코어 수 |
+| I/O 대기 (REST, JDBC) | 별도 ThreadPoolExecutor | 코어 수 × 4~10 |
+| 짧고 가벼운 작업 | commonPool 가능 | - |
+| @Async Spring 빈 | ThreadPoolTaskExecutor | 용도별 분리 |
+
+## 연쇄 작업에서 주의할 점
+
+`thenApplyAsync`, `thenComposeAsync` 에도 Executor를 명시하지 않으면 동일한 commonPool을 쓴다.
+
+```java
+CompletableFuture<Result> pipeline =
+    CompletableFuture
+        .supplyAsync(this::callApi, IO_POOL)          // I/O 풀
+        .thenApplyAsync(this::transform, CPU_POOL)    // CPU 풀
+        .thenApplyAsync(this::save, IO_POOL);         // 다시 I/O 풀
+```
+
+각 단계에 맞는 Executor를 지정하면 풀 고갈 없이 파이프라인을 구성할 수 있다.
+
+## Virtual Thread (Java 21+)와의 비교
+
+Java 21의 가상 스레드는 blocking 호출에서 자동으로 캐리어 스레드를 반환하므로, 기존 고민의 상당 부분을 해소한다.
+
+```java
+// 가상 스레드 기반 Executor
+ExecutorService vtExecutor =
+    Executors.newVirtualThreadPerTaskExecutor();
+
+CompletableFuture<String> cf =
+    CompletableFuture.supplyAsync(() -> restTemplate.getForObject(url, String.class), vtExecutor);
+```
+
+가상 스레드를 도입할 수 없는 환경에서는 I/O 풀을 명시적으로 분리하는 것이 가장 현실적인 해결책이다.
+
+---
+
+`CompletableFuture`는 Executor를 명시하지 않아도 컴파일되지만, 운영 환경에서 I/O 작업이 포함되는 순간 기본 commonPool은 병목이 된다. 작업 특성에 맞는 Executor를 분리하는 것이 안정적인 비동기 파이프라인의 출발점이다.
