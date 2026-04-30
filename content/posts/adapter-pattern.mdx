@@ -1,0 +1,220 @@
+---
+title: 어댑터 패턴으로 외부 변경을 내부에서 막는 법
+date: '2026-04-30'
+category: Architecture
+tags:
+  - 디자인패턴
+  - Adapter Pattern
+  - DDD
+  - 헥사고날 아키텍처
+  - 의존성 관리
+summary: >-
+  어댑터 패턴은 외부 API 변경이 내부 도메인으로 전파되는 것을 차단한다.
+  인터페이스를 경계로 삼아 외부 의존성을 격리하면, 외부가 바뀌어도 내부 로직은 흔들리지 않는다.
+thumbnail: /thumbnails/adapter-pattern.svg
+---
+
+어댑터 패턴은 외부 API 변경이 내부 도메인으로 전파되는 것을 어떻게 막을까? 외부 결제 서비스, 알림 API, 레거시 시스템과 연동할 때 이들의 인터페이스를 그대로 내부 코드에서 참조하면, 외부 변경이 일어날 때마다 내부까지 수정해야 한다.
+
+## 어댑터가 없을 때 벌어지는 일
+
+결제 서비스 SDK를 직접 호출하는 서비스 코드를 생각해 보자.
+
+```java
+// 외부 SDK 클래스를 직접 사용
+@Service
+public class OrderService {
+
+    private final TossPaymentsClient tossClient;  // 외부 SDK
+
+    public void pay(Order order) {
+        TossPaymentRequest req = new TossPaymentRequest();
+        req.setOrderId(order.getId().toString());
+        req.setAmount(order.getTotalAmount().intValue());
+        req.setCurrency("KRW");
+
+        TossPaymentResponse resp = tossClient.confirm(req);
+
+        if ("DONE".equals(resp.getStatus())) {
+            order.markAsPaid(resp.getPaymentKey());
+        }
+    }
+}
+```
+
+이 코드의 문제:
+- `OrderService`가 Toss SDK의 요청·응답 객체를 직접 알고 있다
+- 결제 수단을 KakaoPay로 교체하면 `OrderService`도 수정해야 한다
+- 테스트 시 실제 결제 API를 호출해야 한다
+
+## 어댑터 패턴 적용
+
+### 1단계: 내부 인터페이스(Port) 정의
+
+```java
+// 도메인이 원하는 형태로 인터페이스를 정의
+public interface PaymentGateway {
+    PaymentResult pay(PaymentCommand command);
+}
+
+public record PaymentCommand(String orderId, Money amount) {}
+
+public record PaymentResult(String paymentKey, PaymentStatus status) {}
+
+public enum PaymentStatus { SUCCESS, FAILED }
+```
+
+### 2단계: 외부 SDK를 내부 인터페이스에 맞춰 감싸는 어댑터 구현
+
+```java
+// Toss SDK 어댑터
+@Component
+public class TossPaymentAdapter implements PaymentGateway {
+
+    private final TossPaymentsClient tossClient;
+
+    public TossPaymentAdapter(TossPaymentsClient tossClient) {
+        this.tossClient = tossClient;
+    }
+
+    @Override
+    public PaymentResult pay(PaymentCommand command) {
+        // 내부 모델 → 외부 SDK 모델 변환
+        TossPaymentRequest req = new TossPaymentRequest();
+        req.setOrderId(command.orderId());
+        req.setAmount(command.amount().intValue());
+        req.setCurrency("KRW");
+
+        TossPaymentResponse resp = tossClient.confirm(req);
+
+        // 외부 SDK 모델 → 내부 모델 변환
+        PaymentStatus status = "DONE".equals(resp.getStatus())
+            ? PaymentStatus.SUCCESS
+            : PaymentStatus.FAILED;
+
+        return new PaymentResult(resp.getPaymentKey(), status);
+    }
+}
+```
+
+### 3단계: 서비스는 인터페이스만 바라본다
+
+```java
+@Service
+public class OrderService {
+
+    private final PaymentGateway paymentGateway;  // 인터페이스에만 의존
+
+    public OrderService(PaymentGateway paymentGateway) {
+        this.paymentGateway = paymentGateway;
+    }
+
+    public void pay(Order order) {
+        PaymentCommand command = new PaymentCommand(
+            order.getId().toString(),
+            order.getTotalAmount()
+        );
+
+        PaymentResult result = paymentGateway.pay(command);
+
+        if (result.status() == PaymentStatus.SUCCESS) {
+            order.markAsPaid(result.paymentKey());
+        }
+    }
+}
+```
+
+## 구조 시각화
+
+```
+┌─────────────────────────────────────────────┐
+│  Internal Domain                            │
+│                                             │
+│  OrderService ──uses──▶ PaymentGateway      │
+│                          (interface/port)   │
+└──────────────────────────────┬──────────────┘
+                               │ implements
+┌──────────────────────────────▼──────────────┐
+│  Adapter Layer                              │
+│                                             │
+│  TossPaymentAdapter    KakaoPayAdapter      │
+│       │                      │             │
+│  TossPaymentsClient  KakaoPayClient        │
+│  (외부 SDK)           (외부 SDK)             │
+└─────────────────────────────────────────────┘
+```
+
+## 결제 수단 교체 시의 변경 범위
+
+KakaoPay로 교체할 때 변경되는 파일:
+
+```
+변경 없음: OrderService, PaymentGateway, PaymentCommand, PaymentResult
+변경 있음: KakaoPayAdapter (새로 추가), Spring 빈 설정
+```
+
+`OrderService`는 한 줄도 바꿀 필요가 없다.
+
+## 테스트 용이성
+
+어댑터 패턴이 적용되면 `PaymentGateway`를 목(Mock)으로 대체하기 쉽다.
+
+```java
+@ExtendWith(MockitoExtension.class)
+class OrderServiceTest {
+
+    @Mock
+    PaymentGateway paymentGateway;
+
+    @InjectMocks
+    OrderService orderService;
+
+    @Test
+    void 결제_성공_시_주문이_완료_상태가_된다() {
+        // given
+        Order order = Order.create(...);
+        given(paymentGateway.pay(any()))
+            .willReturn(new PaymentResult("pay_key_123", PaymentStatus.SUCCESS));
+
+        // when
+        orderService.pay(order);
+
+        // then
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.PAID);
+    }
+}
+```
+
+실제 Toss API 서버를 호출하지 않아도 된다.
+
+## 헥사고날 아키텍처에서의 포지션
+
+어댑터 패턴은 헥사고날 아키텍처(Ports & Adapters)의 핵심이다.
+
+```
+        ┌──────────────────────────────────┐
+        │           Application            │
+        │                                  │
+입력 →  │  [Driving Adapter] → [Port] → [Use Case] │
+        │                                  │
+        │  [Use Case] → [Port] → [Driven Adapter] → 외부  │
+        └──────────────────────────────────┘
+```
+
+- **Driving Adapter**: HTTP 컨트롤러, Kafka 컨슈머 등 입력 측
+- **Driven Adapter**: DB Repository, 외부 API 클라이언트 등 출력 측
+- **Port**: 내부가 정의한 인터페이스
+
+어댑터가 외부와의 경계를 담당하기 때문에 도메인 코드는 외부 기술을 전혀 모른 채로 순수하게 유지된다.
+
+## 남용 시 주의점
+
+모든 외부 호출에 어댑터를 만들면 클래스 수가 늘어나고 오히려 복잡해질 수 있다.
+
+- 변경 가능성이 낮은 안정적인 외부 의존성: 어댑터 생략 가능
+- 여러 구현체로 교체할 가능성이 있는 의존성: 어댑터 적용
+- 테스트에서 격리가 필요한 외부 시스템: 어댑터 적용
+
+---
+
+어댑터 패턴의 본질은 변경이 발생하는 지점(외부)과 안정적으로 유지되어야 하는 지점(내부 도메인) 사이에 인터페이스를 두어 방파제를 만드는 것이다. 외부가 얼마나 자주 바뀌느냐가 어댑터 도입 여부를 결정하는 가장 중요한 기준이다.
