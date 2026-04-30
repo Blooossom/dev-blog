@@ -1,0 +1,163 @@
+---
+title: 해시 인덱스와 B-Tree 인덱스의 차이
+date: '2026-04-30'
+category: Backend
+tags:
+  - Database
+  - 인덱스
+  - Hash Index
+  - B-Tree
+  - 성능
+summary: >-
+  해시 인덱스는 equality 검색에는 O(1)로 빠르지만, 범위 검색·정렬·LIKE 쿼리에는 사용할 수 없다.
+  두 인덱스 구조의 내부 동작을 이해하면 어떤 상황에서 무엇을 선택해야 하는지 판단할 수 있다.
+thumbnail: /thumbnails/hash-index-vs-btree.svg
+---
+
+해시 인덱스는 equality 검색에는 빠르지만 범위 검색에는 왜 부적합할까? 인덱스 선택은 단순히 "빠른 것"을 고르는 문제가 아니라 쿼리 패턴에 맞는 자료구조를 고르는 문제다.
+
+## 두 인덱스의 내부 구조
+
+### B-Tree 인덱스
+
+B-Tree는 균형 잡힌 트리 구조로, 모든 리프 노드가 같은 깊이를 유지한다. MySQL InnoDB, PostgreSQL의 기본 인덱스 타입이다.
+
+```
+         [40]
+        /    \
+    [10|20]   [60|80]
+   /  |  \    /  |  \
+ [5] [15] [30] [50] [70] [90]
+```
+
+- 검색: 루트에서 리프까지 내려가며 비교. O(log n)
+- 정렬된 순서 유지: 리프 노드들이 연결 리스트로 이어져 있어 범위 스캔이 효율적
+- 삽입/삭제 시 rebalancing 발생
+
+### 해시 인덱스
+
+해시 인덱스는 키를 해시 함수로 변환하여 버킷(배열 슬롯)에 저장한다.
+
+```
+key: "alice"  → hash("alice") = 3 → bucket[3]
+key: "bob"    → hash("bob")   = 7 → bucket[7]
+key: "carol"  → hash("carol") = 3 → bucket[3] (충돌 → 체이닝)
+
+bucket[0]: empty
+bucket[1]: empty
+...
+bucket[3]: ["alice" → row_ptr] → ["carol" → row_ptr]
+bucket[7]: ["bob" → row_ptr]
+```
+
+- 검색: 해시 계산 1번 → 버킷 접근. O(1) (평균)
+- 순서 정보 없음: 해시 결과는 원래 값의 대소 관계를 보존하지 않음
+- 충돌이 많으면 성능 저하
+
+## 범위 검색에서의 차이
+
+다음 쿼리를 생각해 보자.
+
+```sql
+SELECT * FROM orders WHERE amount BETWEEN 1000 AND 5000;
+SELECT * FROM users WHERE created_at > '2024-01-01';
+SELECT * FROM products WHERE name LIKE 'A%';
+```
+
+### B-Tree 처리
+
+B-Tree는 정렬된 구조이므로 1000에 해당하는 리프 노드부터 5000까지 순차 스캔할 수 있다.
+
+```
+루트 탐색 → 1000 위치 찾기 → 리프 연결리스트 순차 이동 → 5000 초과 시 중단
+```
+
+LIKE 'A%' 도 "A로 시작하는 첫 항목"을 찾은 뒤 B로 넘어가는 순간 멈추면 된다.
+
+### 해시 인덱스 처리
+
+해시 인덱스는 범위 개념이 없다. `amount = 1000`과 `amount = 1001`의 해시 값은 전혀 다른 버킷에 위치한다.
+
+```
+hash(1000) = 42  → bucket[42]
+hash(1001) = 17  → bucket[17]
+hash(5000) = 88  → bucket[88]
+```
+
+1000부터 5000 사이의 값을 찾으려면 전체 버킷을 순회해야 한다. 인덱스가 있어도 full table scan과 같은 비용이 된다.
+
+## 지원 연산 비교
+
+| 연산 | B-Tree | Hash |
+|------|--------|------|
+| `=` (equality) | O(log n) | O(1) 평균 |
+| `BETWEEN`, `부등호` | 효율적 | 불가 (전체 스캔) |
+| `ORDER BY` | 인덱스 활용 가능 | 불가 |
+| `LIKE 'prefix%'` | 활용 가능 | 불가 |
+| `LIKE '%suffix'` | 불가 (둘 다) | 불가 |
+| `IS NULL` | 지원 | DB마다 다름 |
+
+## DB별 해시 인덱스 지원
+
+| DB | 해시 인덱스 |
+|----|------------|
+| MySQL InnoDB | 적응형 해시 인덱스(AHI)만 지원 - 내부 자동 생성, 명시적 생성 불가 |
+| MySQL Memory | `HASH` 명시적 생성 가능 |
+| PostgreSQL | `HASH` 생성 가능 (v10+ WAL 지원) |
+| SQL Server | 인메모리 테이블에서 Hash Index 지원 |
+
+PostgreSQL에서 해시 인덱스 생성:
+
+```sql
+CREATE INDEX idx_users_email_hash ON users USING HASH (email);
+```
+
+## InnoDB의 Adaptive Hash Index
+
+MySQL InnoDB는 해시 인덱스를 직접 만들 수 없지만, 자주 조회되는 B-Tree 페이지에 대해 내부적으로 해시 인덱스를 자동 생성하는 Adaptive Hash Index(AHI) 기능이 있다.
+
+```
+innodb_adaptive_hash_index = ON  (기본값)
+```
+
+AHI는 equality 쿼리 패턴을 감지해 해당 B-Tree 경로를 캐싱한 해시 테이블을 만든다. 동시성이 높은 환경에서는 AHI 내부 래치 경합이 오히려 부하가 되어 비활성화하는 경우도 있다.
+
+## 언제 해시 인덱스를 선택하는가
+
+실제 해시 인덱스가 유리한 경우:
+
+1. **equality-only 쿼리**: 비밀번호 해시, 토큰, UUID 조회처럼 `=` 만 사용하는 컬럼
+2. **인메모리 테이블**: MySQL Memory 엔진에서 equality 검색이 많을 때
+3. **캐시 테이블**: 데이터를 메모리에 올려두고 정확히 일치 검색만 하는 경우
+
+```sql
+-- 세션 토큰 조회 - equality만 사용
+SELECT user_id FROM sessions WHERE token = 'abc123';
+-- → 해시 인덱스 적합
+```
+
+```sql
+-- 날짜 범위 조회 - 범위 검색 포함
+SELECT * FROM logs WHERE created_at BETWEEN '2024-01-01' AND '2024-01-31';
+-- → B-Tree 인덱스 필요
+```
+
+## 실행 계획으로 확인하기
+
+```sql
+EXPLAIN SELECT * FROM users WHERE email = 'test@example.com';
+```
+
+```
++----+-------+------+--------+------+
+| id | type  | key  | rows   | Extra|
++----+-------+------+--------+------+
+|  1 | const | email| 1      |      |
++----+-------+------+--------+------+
+```
+
+`type: const` 는 equality 조건으로 정확히 1행을 찾는 가장 효율적인 접근 방식이다. B-Tree도 equality에서는 충분히 빠르므로 대부분의 RDBMS 환경에서는 B-Tree 기본값을 사용하는 것이 실용적이다.
+
+---
+
+인덱스 선택의 핵심은 자료구조의 강점과 쿼리 패턴을 맞추는 것이다. 해시 인덱스는 equality-only 시나리오에서 이론적으로 빠르지만, 범위·정렬·LIKE를 사용하는 순간 전혀 쓸 수 없게 된다. 대부분의 실무 쿼리가 범위 조건을 포함하므로 B-Tree 인덱스가 기본 선택이 되는 이유가 여기에 있다.
