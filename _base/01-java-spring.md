@@ -29,7 +29,7 @@
 ~~53. `volatile`은 멀티스레드 환경에서 어떤 문제를 해결하고, 어떤 문제는 해결하지 못할까?~~ `작성완료`
 ~~54. `synchronized`, `ReentrantLock`, `Atomic*` 계열은 어떤 상황에서 선택 기준이 달라질까?~~ `작성완료`
 ~~55. Java Thread Pool에서 core size, max size, queue size를 잘못 잡으면 어떤 장애가 생길까?~~ `작성완료`
-56. `CompletableFuture`를 사용할 때 기본 ForkJoinPool을 그대로 쓰면 어떤 위험이 있을까?
+~~56. `CompletableFuture`를 사용할 때 기본 ForkJoinPool을 그대로 쓰면 어떤 위험이 있을까?~~ `작성완료`
 ~~57. Spring MVC에서 요청 하나는 어떤 흐름으로 DispatcherServlet, HandlerMapping, Interceptor, Controller를 통과할까?~~ `작성완료`
 ~~58. Spring Security의 인증과 인가는 필터 체인 안에서 어떤 순서로 처리될까?~~ `작성완료`
 ~~59. JWT를 사용하면 서버가 완전히 stateless해진다고 말할 수 있을까?~~ `작성완료`

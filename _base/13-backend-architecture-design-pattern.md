@@ -27,7 +27,7 @@
 ~~319. factory pattern은 객체 생성을 숨기는 것 이상으로 어떤 의존성 방향을 정리해줄 수 있을까?~~ `작성완료`
 320. template method와 strategy pattern은 확장 지점이 상속인지 합성인지에서 어떻게 다를까?
 ~~321. decorator pattern은 프록시, AOP, middleware 구조와 어떤 공통점을 가질까?~~ `작성완료`
-322. adapter pattern은 외부 API 변경이 내부 도메인으로 전파되는 것을 어떻게 막을까?
+~~322. adapter pattern은 외부 API 변경이 내부 도메인으로 전파되는 것을 어떻게 막을까?~~ `작성완료`
 323. facade pattern은 복잡한 하위 시스템을 숨기지만, 언제 god object로 변질될 수 있을까?
 324. observer pattern은 이벤트 기반 시스템과 비슷해 보이지만 동기/비동기 결합에서 무엇이 다를까?
 325. chain of responsibility는 인증 필터, 검증 파이프라인, 결제 승인 단계에서 어떻게 적용될 수 있을까?
