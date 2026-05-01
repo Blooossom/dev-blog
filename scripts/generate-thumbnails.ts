@@ -535,6 +535,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'hash-index-vs-btree':            { pattern: 'layers',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'adapter-pattern':                { pattern: 'hexagons', colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
   'ai-coding-agent-instructions':   { pattern: 'neural',   colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'db-timezone-pitfalls':           { pattern: 'layers',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
