@@ -15,7 +15,7 @@
 ~~29. React의 key는 단순히 콘솔 경고를 없애기 위한 값일까?~~ `작성완료`
 ~~30. `useEffect`는 렌더링 중에 실행될까, 렌더링이 끝난 뒤에 실행될까?~~ `작성완료`
 ~~31. `useEffect` 의존성 배열을 비워두면 항상 안전할까?~~ `작성완료`
-32. React에서 props drilling은 언제 실제 문제가 되고, Context는 언제 과한 선택일까?
+~~32. React에서 props drilling은 언제 실제 문제가 되고, Context는 언제 과한 선택일까?~~ `작성완료`
 ~~33. TypeScript는 런타임에서도 타입을 검사해줄까?~~ `작성완료`
 ~~34. TypeScript의 `any`와 `unknown`은 실제 안정성 측면에서 무엇이 다를까?~~ `작성완료`
 ~~35. interface와 type alias는 언제 구분해서 쓰는 것이 좋을까?~~ `작성완료`
