@@ -1,0 +1,126 @@
+---
+title: React Props Drilling과 Context — 언제 문제가 되고 언제 과한가
+date: '2026-05-02'
+category: Frontend
+tags:
+  - React
+  - Context
+  - State Management
+  - Props
+summary: >-
+  Props Drilling은 컴포넌트 계층이 깊어질수록 유지보수를 어렵게 만든다.
+  그러나 Context를 무조건 대안으로 사용하면 불필요한 리렌더링과 의존성 복잡도가 늘어날 수 있다.
+thumbnail: /thumbnails/react-props-drilling-context.svg
+---
+
+React에서 props drilling은 언제 실제 문제가 되고, Context는 언제 과한 선택일까? 이 두 질문을 함께 고민해야 제대로 된 상태 관리 전략이 보인다.
+
+## Props Drilling이란
+
+Props Drilling은 상위 컴포넌트의 데이터를 하위 컴포넌트까지 전달하기 위해, 중간 단계의 컴포넌트들이 단순히 "전달자" 역할을 맡는 패턴이다.
+
+```
+App
+└── Layout
+    └── Sidebar
+        └── UserMenu
+            └── UserAvatar   ← 여기서 user 데이터가 필요
+```
+
+이 경우 `App → Layout → Sidebar → UserMenu → UserAvatar` 순서로 `user` prop을 내려보내야 한다. `Layout`이나 `Sidebar`는 `user`를 사용하지 않음에도 prop을 받아 아래로 전달한다.
+
+## 언제 실제 문제가 되는가
+
+2단계 정도의 전달은 자연스러운 컴포넌트 구조의 일부다. 문제는 다음 상황에서 두드러진다.
+
+| 상황 | 설명 |
+|------|------|
+| 3단계 이상, 관련 없는 중간 컴포넌트 | 중간 컴포넌트가 prop의 의미를 모른 채 전달만 함 |
+| 같은 데이터를 여러 서브트리가 공유 | 동일한 prop을 여러 경로로 내려보내야 함 |
+| 데이터 구조나 이름이 자주 바뀜 | 중간 컴포넌트 전체를 수정해야 함 |
+| 팀 협업 시 prop 흐름 추적 어려움 | 어느 컴포넌트에서 데이터가 나오는지 파악하기 힘듦 |
+
+## Context: 올바른 사용처
+
+Context는 "여러 컴포넌트가 명시적 전달 없이 데이터를 공유해야 할 때" 사용한다.
+
+```tsx
+// 테마, 로케일, 인증 사용자처럼 앱 전역에서 필요한 값
+const UserContext = createContext<User | null>(null);
+
+function App() {
+  const [user, setUser] = useState<User | null>(null);
+  return (
+    <UserContext.Provider value={user}>
+      <Layout />
+    </UserContext.Provider>
+  );
+}
+
+function UserAvatar() {
+  const user = useContext(UserContext);
+  return <img src={user?.avatarUrl} alt="avatar" />;
+}
+```
+
+Context가 적합한 경우:
+- 테마 (다크/라이트 모드)
+- 로케일 / i18n 설정
+- 인증된 사용자 정보
+- 모달, 토스트 같은 전역 UI 상태
+
+## Context가 과한 선택이 되는 경우
+
+Context를 사용하면 Provider 하위의 모든 컴포넌트가 값이 바뀔 때마다 리렌더링된다. 자주 바뀌는 값을 Context에 넣으면 성능 문제로 이어진다.
+
+```tsx
+// 나쁜 예: 자주 변경되는 값을 하나의 Context로 관리
+const AppContext = createContext({ user, cart, theme, notifications });
+// cart가 바뀔 때 user만 필요한 컴포넌트도 모두 리렌더링
+```
+
+다음 상황에서는 Context보다 다른 방법을 먼저 고려한다.
+
+| 상황 | 더 나은 대안 |
+|------|------|
+| 부모-자식 1~2단계 | Props를 그냥 내려보낸다 |
+| 특정 서브트리 내부에서만 필요 | 지역 상태 또는 Composition |
+| 자주 변경되는 데이터 | Zustand, Jotai, Recoil |
+| 서버 상태 (API 데이터) | React Query, SWR |
+
+## Component Composition으로 Drilling 제거
+
+Context 없이도 Drilling을 줄이는 방법이 있다. 데이터가 필요한 컴포넌트를 상위에서 직접 렌더링한 뒤, JSX를 props로 내려보내는 방식이다.
+
+```tsx
+// Drilling 방식
+function App() {
+  return <Layout user={user} />;
+}
+function Layout({ user }: { user: User }) {
+  return <Sidebar user={user} />;
+}
+function Sidebar({ user }: { user: User }) {
+  return <UserMenu user={user} />;
+}
+
+// Composition 방식
+function App() {
+  const avatar = <UserAvatar user={user} />;
+  return <Layout sidebar={<Sidebar menu={avatar} />} />;
+}
+// Layout과 Sidebar는 user를 전혀 알 필요가 없다
+```
+
+Composition 방식에서 `Layout`과 `Sidebar`는 `user`를 전혀 알 필요가 없다. `children`이나 슬롯 props를 통해 렌더링 책임을 상위로 끌어올리는 것이 핵심이다.
+
+## 판단 기준 요약
+
+```
+Props가 2단계 이하           → Props 그대로 사용
+3단계 이상, 변경이 잦지 않음 → Context 고려
+자주 바뀌는 전역 상태        → 전용 상태 관리 라이브러리
+중간 컴포넌트가 데이터 불필요 → Composition 고려
+```
+
+Props Drilling 자체가 나쁜 것이 아니라, 중간 컴포넌트가 아무 의미 없는 운반자가 될 때 문제다. Context는 Drilling을 제거하는 도구지만, 그 자체로 상태 관리 라이브러리를 대체하지는 않는다.
