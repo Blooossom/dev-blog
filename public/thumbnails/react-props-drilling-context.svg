@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a1033"/>
+      <stop offset="100%" stop-color="#3b1f7a"/>
+    </linearGradient>
+    <linearGradient id="lf" x1="100%" y1="0%" x2="20%" y2="0%">
+      <stop offset="0%"   stop-color="#1a1033" stop-opacity="0"/>
+      <stop offset="55%"  stop-color="#1a1033" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#1a1033" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="bf" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#3b1f7a" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1a1033" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Pattern -->
+  
+    <rect x="570" y="145" width="570" height="380" rx="16"
+      fill="#c4b5fd" fill-opacity="0.04" stroke="#c4b5fd" stroke-width="1.5" stroke-opacity="0.25"/>
+    <rect x="570" y="145" width="570" height="48" rx="16"
+      fill="#c4b5fd" fill-opacity="0.1"/>
+    <rect x="570" y="177" width="570" height="16" fill="#c4b5fd" fill-opacity="0.1"/>
+    <circle cx="606" cy="169" r="7" fill="#c4b5fd" fill-opacity="0.4"/>
+    <circle cx="628" cy="169" r="7" fill="#c4b5fd" fill-opacity="0.3"/>
+    <circle cx="650" cy="169" r="7" fill="#c4b5fd" fill-opacity="0.2"/>
+    <rect x="678" y="157" width="280" height="24" rx="12"
+      fill="#c4b5fd" fill-opacity="0.1" stroke="#c4b5fd" stroke-width="1" stroke-opacity="0.2"/>
+    <rect x="600" y="222" width="460" height="14" rx="7" fill="#c4b5fd" fill-opacity="0.1"/>
+    <rect x="600" y="250" width="380" height="10" rx="5" fill="#c4b5fd" fill-opacity="0.07"/>
+    <rect x="600" y="274" width="420" height="10" rx="5" fill="#c4b5fd" fill-opacity="0.07"/>
+    <rect x="600" y="312" width="210" height="90" rx="10" fill="#c4b5fd" fill-opacity="0.06"/>
+    <rect x="826" y="312" width="234" height="90" rx="10" fill="#c4b5fd" fill-opacity="0.06"/>
+    <rect x="600" y="420" width="460" height="10" rx="5" fill="#c4b5fd" fill-opacity="0.07"/>
+    <rect x="600" y="446" width="330" height="10" rx="5" fill="#c4b5fd" fill-opacity="0.05"/>
+    <rect x="600" y="472" width="370" height="10" rx="5" fill="#c4b5fd" fill-opacity="0.05"/>
+  
+
+  <!-- Left & bottom fade overlays -->
+  <rect width="1200" height="630" fill="url(#lf)"/>
+  <rect width="1200" height="630" fill="url(#bf)"/>
+
+  <!-- Category badge -->
+  <rect x="60" y="52" width="108" height="32" rx="16"
+    fill="#c4b5fd" fill-opacity="0.15"
+    stroke="#c4b5fd" stroke-width="1" stroke-opacity="0.5"/>
+  <text x="74" y="73"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="13" font-weight="700" letter-spacing="2.5"
+    fill="#c4b5fd" fill-opacity="0.95">FRONTEND</text>
+
+  <!-- Title -->
+  
+  <text x="60" y="516"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">React Props Drilling과</text>
+  <text x="60" y="556"
+    font-family="system-ui,-apple-system,Segoe UI,sans-serif"
+    font-size="34" font-weight="800"
+    fill="white" fill-opacity="0.95">Context — 언제 문제가 되고 언제 과한가</text>
+</svg>
