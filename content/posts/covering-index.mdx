@@ -1,0 +1,115 @@
+---
+title: Covering Index — 테이블 접근을 줄이는 대신 치르는 비용
+date: '2026-05-02'
+category: Backend
+tags:
+  - Database
+  - Index
+  - PostgreSQL
+  - MySQL
+  - Performance
+summary: >-
+  Covering Index는 쿼리에 필요한 모든 컬럼을 인덱스에 포함시켜 테이블 접근을 없애는 기법이다.
+  조회 성능을 극적으로 끌어올릴 수 있지만, 인덱스 크기 증가와 쓰기 비용이라는 대가가 따른다.
+thumbnail: /thumbnails/covering-index.svg
+---
+
+Covering Index는 테이블 접근을 줄이지만, 어떤 비용을 추가로 만들까? 이 질문은 인덱스를 단순한 "빠른 조회 도구"로만 보는 관점을 넘어서게 한다.
+
+## Covering Index란 무엇인가
+
+일반적인 인덱스 조회는 두 단계로 이루어진다.
+
+```
+1. 인덱스에서 조건에 맞는 row 위치(ROWID / PK)를 찾는다
+2. 해당 위치로 테이블(heap)에 접근해 실제 데이터를 읽는다
+```
+
+Covering Index는 이 두 번째 단계를 없앤다. 쿼리에서 필요한 모든 컬럼이 이미 인덱스 안에 들어 있기 때문에, 테이블까지 찾아가지 않아도 된다.
+
+```sql
+-- 다음 쿼리가 있다고 가정
+SELECT email, created_at FROM users WHERE status = 'ACTIVE';
+
+-- status + email + created_at을 포함하는 복합 인덱스
+CREATE INDEX idx_users_covering ON users (status, email, created_at);
+```
+
+위 인덱스를 타면 `users` 테이블 heap에는 한 번도 접근하지 않는다. PostgreSQL 실행 계획에서는 `Index Only Scan`으로 표시된다.
+
+## 언제 효과가 극대화되는가
+
+| 상황 | 이유 |
+|------|------|
+| 읽기 빈도가 매우 높은 쿼리 | heap 접근 횟수가 많을수록 절약 효과가 크다 |
+| 선택도가 낮은 조건 + 소수 컬럼 반환 | 인덱스 스캔 범위 자체가 좁고, 반환 데이터도 적다 |
+| SSD보다 HDD 환경 | 랜덤 I/O 비용이 클수록 heap 접근 회피의 가치가 크다 |
+| 집계 쿼리 (COUNT, SUM) | heap 접근 없이 인덱스만으로 집계 완료 가능 |
+
+## 치르는 비용
+
+### 1. 인덱스 크기 증가
+
+일반 인덱스는 키 컬럼만 저장한다. Covering Index는 추가 컬럼을 그대로 인덱스 노드에 저장하므로 크기가 눈에 띄게 커진다.
+
+```
+일반 인덱스: (status) → rowid
+Covering:    (status, email, created_at) → rowid
+
+email VARCHAR(255) + created_at TIMESTAMP = 상당한 추가 저장 공간
+```
+
+대용량 테이블에서 Covering Index가 여러 개라면 인덱스 파일 자체가 테이블 파일보다 커지는 상황도 발생한다.
+
+### 2. 쓰기 성능 저하
+
+INSERT / UPDATE / DELETE 시 인덱스도 함께 갱신해야 한다. 포함된 컬럼이 많을수록 갱신 범위가 넓어진다.
+
+특히 `email`, `created_at`처럼 변경 가능성이 있는 컬럼이 포함된 경우, UPDATE 하나가 인덱스 노드 여러 곳을 수정하는 write amplification으로 이어진다.
+
+### 3. 버퍼 풀 / 캐시 압박
+
+인덱스 크기가 커지면 DB 버퍼 풀에서 인덱스 페이지가 차지하는 비중이 늘어난다. 상대적으로 테이블 데이터나 다른 인덱스가 캐시에서 밀려날 수 있다.
+
+### 4. 유지보수 복잡도
+
+스키마 변경으로 컬럼이 추가되거나 타입이 바뀌면 Covering Index도 재생성해야 한다. 운영 중 대용량 테이블에서 인덱스 재생성은 상당한 부담이다.
+
+## PostgreSQL INCLUDE 절
+
+PostgreSQL 11부터는 `INCLUDE` 절로 인덱스 키에 영향을 주지 않으면서 컬럼만 추가할 수 있다.
+
+```sql
+CREATE INDEX idx_users_covering
+  ON users (status)
+  INCLUDE (email, created_at);
+```
+
+이 방식은 정렬 및 비교에는 `status`만 사용하고, `email`과 `created_at`은 Leaf 노드에만 저장된다. Unique 인덱스의 중복 판단 기준을 흐리지 않으면서도 Index Only Scan을 달성할 수 있다.
+
+## MySQL의 Clustered Index와의 관계
+
+MySQL InnoDB는 Primary Key가 기본적으로 Clustered Index다. Secondary Index의 Leaf 노드에는 PK 값이 저장되며, PK 조회는 항상 테이블에서 이루어진다.
+
+따라서 MySQL에서 Covering Index를 설계할 때는 PK 컬럼을 INCLUDE에 넣을 필요가 없고, SELECT 절에 PK가 있으면 자동으로 포함된다.
+
+## 실행 계획으로 확인하기
+
+```sql
+-- PostgreSQL
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT email, created_at FROM users WHERE status = 'ACTIVE';
+
+-- Index Only Scan이 보이면 Covering Index가 동작하는 것
+-- Heap Fetches: 0 이면 heap 접근이 전혀 없음을 의미
+```
+
+```sql
+-- MySQL
+EXPLAIN SELECT email, created_at FROM users WHERE status = 'ACTIVE';
+-- Extra 컬럼에 'Using index'가 표시되면 Covering Index 사용 중
+```
+
+## 결론
+
+Covering Index는 읽기 성능을 극적으로 높이지만, 저장 공간과 쓰기 비용이라는 명확한 대가를 치른다. 변경이 드문 컬럼을 대상으로, 실제 실행 계획을 확인한 뒤 선별적으로 적용하는 것이 원칙이다.
