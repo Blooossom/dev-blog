@@ -1,0 +1,190 @@
+---
+title: Hydration Mismatch — SSR에서 왜 발생하고 어떻게 디버깅할까
+date: '2026-05-03'
+category: Frontend
+tags:
+  - React
+  - SSR
+  - Next.js
+  - Hydration
+summary: >-
+  hydration mismatch는 왜 발생하고, SSR 환경에서 어떻게 디버깅할 수 있을까. 서버에서 렌더링된 HTML과 클라이언트에서
+  생성하는 가상 DOM이 일치하지 않을 때 발생하며, 원인 유형별로 해결 패턴이 다르다.
+thumbnail: /thumbnails/hydration-mismatch.svg
+---
+
+hydration mismatch는 왜 발생하고, SSR 환경에서 어떻게 디버깅할 수 있을까. 서버에서 생성된 HTML과 클라이언트 React가 reconcile 과정에서 재생성하는 가상 DOM이 다를 때 발생하며, 심하면 UI가 깜빡이거나 인터랙션이 꼬인다.
+
+## Hydration이란
+
+SSR(Server-Side Rendering)은 서버에서 완성된 HTML을 먼저 브라우저로 보내 빠른 FCP(First Contentful Paint)를 달성한다. 브라우저가 HTML을 받으면 React는 해당 DOM 위에서 이벤트 핸들러와 상태를 붙이는 **hydration** 과정을 수행한다.
+
+```
+Server                         Browser
+───────                        ────────────────────────────────
+renderToString(<App/>)  ──▶  HTML 수신 → React.hydrateRoot()
+                              ↓
+                         서버 HTML과 클라이언트 VDom 비교(reconcile)
+                              ↓
+                         일치하면 DOM 재사용, 이벤트만 연결
+                         불일치하면 경고 또는 DOM 재생성
+```
+
+## Mismatch가 발생하는 주요 원인
+
+### 1. 시간·날짜 의존 렌더링
+
+```tsx
+// 잘못된 예
+function LastUpdated() {
+  return <span>{new Date().toLocaleString()}</span>
+}
+```
+
+서버와 클라이언트가 각각 `new Date()`를 호출하면 렌더링 시점이 달라 문자열이 다르다.
+
+### 2. 브라우저 전용 API 접근
+
+```tsx
+// 잘못된 예 — window는 서버에 없음
+function ScreenWidth() {
+  return <p>너비: {window.innerWidth}px</p>
+}
+```
+
+서버에서 `window`는 undefined이므로 서버 HTML에는 값이 없고, 클라이언트에서는 실제 값이 들어가 불일치한다.
+
+### 3. 랜덤·UUID 생성
+
+```tsx
+// 잘못된 예
+function Item() {
+  const id = Math.random().toString(36)
+  return <li id={id}>항목</li>
+}
+```
+
+서버와 클라이언트에서 각각 다른 랜덤 값을 생성한다.
+
+### 4. 잘못된 HTML 중첩
+
+```tsx
+// p 안에 div는 HTML 스펙 위반 → 브라우저가 자동 수정
+<p>
+  <div>내용</div>
+</p>
+```
+
+브라우저가 잘못된 HTML을 자동으로 수정하면 React가 예상하는 DOM 구조와 달라진다.
+
+### 5. 서드파티 라이브러리의 DOM 조작
+
+광고 삽입, 번역 확장 프로그램, 성능 모니터링 스크립트가 서버 HTML을 수정하면 hydration 시 불일치가 생긴다.
+
+## 디버깅 방법
+
+### 브라우저 콘솔 경고 확인
+
+React 18은 mismatch 시 다음과 같은 경고를 출력한다.
+
+```
+Warning: Text content did not match.
+  Server: "Hello"
+  Client: "Hello World"
+```
+
+React 18.3 이상에서는 어느 컴포넌트, 어느 prop에서 불일치가 발생했는지 트리 경로까지 표시한다.
+
+### suppressHydrationWarning으로 의도적 차이 허용
+
+```tsx
+<time suppressHydrationWarning dateTime={serverTime}>
+  {clientFormattedTime}
+</time>
+```
+
+날짜 포맷처럼 서버·클라이언트 차이가 허용되는 경우에만 사용한다. 남용하면 실제 버그를 숨길 수 있다.
+
+### useEffect로 클라이언트 전용 렌더링 분리
+
+```tsx
+function ScreenWidth() {
+  const [width, setWidth] = useState<number | null>(null)
+
+  useEffect(() => {
+    setWidth(window.innerWidth)
+  }, [])
+
+  if (width === null) return <p>로딩 중...</p>
+  return <p>너비: {width}px</p>
+}
+```
+
+서버에서는 `null` 상태를 렌더링하고, 클라이언트 마운트 후 실제 값을 반영한다. 서버 HTML과 초기 클라이언트 렌더 결과가 동일하므로 mismatch가 없다.
+
+### 커스텀 훅으로 추출
+
+```tsx
+function useIsClient() {
+  const [isClient, setIsClient] = useState(false)
+  useEffect(() => setIsClient(true), [])
+  return isClient
+}
+
+function BrowserOnly({ children }: { children: React.ReactNode }) {
+  const isClient = useIsClient()
+  if (!isClient) return null
+  return <>{children}</>
+}
+```
+
+```tsx
+<BrowserOnly>
+  <LocaleAwareDatePicker />
+</BrowserOnly>
+```
+
+### Next.js dynamic import로 SSR 비활성화
+
+```tsx
+import dynamic from 'next/dynamic'
+
+const MapComponent = dynamic(() => import('./Map'), { ssr: false })
+```
+
+브라우저 전용 라이브러리(지도, 차트 등)를 SSR에서 제외할 때 사용한다.
+
+## Next.js App Router에서의 차이
+
+App Router에서 서버 컴포넌트는 hydration 자체가 없다. 클라이언트 컴포넌트(`'use client'`)만 hydration 대상이며, 서버 컴포넌트는 스트리밍으로 전송된 HTML이 그대로 유지된다.
+
+```tsx
+// 서버 컴포넌트 — hydration 없음, 상태·이벤트 불가
+async function ServerList() {
+  const items = await fetchItems()
+  return <ul>{items.map(i => <li key={i.id}>{i.name}</li>)}</ul>
+}
+
+// 클라이언트 컴포넌트 — hydration 대상
+'use client'
+function Counter() {
+  const [count, setCount] = useState(0)
+  return <button onClick={() => setCount(c => c + 1)}>{count}</button>
+}
+```
+
+mismatch는 클라이언트 컴포넌트에서만 발생한다. 서버 컴포넌트로 올릴 수 있는 부분을 최대한 올리면 mismatch 위험 자체를 줄일 수 있다.
+
+## 체크리스트
+
+```
+□ new Date(), Math.random(), crypto.randomUUID() — 서버·클라이언트 동일 값 사용 여부
+□ window, document, navigator — useEffect 또는 SSR 비활성화로 격리
+□ HTML 중첩 규칙 준수 (p 안에 div 없음, table 구조 올바름)
+□ 서드파티 스크립트가 DOM을 조작하지 않는지 확인
+□ 브라우저 확장 프로그램 비활성화 후 재현 시도
+```
+
+---
+
+Hydration mismatch의 핵심은 서버와 클라이언트가 같은 입력으로 같은 결과를 내야 한다는 원칙이다. 브라우저 전용 값이 필요할 때는 마운트 후 useEffect에서 처리하고, SSR에서 제외가 필요하면 dynamic import를 활용하면 대부분의 mismatch를 예방할 수 있다.
