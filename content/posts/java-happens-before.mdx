@@ -1,0 +1,184 @@
+---
+title: Java 메모리 모델과 happens-before 관계
+date: '2026-05-03'
+category: Backend
+tags:
+  - Java
+  - Concurrency
+  - JMM
+  - Multithreading
+summary: >-
+  Java 메모리 모델에서 happens-before 관계를 이해하지 못하면 어떤 동시성 버그를 놓칠 수 있을까. 가시성과 순서 보장이
+  어떻게 작동하는지 이해하면 synchronized, volatile, Atomic 계열 선택 기준이 명확해진다.
+thumbnail: /thumbnails/java-happens-before.svg
+---
+
+Java 메모리 모델에서 happens-before 관계를 이해하지 못하면 겉으로는 멀쩡해 보이는 코드에서 재현하기 어려운 동시성 버그가 발생할 수 있다. JVM은 성능 최적화를 위해 명령어 재정렬(reordering)과 캐시 사용을 허용하는데, happens-before는 이 최적화가 허용되는 범위와 금지되는 범위를 명시적으로 정의하는 규칙이다.
+
+## Java 메모리 모델(JMM)이란
+
+JMM은 멀티스레드 프로그램에서 변수 읽기·쓰기가 어떻게 보이는지를 규정하는 명세다. CPU 코어마다 L1/L2 캐시를 갖기 때문에, 한 스레드가 변수를 변경해도 다른 스레드는 오래된 캐시 값을 볼 수 있다.
+
+```
+Thread A                Thread B
+-----------             -----------
+write x = 1             read x  → 0? 1?
+write flag = true       read flag → false? true?
+```
+
+순서대로 실행되는 것처럼 보이지만, 컴파일러나 CPU는 최적화를 위해 이 순서를 바꿀 수 있다. JMM은 "어떤 쓰기 결과를 어떤 읽기에서 반드시 볼 수 있어야 하는가"를 happens-before로 정의한다.
+
+## happens-before의 의미
+
+A happens-before B라면 두 가지가 보장된다.
+
+1. **가시성(visibility)**: A의 쓰기 결과가 B에서 반드시 보인다.
+2. **순서(ordering)**: A는 B보다 먼저 실행된 것처럼 관찰된다.
+
+반대로, happens-before 관계가 없으면 컴파일러·CPU가 자유롭게 재정렬할 수 있고, 다른 스레드는 오래된 값이나 중간 상태를 볼 수 있다.
+
+## JMM이 정의하는 happens-before 규칙
+
+| 규칙 | 설명 |
+|------|------|
+| **Program order** | 단일 스레드 내에서는 앞 연산이 뒤 연산보다 먼저다 |
+| **Monitor lock** | `unlock`은 이후 같은 락의 `lock`보다 먼저다 |
+| **Volatile write** | volatile 변수 쓰기는 이후의 해당 변수 읽기보다 먼저다 |
+| **Thread start** | `Thread.start()` 호출은 스레드 내 첫 연산보다 먼저다 |
+| **Thread join** | 스레드 내 마지막 연산은 `Thread.join()` 반환보다 먼저다 |
+| **Transitivity** | A hb B, B hb C이면 A hb C |
+
+## 가시성 버그 예제
+
+### volatile 없이 발생하는 무한루프
+
+```java
+class StopTask implements Runnable {
+    private boolean stop = false;  // volatile 없음
+
+    public void run() {
+        while (!stop) {  // CPU 캐시에서 오래된 false를 읽을 수 있음
+            // work
+        }
+    }
+
+    public void stopIt() {
+        stop = true;
+    }
+}
+```
+
+`stop = true`를 메인 스레드에서 호출해도 워커 스레드가 캐시된 `false`를 계속 읽으면 루프가 끝나지 않는다. `volatile`을 추가하면 쓰기와 읽기 사이에 happens-before가 생겨 가시성이 보장된다.
+
+### 재정렬로 발생하는 초기화 버그
+
+```java
+class Singleton {
+    private static Singleton instance;
+    private int value;
+
+    private Singleton() {
+        value = 42;
+    }
+
+    public static Singleton getInstance() {
+        if (instance == null) {
+            synchronized (Singleton.class) {
+                if (instance == null) {
+                    instance = new Singleton(); // 3단계로 분리됨
+                }
+            }
+        }
+        return instance;
+    }
+}
+```
+
+`new Singleton()`은 내부적으로 세 단계다.
+
+```
+1. 메모리 할당
+2. 생성자 실행 (value = 42)
+3. instance 참조 대입
+```
+
+컴파일러가 2와 3을 재정렬하면 다른 스레드가 `value`가 초기화되지 않은 객체를 참조할 수 있다. `instance`에 `volatile`을 추가하면 volatile write happens-before volatile read 규칙이 재정렬을 막는다.
+
+```java
+private static volatile Singleton instance; // 수정
+```
+
+## synchronized와 happens-before
+
+`synchronized` 블록의 unlock은 다음 lock보다 먼저다. 따라서 synchronized 블록 안에서 한 스레드가 변경한 모든 변수가 다음에 같은 락을 획득한 스레드에 보인다.
+
+```java
+class SharedCounter {
+    private int count = 0;
+
+    public synchronized void increment() {
+        count++;
+    }
+
+    public synchronized int get() {
+        return count;
+    }
+}
+```
+
+`increment()`의 unlock이 `get()`의 lock보다 happens-before이므로 `count` 변경이 반드시 보인다.
+
+## Atomic 계열과 happens-before
+
+`AtomicInteger`, `AtomicReference` 등은 내부적으로 CAS(Compare-And-Swap)와 volatile 시맨틱을 사용한다. 원자적 연산을 수행하면서 volatile과 동일한 happens-before 보장을 제공한다.
+
+```java
+AtomicInteger counter = new AtomicInteger(0);
+
+// Thread A
+counter.incrementAndGet(); // volatile write 포함
+
+// Thread B
+int val = counter.get(); // volatile read - A의 쓰기가 반드시 보임
+```
+
+## volatile만으로 충분하지 않은 경우
+
+happens-before가 보장되더라도 **복합 연산의 원자성**은 별개 문제다.
+
+```java
+volatile int count = 0;
+
+// Thread A, B 동시 실행
+count++; // read-modify-write, 원자적이지 않음
+```
+
+`count++`은 읽기 → 더하기 → 쓰기 세 단계다. volatile은 각 단계의 가시성은 보장하지만, 세 단계가 묶여서 원자적으로 실행되지는 않는다. 이 경우 `AtomicInteger.incrementAndGet()`이나 `synchronized`가 필요하다.
+
+## 선택 기준 정리
+
+```
+가시성만 필요         → volatile
+원자적 단일 연산      → Atomic* 계열
+복합 연산 원자성      → synchronized 또는 ReentrantLock
+컬렉션 동시 접근      → ConcurrentHashMap 등 concurrent 컬렉션
+```
+
+## 실전에서 놓치기 쉬운 패턴
+
+### ThreadLocal은 happens-before와 무관
+
+ThreadLocal은 스레드 간 공유가 없으므로 happens-before 문제 자체가 발생하지 않는다. 단, 스레드 풀에서 스레드를 재사용하면 이전 스레드의 데이터가 남을 수 있으므로 사용 후 `remove()`가 필요하다.
+
+### CompletableFuture의 happens-before
+
+`CompletableFuture`는 단계 간 happens-before를 보장한다. 이전 단계의 계산 결과가 다음 단계의 `thenApply` 등에서 반드시 보인다.
+
+```java
+CompletableFuture.supplyAsync(() -> computeResult())
+    .thenApply(result -> process(result)); // result는 반드시 보임
+```
+
+---
+
+happens-before는 "무엇이 보장되는가"를 명시하는 계약이다. 이 계약이 없는 곳에서는 JVM이 임의로 최적화할 수 있고, 그 틈에서 재현하기 어려운 동시성 버그가 자란다.
