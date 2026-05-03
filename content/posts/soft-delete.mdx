@@ -1,0 +1,190 @@
+---
+title: Soft Delete의 트레이드오프 — unique index, 조회 조건, 데이터 보존
+date: '2026-05-03'
+category: Backend
+tags:
+  - Database
+  - JPA
+  - Spring
+  - Design
+summary: >-
+  soft delete를 사용하면 unique index, 조회 조건, 데이터 보존 정책에서 어떤 문제가 생길 수 있을까. 삭제를 물리적으로
+  제거하지 않고 플래그로 처리할 때 발생하는 설계 문제와 각 해결 패턴을 살펴본다.
+thumbnail: /thumbnails/soft-delete.svg
+---
+
+soft delete를 사용하면 unique index, 조회 조건, 데이터 보존 정책에서 어떤 문제가 생길 수 있을까. 레코드를 실제로 지우는 대신 `deleted_at`이나 `is_deleted` 컬럼으로 삭제 여부를 표시하는 방식은 감사 추적이나 복구 요건에서 유용하지만, DB 설계와 ORM 코드 전반에 숨은 복잡성을 가져온다.
+
+## Soft Delete의 기본 구조
+
+```sql
+ALTER TABLE users ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL;
+```
+
+삭제 시 실제 DELETE 대신 UPDATE를 실행한다.
+
+```sql
+UPDATE users SET deleted_at = NOW() WHERE id = 42;
+```
+
+조회 시 항상 필터를 추가해야 한다.
+
+```sql
+SELECT * FROM users WHERE deleted_at IS NULL;
+```
+
+## unique index 문제
+
+### 문제 시나리오
+
+`email` 컬럼에 unique constraint가 있다고 가정한다.
+
+1. 사용자 A가 `a@example.com`으로 가입
+2. 사용자 A를 soft delete (deleted_at 설정)
+3. 새 사용자 B가 `a@example.com`으로 재가입 시도
+4. unique constraint 위반 — DB 입장에서는 같은 이메일이 두 개
+
+soft delete된 레코드도 DB에 남아 있으므로 unique index가 이를 포함한다.
+
+### 해결 패턴 1: Partial Index (PostgreSQL)
+
+```sql
+CREATE UNIQUE INDEX users_email_unique
+  ON users (email)
+  WHERE deleted_at IS NULL;
+```
+
+`deleted_at IS NULL`인 행에만 unique 제약을 적용한다. soft delete된 이메일은 제약 대상에서 제외되므로 재가입이 가능하다.
+
+### 해결 패턴 2: 삭제 시 이메일 변조
+
+```sql
+UPDATE users
+SET deleted_at = NOW(),
+    email = CONCAT(email, '_deleted_', id)
+WHERE id = 42;
+```
+
+삭제와 동시에 충돌 방지를 위한 suffix를 추가한다. 간단하지만 원본 이메일을 별도 컬럼에 보존해야 복구 시 원상복구가 가능하다.
+
+### 해결 패턴 3: Composite Unique Index
+
+```sql
+CREATE UNIQUE INDEX users_email_deleted_at_unique
+  ON users (email, deleted_at);
+```
+
+`deleted_at`을 unique key의 일부로 포함한다. NULL은 DB마다 처리 방식이 다르므로(MySQL은 NULL을 서로 다른 값으로 취급, PostgreSQL도 동일) 동작을 반드시 확인해야 한다.
+
+## 조회 조건 누락 문제
+
+모든 쿼리에 `WHERE deleted_at IS NULL`을 수동으로 붙여야 하므로 누락 위험이 크다.
+
+### JPA + @SQLRestriction으로 자동 필터 적용
+
+```java
+@Entity
+@SQLRestriction("deleted_at IS NULL")
+public class User {
+    @Id
+    private Long id;
+    private String email;
+    private LocalDateTime deletedAt;
+}
+```
+
+Hibernate 6.3 이상에서 `@SQLRestriction`을 사용하면 이 엔티티에 대한 모든 JPQL/Criteria 쿼리에 자동으로 조건이 추가된다.
+
+### 주의: join 시 필터 누락
+
+```java
+// JPQL — User 엔티티는 @SQLRestriction 적용, Order는 별도 처리 필요
+@Query("SELECT o FROM Order o JOIN o.user u WHERE u.id = :userId")
+List<Order> findByUserId(@Param("userId") Long userId);
+```
+
+`@SQLRestriction`은 해당 엔티티 쿼리에만 적용된다. 연관 엔티티를 직접 쿼리하는 경우 별도 필터가 필요하다.
+
+### Spring Data JPA + @Where (Hibernate 5 이하)
+
+```java
+@Entity
+@Where(clause = "deleted_at IS NULL")
+public class User { ... }
+```
+
+Hibernate 5 이하에서는 `@Where`를 사용한다. 동작은 동일하다.
+
+## 데이터 보존 정책 문제
+
+soft delete의 목적 자체가 데이터 보존이지만, 보존 기간이 정해지지 않으면 테이블이 무한히 커진다.
+
+### 문제: 인덱스 비효율
+
+```sql
+SELECT * FROM orders WHERE user_id = 42 AND deleted_at IS NULL;
+```
+
+전체 데이터 중 삭제된 비율이 높아질수록 인덱스 스캔 효율이 떨어진다. `deleted_at IS NULL`인 비율이 10% 미만이 되면 full scan이 더 나을 수 있다.
+
+### 해결 패턴: 보존 기간 후 물리 삭제
+
+```sql
+-- 6개월 지난 soft delete 데이터 물리 삭제
+DELETE FROM users WHERE deleted_at < NOW() - INTERVAL '6 months';
+```
+
+배치 잡으로 주기적으로 실행한다. Spring Batch나 `@Scheduled`로 구현 가능하다.
+
+```java
+@Scheduled(cron = "0 0 3 * * *")  // 매일 새벽 3시
+@Transactional
+public void purgeOldDeletedUsers() {
+    LocalDateTime threshold = LocalDateTime.now().minusMonths(6);
+    userRepository.deleteByDeletedAtBefore(threshold);
+}
+```
+
+### 해결 패턴: 아카이브 테이블 분리
+
+```sql
+-- 삭제 데이터를 별도 테이블로 이동
+INSERT INTO users_archive SELECT * FROM users WHERE deleted_at IS NOT NULL;
+DELETE FROM users WHERE deleted_at IS NOT NULL;
+```
+
+원본 테이블을 슬림하게 유지하면서 감사 데이터는 아카이브에 보존한다. 쿼리 성능과 보존 요건을 동시에 만족한다.
+
+## 연관 데이터 처리
+
+사용자를 soft delete할 때 연관 주문, 댓글 등도 함께 처리해야 할 수 있다.
+
+```java
+@Transactional
+public void deleteUser(Long userId) {
+    User user = userRepository.findById(userId).orElseThrow();
+    user.setDeletedAt(LocalDateTime.now());
+
+    // 연관 데이터도 soft delete
+    orderRepository.softDeleteByUserId(userId);
+    commentRepository.softDeleteByUserId(userId);
+}
+```
+
+DB 레벨 CASCADE DELETE와 달리 soft delete는 애플리케이션에서 직접 연관 처리를 해야 한다. 누락되면 고아 데이터(orphaned records)가 생긴다.
+
+## Soft Delete vs Hard Delete 선택 기준
+
+| 기준 | Soft Delete | Hard Delete |
+|------|-------------|-------------|
+| 감사 요건 | 삭제 이력 보존 필요 | 이력 불필요 |
+| 복구 요건 | 실수 복구 가능 | 복구 불가 |
+| GDPR/개인정보 | 완전 삭제 어려움 | 즉시 삭제 가능 |
+| DB 용량 | 지속 증가 | 즉시 해제 |
+| 쿼리 복잡도 | 필터 항상 필요 | 단순 |
+
+GDPR처럼 특정 시점에 완전 삭제가 법적으로 요구되는 경우 soft delete 단독으로는 부족하다. 개인식별 데이터는 별도 암호화 키로 관리하거나 물리 삭제를 병행해야 한다.
+
+---
+
+Soft delete는 보존이 필요한 데이터에 적합하지만, unique constraint와 조회 필터 자동화, 보존 기간 정책을 함께 설계해야 실제 운영에서 문제가 생기지 않는다.
