@@ -33,7 +33,7 @@
 ~~57. Spring MVC에서 요청 하나는 어떤 흐름으로 DispatcherServlet, HandlerMapping, Interceptor, Controller를 통과할까?~~ `작성완료`
 ~~58. Spring Security의 인증과 인가는 필터 체인 안에서 어떤 순서로 처리될까?~~ `작성완료`
 ~~59. JWT를 사용하면 서버가 완전히 stateless해진다고 말할 수 있을까?~~ `작성완료`
-60. refresh token을 DB에 저장하는 방식과 Redis에 저장하는 방식은 어떤 트레이드오프가 있을까?
+~~60. refresh token을 DB에 저장하는 방식과 Redis에 저장하는 방식은 어떤 트레이드오프가 있을까?~~ `작성완료`
 ~~61. `@Transactional(readOnly = true)`는 단순히 개발자에게 읽기 전용 의도를 표시하는 것일까?~~ `작성완료`
 ~~62. 트랜잭션 격리 수준을 낮추거나 높이면 동시성과 정합성에 어떤 변화가 생길까?~~ `작성완료`
 ~~63. Spring에서 `REQUIRES_NEW` 전파 옵션은 언제 유용하고, 언제 위험할까?~~ `작성완료`
