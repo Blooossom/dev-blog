@@ -1,0 +1,211 @@
+---
+title: Refresh Token 저장소 선택 — DB vs Redis 트레이드오프
+date: '2026-05-04'
+category: Backend
+tags:
+  - JWT
+  - Redis
+  - Spring Security
+  - Authentication
+  - Backend
+summary: >-
+  Refresh token을 DB에 저장하는 방식과 Redis에 저장하는 방식은 각각 다른 트레이드오프를 가진다.
+  즉시 폐기와 감사 로그가 중요하면 DB, 빠른 조회와 자동 만료가 우선이면 Redis가 유리하다.
+thumbnail: /thumbnails/refresh-token-storage.svg
+---
+
+refresh token을 DB에 저장하는 방식과 Redis에 저장하는 방식은 어떤 트레이드오프가 있을까? 이 질문은 단순한 성능 비교가 아니라, 보안 요구사항과 서비스 특성에 따라 전혀 다른 답이 나오는 설계 결정이다.
+
+## Refresh Token의 역할
+
+Access token은 수명이 짧다(보통 15분~1시간). 매번 로그인을 요구하지 않기 위해 수명이 긴 refresh token을 별도로 발급하여, access token 만료 시 재발급에 사용한다.
+
+```
+Client               Authorization Server
+  |--- login -------->|
+  |<-- AT(15m) + RT(7d) --|
+  |
+  | (AT 만료 후)
+  |--- RT 제출 ------->|
+  |<-- 새 AT ----------|
+```
+
+서버는 refresh token이 **유효한지 검증**해야 한다. 이를 위해 어딘가에 저장해두고 비교하거나, 서명 검증만으로 처리한다. 저장 방식을 선택할 때 핵심 질문은 두 가지다.
+
+1. 토큰을 강제로 만료(revoke)시킬 수 있어야 하는가?
+2. 토큰 조회가 얼마나 자주, 얼마나 빠르게 이루어져야 하는가?
+
+---
+
+## DB 저장 방식
+
+### 구조
+
+```sql
+CREATE TABLE refresh_tokens (
+    id         BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id    BIGINT NOT NULL,
+    token      VARCHAR(512) NOT NULL UNIQUE,
+    issued_at  TIMESTAMP NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    revoked    BOOLEAN DEFAULT FALSE,
+    device_id  VARCHAR(128)
+);
+```
+
+### 장점
+
+**즉시 폐기 가능** — 특정 사용자의 모든 세션을 끊어야 할 때, `revoked = TRUE`로 업데이트하면 즉각 반영된다.
+
+```java
+@Transactional
+public void revokeAllTokens(Long userId) {
+    refreshTokenRepository.revokeAllByUserId(userId);
+}
+```
+
+**감사 로그(audit)** — 누가, 언제, 어디서 로그인했는지 기록이 남는다. 보안 이벤트 분석이나 규정 준수(Compliance)에 필수적이다.
+
+**다중 기기 관리** — `device_id` 컬럼을 추가하면 "이 기기만 로그아웃"이 가능하다.
+
+### 단점
+
+**조회 비용** — refresh token을 사용할 때마다 DB 쿼리가 발생한다. 인덱스가 있어도 I/O 비용은 피할 수 없다.
+
+**만료 처리** — 만료된 레코드를 주기적으로 정리하는 배치 작업이 필요하다. 그렇지 않으면 테이블이 계속 커진다.
+
+```java
+@Scheduled(cron = "0 0 3 * * *")
+@Transactional
+public void deleteExpiredTokens() {
+    refreshTokenRepository.deleteByExpiresAtBefore(LocalDateTime.now());
+}
+```
+
+---
+
+## Redis 저장 방식
+
+### 구조
+
+```
+Key:   refresh_token:{token_value}
+Value: {userId}:{deviceId}
+TTL:   7일 (604800초)
+```
+
+또는 사용자별로 묶는 방식:
+
+```
+Key:   user_refresh_tokens:{userId}
+Value: Set { token1, token2, ... }
+```
+
+### 장점
+
+**빠른 조회** — 인메모리 저장이라 DB 대비 수십 배 빠르다. 초당 수만 건의 토큰 검증도 부담 없다.
+
+**TTL 자동 만료** — 만료 시간이 지나면 Redis가 자동으로 삭제한다. 배치 정리 작업이 불필요하다.
+
+```java
+@Service
+public class RefreshTokenService {
+
+    private final RedisTemplate<String, String> redisTemplate;
+    private static final Duration TTL = Duration.ofDays(7);
+
+    public void save(String token, Long userId) {
+        String key = "refresh_token:" + token;
+        redisTemplate.opsForValue().set(key, String.valueOf(userId), TTL);
+    }
+
+    public Optional<Long> getUserId(String token) {
+        String key = "refresh_token:" + token;
+        String value = redisTemplate.opsForValue().get(key);
+        return Optional.ofNullable(value).map(Long::parseLong);
+    }
+
+    public void delete(String token) {
+        redisTemplate.delete("refresh_token:" + token);
+    }
+}
+```
+
+### 단점
+
+**영속성 부재** — Redis를 `appendonly no`(기본 설정)로 운영하면 재시작 시 데이터가 사라진다. 모든 사용자가 로그아웃된다.
+
+**단순 폐기만 가능** — "특정 사용자의 모든 토큰 폐기"는 `user_refresh_tokens:{userId}` 패턴을 추가로 유지해야 가능하다. 구조가 복잡해진다.
+
+**감사 로그 없음** — 토큰이 만료되면 흔적이 사라진다. 별도 로그 시스템이 없다면 보안 분석이 어렵다.
+
+---
+
+## 방식 비교
+
+| 항목 | DB | Redis |
+|------|-----|-------|
+| 조회 속도 | 느림(ms 단위) | 빠름(µs 단위) |
+| 즉시 폐기 | 가능 | 가능(key 삭제) |
+| 만료 자동화 | 배치 필요 | TTL 자동 처리 |
+| 다중 기기 관리 | 컬럼 추가로 용이 | 별도 자료구조 필요 |
+| 감사 로그 | 기본 지원 | 별도 구현 필요 |
+| 재시작 내구성 | 높음 | 설정에 따라 다름 |
+| 운영 복잡도 | 낮음 | Redis 인프라 필요 |
+| 수평 확장 | 상대적으로 어려움 | 용이 |
+
+---
+
+## 하이브리드 접근
+
+두 방식을 결합하는 패턴도 있다.
+
+```
+Redis: 빠른 유효성 확인 (캐시)
+DB:    실제 레코드, 감사 로그 (원본)
+```
+
+```java
+public boolean isValid(String token) {
+    // 1. Redis 캐시 확인
+    String cached = redisTemplate.opsForValue().get("rt_valid:" + hash(token));
+    if ("1".equals(cached)) return true;
+    if ("0".equals(cached)) return false;
+
+    // 2. DB 조회 (캐시 미스)
+    boolean valid = refreshTokenRepository
+        .findByTokenAndRevokedFalse(token)
+        .map(t -> t.getExpiresAt().isAfter(LocalDateTime.now()))
+        .orElse(false);
+
+    // 3. 결과를 짧은 TTL로 캐싱
+    redisTemplate.opsForValue().set("rt_valid:" + hash(token),
+        valid ? "1" : "0", Duration.ofMinutes(5));
+
+    return valid;
+}
+```
+
+이 방식은 폐기 시 Redis 캐시도 함께 무효화해야 한다는 점에 주의해야 한다. 캐시 일관성 관리가 복잡해지므로, 팀의 운영 역량을 고려해 채택해야 한다.
+
+---
+
+## 어떤 상황에서 무엇을 선택할까
+
+```
+보안 규정 준수, 감사 로그 필수
+  → DB
+
+대규모 트래픽, 빠른 토큰 검증 우선
+  → Redis (RDB/AOF 영속성 설정 권장)
+
+빠른 프로토타이핑, 단순 구조 선호
+  → Redis (TTL만으로 충분)
+
+"강제 로그아웃" 기능이 핵심인 서비스
+  → DB 또는 하이브리드
+```
+
+---
+
+refresh token 저장소 선택은 "DB냐 Redis냐"보다 "어떤 보안 보장이 필요하고 그 비용을 감당할 수 있는가"의 문제다. 서비스의 보안 요구사항을 먼저 정의하고, 그에 맞는 저장소를 고르는 순서로 접근해야 한다.
