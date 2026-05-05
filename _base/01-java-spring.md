@@ -14,7 +14,7 @@
 8. `==`와 `equals()`의 차이를 제대로 이해하지 못하면 어떤 버그가 생길까?
 ~~9. Java의 예외 중 checked exception과 unchecked exception은 왜 나뉘어 있을까?~~ `작성완료`
 ~~10. Spring Bean은 정확히 언제 생성되고 언제 사라질까?~~ `작성완료`
-11. `@Component`, `@Service`, `@Repository`, `@Controller`는 기능적으로 완전히 다른가?
+~~11. `@Component`, `@Service`, `@Repository`, `@Controller`는 기능적으로 완전히 다른가?~~ `작성완료`
 ~~12. Spring의 DI는 단순히 객체를 대신 만들어주는 기능일까?~~ `작성완료`
 13. Spring에서 순환 참조가 문제가 되는 이유는 무엇일까?
 ~~14. `@Transactional`은 메서드 안의 모든 코드를 무조건 트랜잭션으로 묶어줄까?~~ `작성완료`
