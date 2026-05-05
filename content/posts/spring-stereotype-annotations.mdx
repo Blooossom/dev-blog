@@ -1,0 +1,118 @@
+---
+title: Spring 스테레오타입 애노테이션 비교
+date: '2026-05-05'
+category: Backend
+tags:
+  - Spring
+  - Annotation
+  - Bean
+  - DI
+summary: >-
+  @Component, @Service, @Repository, @Controller는 모두 빈 등록 마커이지만, 각 계층에서 기능과
+  의미가 미묘하게 다르다. 단순한 명칭 차이를 넘어 예외 변환, AOP 포인트컷, Spring MVC 처리 등 실질적인
+  차이를 이해해야 올바르게 사용할 수 있다.
+thumbnail: /thumbnails/spring-stereotype-annotations.svg
+---
+
+`@Component`, `@Service`, `@Repository`, `@Controller`는 기능적으로 완전히 동일할까 — 실제로는 계층별로 의미와 부가 동작이 다르다.
+
+## 공통점: 모두 @Component의 확장
+
+Spring의 스테레오타입 애노테이션은 모두 `@Component`를 메타 애노테이션으로 포함한다.
+
+```java
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+@Component  // 여기가 핵심
+public @interface Service { ... }
+```
+
+컴포넌트 스캔은 `@Component`가 붙은 클래스를 빈으로 등록한다. `@Service`, `@Repository`, `@Controller` 역시 같은 방식으로 빈 등록이 이루어진다. 따라서 순수한 빈 등록 기능만 놓고 보면 네 가지는 동일하다.
+
+## 차이점 1: @Repository — 예외 변환
+
+`@Repository`는 유일하게 추가적인 런타임 동작을 가진다. `PersistenceExceptionTranslationPostProcessor`가 등록되어 있을 때, `@Repository`가 붙은 빈에서 발생하는 데이터 접근 기술별 예외(JPA의 `PersistenceException`, JDBC의 `SQLException` 등)를 Spring의 `DataAccessException` 계층으로 변환해 준다.
+
+```java
+@Repository
+public class UserRepository {
+    // JPA PersistenceException → DataAccessException으로 자동 변환
+    public User findById(Long id) {
+        return em.find(User.class, id);
+    }
+}
+```
+
+이 덕분에 서비스 계층은 JPA, MyBatis, JDBC 등 특정 기술에 종속된 예외를 직접 다루지 않아도 된다.
+
+| 기술 | 원래 예외 | 변환 후 |
+|------|-----------|---------|
+| JPA | `PersistenceException` | `JpaSystemException` |
+| JDBC | `SQLException` | `DataAccessException` |
+| MongoDB | `MongoException` | `UncategorizedMongoDbException` |
+
+Spring Boot 환경에서는 `PersistenceExceptionTranslationAutoConfiguration`이 자동으로 등록되므로 별도 설정 없이 동작한다.
+
+## 차이점 2: @Controller — Spring MVC 처리
+
+`@Controller`는 Spring MVC의 `RequestMappingHandlerMapping`이 이 애노테이션을 감지해 `@RequestMapping` 계열 메서드를 요청 핸들러로 등록한다.
+
+```java
+@Controller
+public class UserController {
+    @GetMapping("/users/{id}")
+    public String getUser(@PathVariable Long id, Model model) {
+        // ...
+        return "user/detail";  // View 이름 반환
+    }
+}
+```
+
+`@RestController`는 `@Controller` + `@ResponseBody`의 합성 애노테이션이다. 모든 핸들러 메서드의 반환 값을 HTTP 응답 본문으로 직렬화한다.
+
+```
+@RestController
+  = @Controller
+  + @ResponseBody (메서드마다 붙일 필요 없음)
+```
+
+`@Controller`를 `@Service` 자리에 붙여도 빈 등록은 되지만, 요청 매핑이 의도치 않게 활성화될 수 있다.
+
+## 차이점 3: @Service — 의미 전달
+
+`@Service`는 현재 추가적인 런타임 동작이 없다. 그러나 비즈니스 로직 계층임을 명시적으로 선언하는 역할을 한다. 이는 AOP 포인트컷에서 유용하게 쓰인다.
+
+```java
+// 서비스 계층 전체에 트랜잭션 AOP 적용
+@Pointcut("within(@org.springframework.stereotype.Service *)")
+public void serviceLayer() {}
+
+@Around("serviceLayer()")
+public Object logExecution(ProceedingJoinPoint jp) throws Throwable {
+    // 서비스 메서드 실행 전후 공통 처리
+}
+```
+
+이처럼 애노테이션 기반으로 특정 계층만 골라 횡단 관심사를 적용할 수 있다.
+
+## 계층별 요약
+
+```
+Presentation  @Controller / @RestController  → MVC 핸들러 매핑 활성화
+Business      @Service                        → 의미 전달, AOP 포인트컷 활용
+Persistence   @Repository                     → 예외 변환 (DataAccessException)
+공통          @Component                      → 범용 빈 등록 마커
+```
+
+## 잘못된 사용의 결과
+
+실수로 계층을 뒤섞어도 애플리케이션은 대부분 동작하지만 다음 문제가 생긴다.
+
+- `@Repository` 없이 JPA 예외를 직접 다루면 기술 종속적인 예외 처리가 서비스 계층으로 올라간다.
+- `@Controller`를 서비스 클래스에 붙이면 요청 매핑 스캔 대상이 될 수 있다.
+- 잘못된 계층 표시는 AOP 포인트컷을 의도와 다르게 만든다.
+
+## 정리
+
+네 가지 애노테이션의 빈 등록 메커니즘은 동일하지만, `@Repository`는 예외 변환, `@Controller`는 MVC 핸들러 매핑이라는 실질적인 부가 동작을 제공한다. 계층의 의미를 정확히 표현하는 것이 AOP 적용 범위와 예외 처리 전략을 일관되게 유지하는 출발점이다.
