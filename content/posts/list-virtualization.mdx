@@ -1,0 +1,171 @@
+---
+title: 리스트 가상화가 렌더링 성능을 개선하는 원리
+date: '2026-05-06'
+category: Frontend
+tags:
+  - React
+  - 성능
+  - Virtualization
+  - DOM
+summary: >-
+  긴 리스트 렌더링에서 가상화는 실제로 화면에 보이는 항목만 DOM에 유지하고
+  나머지는 제거함으로써 레이아웃 비용과 메모리를 줄인다.
+  원리를 이해하면 어떤 상황에서 적용할지, 어떤 트레이드오프가 있는지 판단할 수 있다.
+thumbnail: /thumbnails/list-virtualization.svg
+---
+
+긴 리스트 렌더링에서 virtualization은 어떤 원리로 성능을 개선할까. 핵심은 "모든 데이터를 DOM에 올리지 않는다"는 한 가지 원칙이다. 브라우저가 DOM 노드를 다루는 비용을 이해하면 왜 이 접근이 효과적인지 명확해진다.
+
+## 문제: DOM 노드는 가볍지 않다
+
+React로 10,000개 항목을 렌더링한다고 하면, 초기 마운트 단계에서 다음 일이 일어난다.
+
+```
+1. React: 10,000개 Virtual DOM 노드 생성
+2. React: 실제 DOM에 10,000개 노드 삽입 (Commit Phase)
+3. 브라우저: 10,000개 노드 레이아웃 계산 (Reflow)
+4. 브라우저: 10,000개 노드 페인트
+5. 이후 스크롤 시: 화면에 보이지 않는 노드도 레이아웃에서 존재함
+```
+
+DOM 노드 하나는 수십 개의 CSS 속성을 계산한 결과를 메모리에 유지한다. 10,000개라면 메모리 사용량이 수십 MB에 달할 수 있고, 스크롤 시 레이아웃 재계산이 발생하면 메인 스레드가 블록된다.
+
+## 가상화의 핵심 아이디어
+
+```
+전체 항목: 10,000개
+뷰포트에 보이는 항목: 약 20개
+DOM에 실제 존재하는 항목: 약 30개 (보이는 것 + 버퍼)
+
+          ┌─────────────────────────────┐
+          │  [invisible buffer above]   │ (DOM 없음, 높이만 확보)
+          │─────────────────────────────│ ← 스크롤 시작
+          │  [item 42]  (DOM 존재)      │
+          │  [item 43]  (DOM 존재)      │
+          │  ...                        │
+          │  [item 61]  (DOM 존재)      │
+          │─────────────────────────────│ ← 뷰포트 끝
+          │  [invisible buffer below]   │ (DOM 없음, 높이만 확보)
+          └─────────────────────────────┘
+```
+
+보이지 않는 항목은 DOM에서 제거하되, 스크롤 가능한 전체 높이는 유지해야 한다. 이를 위해 가상화 라이브러리는 두 개의 div를 사용한다.
+
+```
+┌─ 외부 컨테이너 (overflow: scroll) ─────────────────┐
+│  ┌─ 내부 스페이서 (height = 총 항목 높이) ─────┐   │
+│  │  ┌─ 렌더 영역 (transform: translateY로 위치) ┐   │
+│  │  │  실제 DOM 항목들 (약 30개)               │   │
+│  │  └─────────────────────────────────────────┘   │
+│  └──────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────┘
+```
+
+내부 스페이서가 전체 높이를 차지하므로 스크롤바 비율이 올바르게 표시된다.
+
+## 스크롤 시 동작 흐름
+
+```
+스크롤 이벤트
+    │
+    ▼
+현재 scrollTop 읽기
+    │
+    ▼
+startIndex = Math.floor(scrollTop / itemHeight)
+endIndex   = startIndex + visibleCount + bufferCount
+    │
+    ▼
+[startIndex, endIndex] 범위의 항목만 렌더
+    │
+    ▼
+렌더 영역 translateY = startIndex * itemHeight
+```
+
+스크롤할 때마다 어떤 인덱스 범위를 보여줄지 계산하고, 그 범위만 DOM에 유지한다. 기존 노드를 재사용(key 기반 재조정)하거나, 새 항목으로 교체한다.
+
+## React에서의 구현: TanStack Virtual
+
+직접 구현하면 복잡하다. `@tanstack/react-virtual`은 계산 로직을 훅으로 제공한다.
+
+```tsx
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { useRef } from 'react'
+
+function VirtualList({ items }: { items: string[] }) {
+  const parentRef = useRef<HTMLDivElement>(null)
+
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 48,   // 항목 예상 높이(px)
+    overscan: 5,              // 뷰포트 밖 버퍼 항목 수
+  })
+
+  return (
+    <div ref={parentRef} style={{ height: '600px', overflow: 'auto' }}>
+      <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+        {virtualizer.getVirtualItems().map(virtualItem => (
+          <div
+            key={virtualItem.key}
+            style={{
+              position: 'absolute',
+              top: 0,
+              transform: `translateY(${virtualItem.start}px)`,
+              height: `${virtualItem.size}px`,
+              width: '100%',
+            }}
+          >
+            {items[virtualItem.index]}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+```
+
+`getTotalSize()`가 내부 스페이서 높이를 계산하고, `getVirtualItems()`가 현재 뷰포트에 렌더할 항목 목록과 위치를 반환한다.
+
+## 동적 높이 처리
+
+항목 높이가 제각각이면 `estimateSize`로 예측하고, 실제 렌더 후 `measureElement`로 정확한 높이를 피드백한다.
+
+```tsx
+const virtualizer = useVirtualizer({
+  count: items.length,
+  getScrollElement: () => parentRef.current,
+  estimateSize: () => 60,
+  measureElement: el => el.getBoundingClientRect().height,
+})
+```
+
+높이가 측정되면 스페이서 높이와 translateY 값이 자동으로 보정된다.
+
+## 가상화가 필요한 기준
+
+| 항목 수 | 권장 접근 |
+|---------|-----------|
+| 100개 이하 | 일반 렌더링으로 충분 |
+| 100~500개 | 항목 복잡도에 따라 판단 |
+| 500개 이상 | 가상화 적극 고려 |
+| 10,000개+ | 가상화 필수 |
+
+항목이 텍스트 한 줄이면 500개도 괜찮다. 각 항목에 이미지, 복잡한 레이아웃, 이벤트 핸들러가 많으면 기준을 낮춰야 한다.
+
+## 트레이드오프
+
+가상화는 공짜가 아니다.
+
+| 이점 | 비용 |
+|------|------|
+| 초기 렌더 빠름 | 구현 복잡도 증가 |
+| 메모리 사용량 감소 | 항목 높이 추정 필요 |
+| 스크롤 부드러움 | 빠른 스크롤 시 빈 공간(flash) 가능 |
+| DOM 노드 수 일정 | `Ctrl+F` 브라우저 검색 제한 |
+
+특히 빠른 스크롤 시 CPU가 새 항목을 렌더하기 전에 빈 영역이 보이는 "flash" 현상이 생길 수 있다. `overscan` 값을 늘리면 완화되지만, 그만큼 DOM 노드가 늘어난다.
+
+## 핵심 원칙
+
+리스트 가상화의 본질은 "전체 데이터를 알고 있지만 일부만 DOM에 올린다"는 것이다. 스크롤 가능한 높이는 스페이서로 유지하고, 뷰포트에 해당하는 항목만 DOM에 렌더함으로써 브라우저의 레이아웃·페인트 비용을 항목 수에 무관하게 일정하게 유지한다.
