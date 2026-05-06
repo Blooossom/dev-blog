@@ -1,0 +1,153 @@
+---
+title: JPA Batch Insert가 느릴 때 확인해야 할 설정
+date: '2026-05-06'
+category: Backend
+tags:
+  - JPA
+  - Hibernate
+  - Performance
+  - Spring
+summary: >-
+  JPA batch insert/update가 기대만큼 빠르지 않을 때는 ID 생성 전략, JDBC 배치 설정,
+  flush/clear 주기 등 여러 지점에서 숨겨진 병목이 생긴다. 각 설정이 내부적으로 어떻게 작동하는지
+  이해하면 실질적인 성능 개선을 이끌어낼 수 있다.
+thumbnail: /thumbnails/jpa-batch-insert.svg
+---
+
+JPA batch insert/update가 기대만큼 빠르지 않을 때, 단순히 `spring.jpa.properties.hibernate.jdbc.batch_size`만 키워서는 효과를 못 보는 경우가 많다. 배치 성능에는 ID 생성 전략, 영속성 컨텍스트 관리, JDBC 드라이버 설정이 함께 맞물리기 때문이다.
+
+## 왜 배치가 작동하지 않는가
+
+Hibernate는 같은 엔티티 타입의 insert/update 문을 묶어서 JDBC `addBatch()`/`executeBatch()`로 내보낸다. 그러나 다음 조건 중 하나라도 깨지면 배치가 해제된다.
+
+```
+┌─────────────────────────────────────────────────────┐
+│         Hibernate Batch 해제 원인                    │
+├────────────────────────┬────────────────────────────┤
+│ IDENTITY 생성 전략     │ insert 직후 DB가 키를       │
+│                        │ 반환해야 해서 1건씩 실행    │
+├────────────────────────┼────────────────────────────┤
+│ 엔티티 타입 혼재       │ A→B→A 순서면 A 배치가 두 번│
+│                        │ 나뉘어 flush됨              │
+├────────────────────────┼────────────────────────────┤
+│ reWriteBatchedInserts  │ 미설정 시 MySQL/PostgreSQL  │
+│ 미설정                 │ 단건 전송과 동일            │
+└────────────────────────┴────────────────────────────┘
+```
+
+## ID 생성 전략: IDENTITY를 피하라
+
+가장 흔한 원인이다. `@GeneratedValue(strategy = GenerationType.IDENTITY)`는 Hibernate가 배치를 포기하게 만든다. insert 후 `LAST_INSERT_ID()`를 읽어야 엔티티에 ID를 채울 수 있어서, flush 시점에 단건 insert가 반복된다.
+
+**해결: SEQUENCE 또는 TABLE 전략으로 교체**
+
+```java
+@Entity
+public class Order {
+
+    @Id
+    @GeneratedValue(
+        strategy = GenerationType.SEQUENCE,
+        generator = "order_seq"
+    )
+    @SequenceGenerator(
+        name = "order_seq",
+        sequenceName = "order_id_seq",
+        allocationSize = 50          // 시퀀스를 50개 단위로 미리 확보
+    )
+    private Long id;
+}
+```
+
+`allocationSize`를 배치 크기와 맞춰두면 DB 시퀀스 호출 횟수도 줄어든다.
+
+MySQL처럼 시퀀스 객체가 없는 DB에서는 `hi-lo` 알고리즘 기반의 `TABLE` 전략을 쓰거나, UUID를 애플리케이션에서 직접 발급하는 방식도 고려할 수 있다.
+
+## 핵심 설정 목록
+
+### application.yml
+
+```yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50            # 배치 묶음 단위
+          batch_versioned_data: true # update에도 배치 적용
+        order_inserts: true         # 같은 타입 insert를 모아서 실행
+        order_updates: true         # 같은 타입 update를 모아서 실행
+```
+
+`order_inserts: true`가 없으면 연관 엔티티가 섞여 들어올 때 배치가 자주 끊긴다.
+
+### JDBC URL 파라미터 (MySQL / PostgreSQL)
+
+```
+# MySQL
+jdbc:mysql://host/db?rewriteBatchedStatements=true
+
+# PostgreSQL
+jdbc:postgresql://host/db?rewriteBatchedInserts=true
+```
+
+이 파라미터가 없으면 드라이버가 실제로는 단건 전송을 반복한다. Hibernate의 `batch_size`와 별개로 JDBC 레이어에서도 활성화해야 한다.
+
+## 영속성 컨텍스트 관리: flush + clear 주기
+
+대량 insert 시 영속성 컨텍스트에 수만 건의 엔티티가 쌓이면 1차 캐시 메모리가 폭증하고 GC 압력이 높아진다.
+
+```java
+@Transactional
+public void bulkInsert(List<OrderDto> dtos) {
+    int batchSize = 50;
+
+    for (int i = 0; i < dtos.size(); i++) {
+        em.persist(toEntity(dtos.get(i)));
+
+        if ((i + 1) % batchSize == 0) {
+            em.flush();   // SQL을 DB로 전송
+            em.clear();   // 1차 캐시 비움
+        }
+    }
+    // 나머지 처리
+    em.flush();
+    em.clear();
+}
+```
+
+`flush()`를 명시적으로 호출하면 Hibernate가 배치 단위로 SQL을 전송하고, `clear()`로 캐시를 비워 메모리를 회수한다.
+
+### Spring Data JPA + saveAll
+
+`saveAll()`은 내부적으로 반복 `save()`를 호출한다. 배치 설정이 올바르면 Hibernate가 자동으로 묶지만, 위에서 설명한 조건이 충족되지 않으면 단건이 반복된다. 수십만 건 처리에는 직접 `EntityManager`를 사용하는 편이 예측 가능하다.
+
+## 배치 작동 여부 확인
+
+```yaml
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.batch: TRACE
+```
+
+`TRACE` 로그에서 `executing batch` 메시지와 묶음 크기를 확인한다. 단건이 반복되면 배치가 실제로는 꺼진 것이다.
+
+P6Spy나 datasource-proxy를 붙이면 실제 JDBC 호출 수를 집계할 수 있어 비교가 쉽다.
+
+## 성능 비교 예시
+
+10만 건 insert 기준 (MySQL, 로컬 측정 참고값)
+
+| 방식 | 소요 시간 |
+|------|----------|
+| 단건 insert (IDENTITY) | 약 25초 |
+| batch_size=50, IDENTITY | 약 22초 (거의 차이 없음) |
+| batch_size=50, SEQUENCE, rewriteBatchedStatements | 약 3초 |
+| batch_size=50, SEQUENCE, flush/clear 주기 포함 | 약 2.5초 |
+
+ID 전략 변경이 가장 큰 효과를 낸다.
+
+## 핵심 원칙
+
+JPA 배치 성능은 `batch_size` 하나로 결정되지 않는다. ID 생성 전략(SEQUENCE), JDBC 드라이버 파라미터(`rewriteBatchedStatements`), 영속성 컨텍스트 flush/clear 주기가 세트로 맞아야 실질적인 개선이 나타난다.
