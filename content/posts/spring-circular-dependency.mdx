@@ -1,0 +1,159 @@
+---
+title: Spring에서 순환 참조가 발생하는 이유와 해결 전략
+date: '2026-05-07'
+category: Backend
+tags:
+  - Spring
+  - DI
+  - 순환 참조
+  - 의존성 주입
+summary: >-
+  Spring에서 순환 참조가 문제가 되는 이유는 빈 생성 순서와 DI 메커니즘에 있다. A가 B를 필요로 하고 B가 다시 A를 필요로 하면 컨테이너는 어느 쪽도 완성할 수 없는 교착 상태에 빠지며, 이는 설계 경계가 불분명하다는 신호이기도 하다.
+thumbnail: /thumbnails/spring-circular-dependency.svg
+---
+
+Spring에서 순환 참조가 문제가 되는 이유는 의존성 주입의 동작 방식에 있다. A가 B를 필요로 하고, B가 다시 A를 필요로 하면, 컨테이너는 어느 쪽도 먼저 완성할 수 없는 상황에 빠진다.
+
+## 순환 참조란 무엇인가
+
+순환 참조(Circular Dependency)는 두 개 이상의 빈이 서로를 직접 또는 간접적으로 의존하는 구조를 말한다.
+
+```
+A → B → A         (직접 순환)
+A → B → C → A    (간접 순환)
+```
+
+## 생성자 주입에서 즉시 실패하는 이유
+
+Spring Boot 2.6 이후 기본값으로 `spring.main.allow-circular-references=false`가 적용된다. **생성자 주입** 방식에서는 애플리케이션 구동 시점에 즉시 오류가 발생한다.
+
+```java
+@Service
+public class OrderService {
+    private final PaymentService paymentService;
+
+    public OrderService(PaymentService paymentService) {
+        this.paymentService = paymentService;
+    }
+}
+
+@Service
+public class PaymentService {
+    private final OrderService orderService;
+
+    public PaymentService(OrderService orderService) {
+        this.orderService = orderService;
+    }
+}
+```
+
+컨테이너가 `OrderService`를 만들려면 `PaymentService`가 필요하고, `PaymentService`를 만들려면 `OrderService`가 필요하다는 것을 감지해 `BeanCurrentlyInCreationException`을 던진다.
+
+```
+The dependencies of some of the beans in the application context form a cycle:
+
+orderService → paymentService → orderService
+```
+
+### 왜 필드 주입은 늦게 실패할까
+
+```java
+@Autowired
+private PaymentService paymentService;
+```
+
+필드 주입은 빈을 먼저 생성한 뒤 참조를 채우는 방식이라 구동 시점에 오류가 발생하지 않을 수 있다. 그러나 실제 메서드를 호출하는 시점에 예상치 못한 `NullPointerException`이나 프록시 불일치 문제로 이어질 수 있어 오히려 더 위험하다.
+
+## 순환 참조가 설계 문제인 이유
+
+순환 참조가 발생했다면 두 클래스 사이의 책임 경계가 불명확하다는 신호다.
+
+| 증상 | 의미 |
+|------|------|
+| A와 B가 서로를 직접 호출 | 공통 로직이 제3의 클래스로 분리되어야 함 |
+| A가 B의 내부 상태를 변경 | A가 B의 책임 영역을 침범하고 있음 |
+| 이벤트 발행이 순환 | 이벤트 기반 구조로 결합을 끊어야 함 |
+
+## 해결 전략
+
+### 1. 공통 로직을 별도 서비스로 분리
+
+순환의 원인이 되는 공통 로직을 `SharedService`로 추출해 두 클래스 모두 이를 바라보게 한다.
+
+```java
+@Service
+public class SharedService {
+    public void commonLogic() { ... }
+}
+
+@Service
+public class OrderService {
+    private final SharedService sharedService;
+    // PaymentService 의존 제거
+}
+
+@Service
+public class PaymentService {
+    private final SharedService sharedService;
+    // OrderService 의존 제거
+}
+```
+
+### 2. 도메인 이벤트로 결합 끊기
+
+Spring의 `ApplicationEventPublisher`를 사용하면 직접 참조 없이 동작을 전달할 수 있다.
+
+```java
+@Service
+public class OrderService {
+    private final ApplicationEventPublisher publisher;
+
+    public void completeOrder(Long orderId) {
+        // PaymentService를 직접 호출하지 않음
+        publisher.publishEvent(new OrderCompletedEvent(orderId));
+    }
+}
+
+@Service
+public class PaymentService {
+    @EventListener
+    public void handleOrderCompleted(OrderCompletedEvent event) {
+        // 이벤트를 통해 느슨하게 연결
+    }
+}
+```
+
+### 3. `@Lazy` 주입으로 초기화 시점 지연
+
+구조 개선이 어려운 레거시 코드에서 임시 방편으로 활용할 수 있지만, 근본 원인을 해결하지는 않는다.
+
+```java
+@Service
+public class OrderService {
+    private final PaymentService paymentService;
+
+    public OrderService(@Lazy PaymentService paymentService) {
+        this.paymentService = paymentService;
+    }
+}
+```
+
+`@Lazy`는 프록시 객체를 먼저 주입해 실제 빈 초기화를 첫 호출 시점으로 미루는 방식이다.
+
+## 순환 참조 탐지
+
+IntelliJ의 Spring 플러그인은 의존성 다이어그램에서 순환 화살표를 시각적으로 표시한다. 빌드 타임에는 아래 오류 메시지로 직접 사이클 경로를 확인할 수 있다.
+
+```
+The dependencies of some of the beans in the application context form a cycle:
+
+┌─────┐
+|  orderService defined in file [OrderService.class]
+↑     ↓
+|  paymentService defined in file [PaymentService.class]
+└─────┘
+```
+
+## 핵심 원칙
+
+순환 참조는 컴파일러가 아니라 설계가 보내는 경고 신호다. 억지로 허용하기보다 책임을 명확히 분리하거나 이벤트 기반 구조로 결합을 끊는 방향이 장기적인 유지보수성을 높인다.
