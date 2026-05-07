@@ -1,0 +1,116 @@
+---
+title: Eventual Consistency는 단순히 데이터가 늦게 맞춰진다는 뜻일까
+date: '2026-05-07'
+category: Architecture
+tags:
+  - 분산 시스템
+  - Eventual Consistency
+  - CAP 이론
+  - 일관성
+summary: >-
+  Eventual Consistency는 단순히 데이터가 늦게 맞춰진다는 뜻일까? 사용자 경험과 보상 로직까지 포함하는 설계 문제로 바라봐야 분산 환경에서 진짜 일관성 전략을 세울 수 있다.
+thumbnail: /thumbnails/eventual-consistency.svg
+---
+
+Eventual Consistency는 단순히 데이터가 늦게 맞춰진다는 뜻일까? 이 질문에 "그렇다"라고만 답하면, 실제 서비스에서 발생하는 복잡한 장애와 사용자 혼란을 예방할 수 없다.
+
+## Strong Consistency vs Eventual Consistency
+
+분산 시스템에서 일관성 모델은 크게 두 가지로 구분된다.
+
+| 구분 | Strong Consistency | Eventual Consistency |
+|------|-------------------|---------------------|
+| 의미 | 쓰기 직후 모든 노드에서 최신값 보장 | 일정 시간 후 수렴 보장 |
+| 구현 비용 | 높음 (합의 프로토콜 필요) | 낮음 |
+| 가용성 | 낮아질 수 있음 | 높음 |
+| 예시 | Zookeeper, 단일 DB | DynamoDB, Cassandra, DNS |
+
+Strong Consistency는 모든 노드가 동일한 값을 보는 것을 항상 보장하지만, 네트워크 파티션 상황에서 가용성을 포기해야 한다(CAP 이론).
+
+## Eventual Consistency가 실제로 의미하는 것
+
+"결국 일관성"은 세 가지 속성을 포함한다.
+
+```
+[노드 A] ──write──▶ v2
+[노드 B]            v1  ← 잠시 stale
+[노드 C]            v1  ← 잠시 stale
+
+... 충분한 시간 경과 후 ...
+
+[노드 A] v2
+[노드 B] v2  ← 수렴 완료
+[노드 C] v2  ← 수렴 완료
+```
+
+단순히 "나중에 같아진다"는 것 외에, **언제까지 같아질지**, **수렴 중에 읽은 값을 어떻게 처리할지**가 실제 설계 문제다.
+
+## 사용자 경험 문제: Read-Your-Writes 이슈
+
+팔로우 버튼을 눌렀는데 새로고침하면 아직 반영되지 않는 경우가 대표적인 사용자 경험 문제다.
+
+```
+사용자: POST /follow/userId    → 200 OK
+사용자: GET  /profile/userId   → 팔로잉: false (stale 복제본에서 읽음)
+```
+
+이를 해결하기 위한 패턴은 다음과 같다.
+
+| 패턴 | 방식 | 비용 |
+|------|------|------|
+| Read-Your-Writes | 쓰기 후 일정 시간 동안 primary 노드로 라우팅 | 높음 |
+| 세션 일관성 | 같은 세션 내에서는 자신의 쓰기를 항상 읽게 보장 | 중간 |
+| 낙관적 UI 업데이트 | 클라이언트 상태를 즉시 반영, 실패 시 롤백 | 낮음 |
+
+## 보상 로직: 충돌 해소 전략
+
+여러 노드에서 같은 데이터를 동시에 수정하면 충돌이 발생한다. Eventual Consistency 시스템은 이 충돌을 나중에 감지하고 해소해야 한다.
+
+### Last Write Wins (LWW)
+
+타임스탬프가 가장 늦은 값이 선택된다. 단순하지만 동시 수정 시 데이터 유실이 발생할 수 있다.
+
+```
+노드 A: { name: "Alice", ts: 100 }
+노드 B: { name: "Bob",   ts: 101 }  ← LWW로 선택
+→ "Alice"로의 변경이 유실됨
+```
+
+### CRDT (Conflict-Free Replicated Data Types)
+
+수학적으로 충돌이 발생하지 않도록 설계된 자료구조다. 단조 증가하는 Counter, 합집합만 허용하는 Set 등이 이에 해당한다.
+
+```
+노드 A: 카운터 +3
+노드 B: 카운터 +5
+→ 합산: +8 (순서 무관, 항상 올바른 결과)
+```
+
+### 도메인 기반 충돌 해소
+
+이커머스에서 재고 차감 충돌은 음수 재고가 되지 않도록 애플리케이션 레벨에서 보상 로직을 작성해야 한다.
+
+```java
+// 재고 차감 후 음수 검증 보상 패턴
+public void compensateNegativeStock(Long productId) {
+    int stock = inventoryRepository.findStock(productId);
+    if (stock < 0) {
+        eventPublisher.publishEvent(
+            new StockOverflowEvent(productId, Math.abs(stock))
+        );
+    }
+}
+```
+
+## 실무에서 선택 기준
+
+| 도메인 | 적합 여부 | 이유 |
+|--------|----------|------|
+| 소셜 피드, 좋아요 수 | 적합 | 약간의 stale 허용, 가용성 중요 |
+| 금융 결제, 재고 | 신중 필요 | 보상 로직이 복잡, 데이터 유실 허용 불가 |
+| 사용자 프로필 | 조건부 적합 | Read-Your-Writes 보완 필요 |
+| 분산 락, 리더 선출 | 부적합 | 강한 일관성 필수 |
+
+## 핵심 원칙
+
+Eventual Consistency는 데이터가 늦게 맞춰지는 기술적 사실일 뿐 아니라, Read-Your-Writes 보장, 충돌 해소 전략, 사용자 오해 방지까지 포함하는 설계 책임이다. 일관성 모델을 선택할 때는 데이터 유실의 비용과 가용성의 가치를 도메인 관점에서 명확히 따져야 한다.
