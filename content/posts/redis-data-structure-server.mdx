@@ -1,0 +1,211 @@
+---
+title: Redis는 자료구조 서버다 — key-value를 넘어서
+date: '2026-05-08'
+category: Backend
+tags:
+  - Redis
+  - 자료구조
+  - 캐시
+  - 백엔드
+summary: >-
+  Redis는 단순한 key-value 저장소일까, 자료구조 서버라고 보는 것이 더 정확할까?
+  Redis가 지원하는 풍부한 자료구조와 각각의 실무 활용 사례를 살펴보고,
+  단순 캐시 레이어를 넘어선 Redis의 진짜 가치를 이해한다.
+thumbnail: /thumbnails/redis-data-structure-server.svg
+---
+
+Redis는 단순한 key-value 저장소일까, 자료구조 서버라고 보는 것이 더 정확할까? 많은 개발자들이 Redis를 "빠른 캐시"로만 인식하지만, Redis 공식 문서는 스스로를 **"data structure server"** 라고 정의한다. 이 차이를 이해하면 Redis를 훨씬 더 효과적으로 활용할 수 있다.
+
+## key-value 저장소와 자료구조 서버의 차이
+
+일반적인 key-value 저장소는 key와 value의 쌍만 다룬다. value는 불투명한 바이트 배열이고, 저장소는 그 내부 구조를 모른다.
+
+```
+# 일반 key-value 저장소
+SET user:1 "{"name":"kim","age":30}"
+GET user:1  # 전체 문자열 반환
+```
+
+이 경우 age만 바꾸고 싶어도 전체 value를 읽어서 파싱하고, 수정하고, 다시 직렬화해서 저장해야 한다. 클라이언트에서 모든 연산이 일어난다.
+
+자료구조 서버는 다르다. Redis는 value가 어떤 타입인지 알고 있고, **서버 안에서 연산**을 수행한다.
+
+```
+# Redis Hash
+HSET user:1 name "kim" age 30
+HINCRBY user:1 age 1  # age만 원자적으로 증가
+HGET user:1 name      # name만 조회
+```
+
+네트워크 왕복 없이, 역직렬화 없이, 서버에서 직접 처리한다. 이것이 Redis를 자료구조 서버라고 부르는 이유다.
+
+## Redis가 지원하는 핵심 자료구조
+
+### String
+
+가장 기본적인 타입이지만, 단순 문자열 저장 이상의 기능을 제공한다.
+
+```
+SET counter 0
+INCR counter        # 원자적 증가 → 1
+INCRBY counter 10   # 원자적 증가 → 11
+SETNX lock_key 1    # key가 없을 때만 설정 (분산 락 기초)
+GETSET old_val new  # 이전 값 반환 후 새 값 설정
+```
+
+숫자형 String에 대한 원자적 연산(`INCR`, `DECR`, `INCRBY`)은 레이스 컨디션 없이 카운터를 구현할 수 있게 해준다.
+
+### List
+
+이중 연결 리스트로 구현되어 양쪽 끝에서 O(1) 삽입/삭제가 가능하다.
+
+```
+RPUSH queue task1 task2 task3   # 오른쪽에 추가
+LPOP queue                      # 왼쪽에서 꺼냄 → task1
+LRANGE queue 0 -1               # 전체 조회
+BRPOP queue 5                   # 블로킹 팝 (최대 5초 대기)
+```
+
+`BRPOP`/`BLPOP`을 활용하면 Redis List만으로 간단한 작업 큐를 구현할 수 있다.
+
+### Hash
+
+필드-값 쌍의 컬렉션으로, 객체를 표현할 때 적합하다.
+
+```
+HSET product:100 name "노트북" price 1500000 stock 50
+HINCRBY product:100 stock -1    # stock 감소 (구매 처리)
+HMGET product:100 name price    # 여러 필드 한번에 조회
+HGETALL product:100             # 모든 필드 조회
+```
+
+JSON 문자열로 저장하는 것과 달리, 특정 필드만 업데이트하거나 조회할 수 있어 효율적이다.
+
+### Set
+
+중복 없는 문자열 컬렉션. 집합 연산(교집합, 합집합, 차집합)을 서버에서 처리한다.
+
+```
+SADD user:1:tags python java redis
+SADD user:2:tags java spring redis
+SINTER user:1:tags user:2:tags   # 공통 태그 → java, redis
+SUNION user:1:tags user:2:tags   # 전체 태그
+SISMEMBER user:1:tags python     # 멤버 여부 확인
+```
+
+팔로우/팔로워 관계, 태그 시스템, 중복 방문자 체크 등에 활용된다.
+
+### Sorted Set (ZSet)
+
+각 멤버에 score가 붙어 있고, score 기준으로 정렬된 상태가 항상 유지된다.
+
+```
+ZADD leaderboard 9500 "user:1"
+ZADD leaderboard 8200 "user:2"
+ZADD leaderboard 9800 "user:3"
+
+ZRANGE leaderboard 0 2 REV WITHSCORES   # 상위 3명
+ZRANK leaderboard "user:1"              # user:1의 순위
+ZINCRBY leaderboard 300 "user:1"        # 점수 증가
+```
+
+실시간 랭킹, 만료 시간 기반 스케줄링(score에 타임스탬프 저장), 범위 검색 등에 매우 유용하다.
+
+### Bitmap
+
+String 타입의 비트 단위 연산. 대규모 boolean 데이터를 매우 작은 메모리로 표현한다.
+
+```
+# 오늘 출석한 사용자 기록 (user_id를 offset으로)
+SETBIT attendance:2026-05-08 10001 1   # user 10001 출석
+SETBIT attendance:2026-05-08 10002 1   # user 10002 출석
+
+GETBIT attendance:2026-05-08 10001     # 출석 여부 확인
+BITCOUNT attendance:2026-05-08         # 오늘 총 출석자 수
+
+# 월간 출석한 날 집계
+BITOP AND active_users jan:week1 jan:week2 jan:week3 jan:week4
+```
+
+1억 명의 DAU 데이터를 Bitmap으로 저장하면 약 12MB면 충분하다. JSON이나 Set으로 저장하는 것과 비교하면 수십~수백 배 효율적이다.
+
+### HyperLogLog
+
+확률적 자료구조로 카디널리티(유니크한 원소 수)를 근사치로 계산한다.
+
+```
+PFADD page_visitors:today user1 user2 user3 user1  # 중복 무시
+PFCOUNT page_visitors:today    # ~3 (오차 0.81% 이내)
+PFMERGE week_visitors today:mon today:tue today:wed
+```
+
+정확한 숫자가 필요 없고 대략적인 UV(Unique Visitor) 집계가 목적이라면, Set 대신 HyperLogLog를 써서 메모리를 1000배 이상 절약할 수 있다.
+
+## 자료구조별 활용 패턴 비교
+
+| 자료구조 | 핵심 특징 | 대표 사용 사례 |
+|----------|-----------|--------------|
+| String | 원자적 증감, 단순 캐시 | 카운터, 세션, 분산 락 |
+| List | 순서 보장, 블로킹 팝 | 작업 큐, 최근 항목 |
+| Hash | 필드별 접근 | 객체 캐시, 사용자 프로필 |
+| Set | 중복 제거, 집합 연산 | 팔로우, 태그, 좋아요 |
+| Sorted Set | score 정렬, 범위 쿼리 | 랭킹, 스케줄링 |
+| Bitmap | 비트 단위, 초고밀도 | 출석, DAU, 플래그 |
+| HyperLogLog | 근사 카디널리티 | UV, 유니크 집계 |
+
+## 왜 서버에서 연산하는가
+
+Redis 자료구조의 핵심 가치는 **연산이 서버에서 원자적으로 실행된다**는 점이다.
+
+예를 들어 "재고 차감"을 일반 key-value 방식으로 구현하면:
+
+```
+1. GET stock           # 읽기
+2. stock = stock - 1   # 클라이언트에서 계산
+3. SET stock new_val   # 쓰기
+```
+
+1과 3 사이에 다른 요청이 끼어들면 재고가 잘못 차감된다. Redis의 `DECRBY`는 이 세 단계를 원자적으로 처리한다.
+
+```
+DECRBY stock 1   # 서버에서 원자적으로 처리
+```
+
+Lua 스크립트나 트랜잭션(`MULTI`/`EXEC`)을 사용하면 여러 명령을 원자적으로 묶을 수도 있다.
+
+## 단순 캐시로만 쓸 때의 기회비용
+
+Redis를 `SET`/`GET` + TTL 조합으로만 사용한다면, 다음과 같은 기회를 놓치게 된다.
+
+- 랭킹 시스템 → DB `ORDER BY` 쿼리 반복 대신 Sorted Set
+- 팔로우 관계 → 교집합 연산 대신 Set `SINTER`
+- 실시간 카운터 → 락을 잡고 업데이트하는 대신 `INCR`
+- 중복 방지 → UUID 저장 Set 대신 Bloom Filter 또는 HyperLogLog
+- 세션 관리 → JSON 전체 교체 대신 Hash 필드별 업데이트
+
+## 자료구조 선택 가이드
+
+```
+데이터가 단순 값 하나?
+  → String
+
+객체처럼 여러 필드?
+  → Hash
+
+순서가 있는 목록, 최근 N개?
+  → List
+
+중복 없는 집합, 교집합 필요?
+  → Set
+
+점수로 정렬해야 함?
+  → Sorted Set
+
+수억 명의 boolean 플래그?
+  → Bitmap
+
+대략적인 유니크 카운팅?
+  → HyperLogLog
+```
+
+Redis는 "캐시 저장소"가 아니라 **다양한 자료구조를 서버에서 원자적으로 연산하는 플랫폼**이다. 어떤 자료구조를 선택하느냐에 따라 코드의 단순성, 메모리 효율, 동시성 안전성 모두가 달라진다. Redis를 제대로 쓴다는 것은 곧 문제에 맞는 자료구조를 선택한다는 뜻이다.
