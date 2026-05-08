@@ -4,7 +4,7 @@
 
 ## Redis
 
-201. Redis는 단순한 key-value 저장소일까, 자료구조 서버라고 보는 것이 더 정확할까?
+~~201. Redis는 단순한 key-value 저장소일까, 자료구조 서버라고 보는 것이 더 정확할까?~~ `작성완료`
 202. Redis가 빠른 이유는 메모리 기반이라는 점만으로 설명할 수 있을까?
 203. Redis의 single-threaded event loop 구조는 어떤 장점과 병목을 동시에 만들까?
 204. Redis에서 큰 key나 big value가 있으면 latency spike가 생길 수 있는 이유는 무엇일까?
