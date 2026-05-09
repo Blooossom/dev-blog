@@ -1,0 +1,174 @@
+---
+title: React Context를 전역 상태 관리 도구처럼 쓰면 어떤 성능 문제가 생길까
+date: '2026-05-09'
+category: Frontend
+tags:
+  - React
+  - Context
+  - 성능 최적화
+  - 리렌더링
+summary: >-
+  Context를 전역 상태 관리 도구처럼 많이 쓰면 값이 바뀔 때마다 해당 Context를 구독하는 모든 컴포넌트가
+  리렌더링된다. 이 문제의 원인과 구조적 해결 방법을 살펴본다.
+thumbnail: /thumbnails/react-context-performance.svg
+---
+
+Context를 전역 상태 관리 도구처럼 많이 쓰면 어떤 성능 문제가 생길 수 있을까? Context는 편리하지만, 잘못 설계하면 앱 전체에 불필요한 리렌더링을 유발한다.
+
+## Context의 동작 원리
+
+React Context는 컴포넌트 트리를 통해 **값을 전파**하는 메커니즘이다. `Provider`가 제공하는 `value`가 변경되면, 해당 Context를 구독하는(`useContext` 호출) **모든 컴포넌트가 리렌더링**된다.
+
+```tsx
+const UserContext = createContext(null);
+
+function App() {
+  const [user, setUser] = useState({ name: '김개발', role: 'admin' });
+
+  return (
+    <UserContext.Provider value={{ user, setUser }}>
+      <Header />
+      <Sidebar />
+      <MainContent />
+    </UserContext.Provider>
+  );
+}
+```
+
+`user` 객체 하나가 바뀌면 `Header`, `Sidebar`, `MainContent` 모두와 그 하위 트리가 리렌더링될 수 있다.
+
+## 문제 1: 단일 Context에 너무 많은 상태 집중
+
+자주 변경되는 상태와 그렇지 않은 상태를 하나의 Context에 담으면, 일부 값만 바뀌어도 모든 구독자가 리렌더링된다.
+
+```tsx
+// 나쁜 예: 변경 빈도가 다른 값들이 한 Context에
+const AppContext = createContext(null);
+
+function App() {
+  const [theme, setTheme] = useState('dark');       // 거의 안 바뀜
+  const [user, setUser] = useState(null);           // 로그인 시 한 번
+  const [notifications, setNotifications] = useState([]); // 자주 바뀜
+
+  return (
+    <AppContext.Provider value={{ theme, user, notifications, setNotifications }}>
+      {children}
+    </AppContext.Provider>
+  );
+}
+```
+
+`notifications`가 1초마다 갱신된다면, `theme`만 읽는 컴포넌트도 매초 리렌더링된다.
+
+## 문제 2: value 객체가 매 렌더마다 새로 생성됨
+
+Provider의 `value`에 객체 리터럴을 직접 넘기면, 부모 컴포넌트가 렌더링될 때마다 새 참조가 생성되어 구독자 전체를 깨운다.
+
+```tsx
+// 나쁜 예
+function App() {
+  const [count, setCount] = useState(0);
+
+  return (
+    // 렌더마다 { count, setCount } 객체가 새로 만들어짐
+    <CountContext.Provider value={{ count, setCount }}>
+      {children}
+    </CountContext.Provider>
+  );
+}
+```
+
+`App`이 다른 이유로 리렌더링될 때마다 Context 구독자들이 모두 함께 리렌더링된다.
+
+## 해결책 1: Context 분리
+
+변경 빈도에 따라 Context를 분리한다. 자주 바뀌는 상태는 별도 Context로 분리해 영향 범위를 최소화한다.
+
+```tsx
+const ThemeContext = createContext('dark');          // 거의 안 바뀜
+const UserContext = createContext(null);             // 로그인 시
+const NotificationContext = createContext([]);       // 자주 바뀜
+
+function App() {
+  return (
+    <ThemeContext.Provider value={theme}>
+      <UserContext.Provider value={user}>
+        <NotificationContext.Provider value={notifications}>
+          {children}
+        </NotificationContext.Provider>
+      </UserContext.Provider>
+    </ThemeContext.Provider>
+  );
+}
+```
+
+이제 `notifications`가 바뀌어도 `ThemeContext`나 `UserContext` 구독자는 영향받지 않는다.
+
+## 해결책 2: useMemo로 value 안정화
+
+`value` 객체를 `useMemo`로 감싸면 의존 값이 실제로 바뀔 때만 새 참조가 생성된다.
+
+```tsx
+function CountProvider({ children }) {
+  const [count, setCount] = useState(0);
+
+  const value = useMemo(() => ({ count, setCount }), [count]);
+
+  return (
+    <CountContext.Provider value={value}>
+      {children}
+    </CountContext.Provider>
+  );
+}
+```
+
+## 해결책 3: 상태와 업데이트 함수 Context 분리
+
+상태 읽기와 업데이트 함수를 별도 Context로 나누면, 업데이트만 필요한 컴포넌트는 상태 변경에 반응하지 않는다. `dispatch`나 `setter`는 참조가 변하지 않으므로 별도 Context에 두면 구독자가 불필요하게 리렌더링되지 않는다.
+
+```tsx
+const CountStateContext = createContext(0);
+const CountDispatchContext = createContext(null);
+
+function CountProvider({ children }) {
+  const [count, dispatch] = useReducer(reducer, 0);
+
+  return (
+    <CountDispatchContext.Provider value={dispatch}>
+      <CountStateContext.Provider value={count}>
+        {children}
+      </CountStateContext.Provider>
+    </CountDispatchContext.Provider>
+  );
+}
+
+// count를 읽지 않는 버튼: CountDispatchContext만 구독
+function IncrementButton() {
+  const dispatch = useContext(CountDispatchContext);
+  return <button onClick={() => dispatch({ type: 'increment' })}>+</button>;
+}
+```
+
+## Context와 외부 상태 관리 라이브러리 비교
+
+Context는 전역 상태 관리 도구가 아니라 **DI(의존성 주입) 메커니즘**에 가깝다. 구독 기반의 선택적 리렌더링이 필요하다면 Zustand, Jotai, Redux Toolkit 같은 라이브러리가 적합하다.
+
+| 기준 | Context | Zustand/Jotai |
+|------|---------|---------------|
+| 선택적 구독 | 불가 (Context 전체) | 가능 (특정 slice) |
+| 리렌더링 제어 | 수동 최적화 필요 | 자동 최적화 |
+| 외부 devtools | 없음 | 있음 |
+| 적합한 사용 | theme, locale, user 정보 | 복잡한 상태, 고빈도 업데이트 |
+
+## 언제 Context가 적합한가
+
+Context는 변경이 드물고 트리 전체에 넓게 공유해야 하는 값에 적합하다.
+
+- 테마(다크/라이트 모드)
+- 로그인한 사용자 정보
+- 언어/로케일 설정
+- 모달, 토스트 같은 UI 레이어 제어
+
+반면 폼 상태, 서버 데이터 캐시, 고빈도 업데이트 값은 Context보다 전용 라이브러리가 낫다.
+
+Context는 의존성 주입 도구로 설계되었고, 고빈도 업데이트 상태에 쓸수록 불필요한 리렌더링이 쌓인다. 상태의 변경 빈도와 구독 범위를 기준으로 Context를 분리하거나 외부 상태 관리 라이브러리로 교체하는 것이 올바른 설계 방향이다.

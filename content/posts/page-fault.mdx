@@ -1,0 +1,122 @@
+---
+title: page fault는 항상 나쁜 현상일까 — minor fault와 major fault의 차이
+date: '2026-05-09'
+category: General
+tags:
+  - OS
+  - 메모리
+  - 가상 메모리
+  - 성능
+summary: >-
+  page fault는 항상 나쁜 현상이 아니다. minor fault는 디스크 I/O 없이 해결되는 정상적인 동작이고,
+  major fault가 빈번할 때 비로소 성능 문제를 의심해야 한다.
+thumbnail: /thumbnails/page-fault.svg
+---
+
+page fault는 항상 나쁜 현상일까, minor fault와 major fault는 무엇이 다를까? 이름만 보면 둘 다 오류처럼 들리지만, 실제로는 운영체제 메모리 관리의 정상적인 일부다.
+
+## 가상 메모리와 페이지 테이블
+
+현대 OS는 프로세스에게 **가상 주소 공간**을 제공한다. 실제 물리 메모리(RAM)와 가상 주소 사이의 매핑은 **페이지 테이블**이 관리한다. 가상 주소를 물리 주소로 변환할 때 CPU의 MMU(Memory Management Unit)가 페이지 테이블을 참조한다.
+
+```
+가상 주소 공간 (4GB)
+┌──────────────────┐
+│   Stack          │
+│   ...            │       페이지 테이블
+│   Heap           │  →   ┌─────────────────────┐
+│   BSS            │      │ VA 0x1000 → PA 0x3A00│
+│   Data           │      │ VA 0x2000 → 없음(swap)│
+│   Text (code)    │      └─────────────────────┘
+└──────────────────┘
+```
+
+프로세스가 특정 가상 주소에 접근할 때 해당 페이지가 물리 메모리에 없으면 CPU가 **page fault** 인터럽트를 발생시킨다.
+
+## page fault의 두 종류
+
+### Minor Page Fault (경미한 폴트)
+
+디스크 I/O 없이 해결할 수 있는 폴트다. 다음 상황에서 발생한다.
+
+- **메모리 매핑 초기화**: `malloc()` 호출 시 OS는 가상 주소만 예약하고 물리 메모리 할당을 미룬다(lazy allocation). 실제로 페이지에 쓸 때 minor fault가 발생해 물리 프레임이 할당된다.
+- **공유 라이브러리**: 여러 프로세스가 같은 `libc.so`를 사용할 때, 처음 접근하는 프로세스는 minor fault를 통해 이미 다른 프로세스가 올린 페이지를 공유한다.
+- **Copy-on-Write**: `fork()` 후 부모-자식이 같은 물리 페이지를 공유하다가 한쪽이 수정을 시도하면 minor fault가 발생하고 페이지가 복사된다.
+
+```
+프로세스 접근 → 페이지 테이블에 매핑 없음
+       ↓
+  minor fault 발생
+       ↓
+  물리 프레임 할당 (디스크 읽기 없음)
+       ↓
+  페이지 테이블 갱신 → 재실행
+```
+
+minor fault는 디스크를 건드리지 않으므로 수십 마이크로초 수준이며, 정상적인 프로그램 동작에서 수천~수만 번 발생하는 것이 일반적이다.
+
+### Major Page Fault (중대한 폴트)
+
+디스크에서 페이지를 읽어와야 하는 폴트다. 다음 상황에서 발생한다.
+
+- **스왑 영역에서 복구**: 물리 메모리가 부족해 OS가 페이지를 스왑 디스크로 내보냈다가, 프로세스가 다시 접근할 때 디스크에서 읽어온다.
+- **파일 매핑 최초 접근**: `mmap()`으로 파일을 메모리에 매핑한 후 처음 해당 영역에 접근하면 파일 내용을 디스크에서 읽어와야 한다.
+
+```
+프로세스 접근 → 페이지가 스왑/디스크에 있음
+       ↓
+  major fault 발생
+       ↓
+  디스크 I/O (수 밀리초)
+       ↓
+  물리 프레임 할당 → 페이지 복사
+       ↓
+  페이지 테이블 갱신 → 재실행
+```
+
+major fault 한 번에 수 밀리초에서 수십 밀리초가 소요될 수 있어, 빈번하면 처리량과 latency에 직접 영향을 준다.
+
+## 비교 요약
+
+| 구분 | Minor Fault | Major Fault |
+|------|-------------|-------------|
+| 디스크 I/O | 없음 | 있음 |
+| 소요 시간 | 수십 us | 수 ms 이상 |
+| 발생 원인 | 지연 할당, CoW, 공유 라이브러리 | 스왑 복구, 파일 매핑 |
+| 정상 여부 | 정상적인 동작 | 빈번하면 문제 신호 |
+
+## 실제 확인 방법
+
+Linux에서 `perf stat` 또는 `/proc/[pid]/status`로 확인할 수 있다.
+
+```bash
+# 프로세스의 page fault 통계
+cat /proc/$(pgrep java)/status | grep -i fault
+
+# 실행 중 측정
+perf stat -e major-faults,minor-faults java -jar app.jar
+
+# 출력 예시
+#    1,234  major-faults
+#  123,456  minor-faults
+```
+
+`major-faults`가 지속적으로 증가한다면 메모리 부족(OOM 직전), 스왑 사용 과다, 메모리 누수를 의심해야 한다.
+
+## 실무에서 major fault가 문제가 될 때
+
+### JVM 애플리케이션
+
+JVM은 시작 시 `-Xmx`로 지정한 힙 메모리를 바로 확보하지 않는다. 초기화 단계에서 다수의 minor fault가 발생하는 것은 정상이다. 그러나 운영 중에 major fault가 지속된다면 `Xmx`가 너무 작거나 GC 후에도 메모리가 OS로 반환되어 재할당 시 fault가 반복되는 패턴일 수 있다.
+
+```bash
+# G1GC에서 메모리를 OS에 반환하지 않도록 설정
+-XX:+AlwaysPreTouch          # 시작 시 모든 힙 페이지 touch (minor fault 사전 처리)
+-XX:-ShrinkHeapInSteps       # 힙 축소 비활성화
+```
+
+### 컨테이너 환경
+
+컨테이너의 메모리 제한(`memory.limit_in_bytes`)을 초과하면 cgroup OOM killer가 프로세스를 종료한다. 그 직전에 major fault가 급증하는 패턴이 나타난다.
+
+page fault 자체는 가상 메모리 시스템의 정상 동작이며, minor fault는 문제가 아니다. major fault가 지속적으로 발생한다면 그때 비로소 메모리 용량, 스왑 설정, 애플리케이션 메모리 사용 패턴을 점검해야 한다.

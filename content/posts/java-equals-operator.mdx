@@ -1,0 +1,163 @@
+---
+title: Java에서 == 와 equals()를 혼동하면 어떤 버그가 생길까
+date: '2026-05-09'
+category: Backend
+tags:
+  - Java
+  - equals
+  - 동등성
+  - 참조 비교
+summary: >-
+  Java에서 ==는 참조(주소)를 비교하고, equals()는 객체의 값을 비교한다. 이 차이를 제대로 이해하지 못하면
+  String 비교나 컬렉션 검색에서 조용히 틀린 결과를 내는 버그가 발생한다.
+thumbnail: /thumbnails/java-equals-operator.svg
+---
+
+`==`와 `equals()`의 차이를 제대로 이해하지 못하면 String 비교나 컬렉션 검색에서 조용히 틀린 결과가 나오는 버그가 생긴다.
+
+## == 연산자: 참조 비교
+
+`==`는 두 피연산자가 **동일한 메모리 주소**를 가리키는지 비교한다. 기본 타입(primitive)에서는 값을 직접 비교하지만, 객체 타입에서는 힙 메모리의 주소(참조)를 비교한다.
+
+```java
+int a = 5;
+int b = 5;
+System.out.println(a == b); // true (기본 타입 → 값 비교)
+
+String s1 = new String("hello");
+String s2 = new String("hello");
+System.out.println(s1 == s2); // false (서로 다른 객체)
+```
+
+두 `String` 객체는 내용이 같지만 `new` 키워드로 별도 생성되었으므로 힙의 서로 다른 위치를 가리킨다. `==`는 그 주소가 같은지를 보기 때문에 `false`가 나온다.
+
+## equals(): 값(동등성) 비교
+
+`equals()`는 `Object` 클래스에 정의된 메서드로, 기본 구현은 `==`와 동일하게 참조를 비교한다. 그러나 `String`, `Integer` 같은 표준 라이브러리 클래스들은 이를 **오버라이드**해 내용 비교로 동작하도록 재정의해 놓았다.
+
+```java
+String s1 = new String("hello");
+String s2 = new String("hello");
+System.out.println(s1.equals(s2)); // true (내용 비교)
+```
+
+즉, 두 객체가 "논리적으로 같은지"를 판단하려면 `equals()`를 사용해야 한다.
+
+## String Pool과 == 의 함정
+
+JVM은 문자열 리터럴을 **String Pool**에 캐싱한다. 리터럴로 생성한 동일한 문자열은 같은 풀 항목을 참조하므로 `==`가 `true`를 반환하는 경우가 생긴다.
+
+```java
+String s1 = "hello"; // String Pool 참조
+String s2 = "hello"; // 동일한 Pool 항목
+System.out.println(s1 == s2); // true (우연히 맞음)
+
+String s3 = new String("hello"); // 힙에 새 객체 생성
+System.out.println(s1 == s3); // false
+```
+
+리터럴끼리 비교할 때 `==`가 우연히 `true`가 나오면 코드가 정상인 것처럼 보이다가, 런타임에 외부 입력이나 DB 조회 결과로 `new String()`이 생성되는 순간 버그가 드러난다.
+
+## 실전 버그 패턴
+
+### HTTP 요청 파라미터 비교
+
+```java
+// 틀린 코드
+String role = request.getParameter("role");
+if (role == "ADMIN") { // 항상 false!
+    // 관리자 권한 로직
+}
+
+// 올바른 코드
+if ("ADMIN".equals(role)) {
+    // 관리자 권한 로직
+}
+```
+
+`request.getParameter()`가 반환하는 String은 String Pool에 없으므로 `==`는 항상 `false`다. 심지어 이 버그는 테스트 환경에서 리터럴로 테스트하면 통과해버릴 수도 있다.
+
+### Integer 캐싱 범위
+
+`Integer`는 -128에서 127 사이의 값을 캐싱한다. 이 범위 안에서는 `==`가 `true`를 반환하지만 범위 밖에서는 `false`가 된다.
+
+```java
+Integer a = 127;
+Integer b = 127;
+System.out.println(a == b); // true (캐싱 범위)
+
+Integer c = 128;
+Integer d = 128;
+System.out.println(c == d); // false (캐싱 범위 초과)
+```
+
+이런 동작은 코드만 보면 예측하기 어렵다. `Integer` 비교는 항상 `equals()`를 써야 한다.
+
+### 컬렉션의 contains()와 equals()
+
+`List.contains()`, `Map.get()` 등은 내부적으로 `equals()`를 호출한다. 커스텀 클래스에서 `equals()`를 오버라이드하지 않으면 참조 비교만 하므로 논리적으로 같은 객체를 찾지 못한다.
+
+```java
+class Point {
+    int x, y;
+    Point(int x, int y) { this.x = x; this.y = y; }
+    // equals() 오버라이드 없음
+}
+
+List<Point> points = new ArrayList<>();
+points.add(new Point(1, 2));
+
+System.out.println(points.contains(new Point(1, 2))); // false!
+```
+
+## equals() 올바른 오버라이드
+
+커스텀 클래스에서 `equals()`를 직접 구현할 때는 반드시 `hashCode()`도 함께 오버라이드해야 한다. `HashMap`, `HashSet`은 먼저 해시코드를 비교하고, 같을 때만 `equals()`를 호출하기 때문이다.
+
+```java
+class Point {
+    int x, y;
+
+    Point(int x, int y) { this.x = x; this.y = y; }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Point)) return false;
+        Point p = (Point) o;
+        return x == p.x && y == p.y;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(x, y);
+    }
+}
+```
+
+| 상황 | 권장 방법 |
+|------|-----------|
+| 기본 타입 비교 | `==` |
+| String, Enum 비교 | `equals()` (또는 Enum은 `==` 가능) |
+| 래퍼 타입(Integer 등) 비교 | `equals()` |
+| 커스텀 객체 비교 | `equals()` 오버라이드 후 사용 |
+| null-safe 비교 | `Objects.equals(a, b)` |
+
+## null-safe 비교
+
+`equals()`는 null에 대해 호출하면 `NullPointerException`이 발생한다. `"ADMIN".equals(role)` 패턴처럼 상수를 앞에 두거나, `Objects.equals()`를 사용하면 안전하다.
+
+```java
+String role = null;
+
+// NullPointerException 위험
+// role.equals("ADMIN");
+
+// 안전한 방법 1: 상수를 앞에
+"ADMIN".equals(role); // false, 예외 없음
+
+// 안전한 방법 2: Objects.equals
+Objects.equals(role, "ADMIN"); // false, 예외 없음
+```
+
+객체의 참조 동일성이 아니라 논리적 동등성을 비교해야 할 때는 항상 `equals()`를 사용하고, 커스텀 클래스라면 `equals()`와 `hashCode()`를 함께 오버라이드하는 것이 Java의 핵심 계약이다.
