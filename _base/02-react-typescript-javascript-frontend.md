@@ -41,7 +41,7 @@
 ## Frontend Architecture
 
 ~~330. feature-based 구조와 layer-based 구조는 팀 규모와 변경 단위에 따라 어떻게 선택이 달라질까?~~ `작성완료`
-331. 프론트엔드에서 container/presenter 분리는 상태 관리와 UI 재사용 측면에서 여전히 유효할까?
+~~331. 프론트엔드에서 container/presenter 분리는 상태 관리와 UI 재사용 측면에서 여전히 유효할까?~~ `작성완료`
 332. client state, server state, form state, URL state를 구분하지 않으면 어떤 복잡도가 생길까?
 333. 전역 상태는 편리하지만, 언제 지역 상태나 URL 상태로 두는 것이 더 나을까?
 334. atomic design은 컴포넌트를 잊게 나누는 규칙일까, 디자인 시스템과 제품 화면 사이의 계층 모델일까?

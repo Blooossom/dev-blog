@@ -1,0 +1,151 @@
+---
+title: REST API에서 PUT과 PATCH를 구분해서 써야 하는 이유
+date: '2026-05-10'
+category: Backend
+tags:
+  - REST
+  - HTTP
+  - API 설계
+  - Spring
+summary: >-
+  REST API에서 PUT과 PATCH는 단순히 전체/부분 수정의 차이가 아니라 멱등성과 의미론적 계약의 차이다.
+  실제 서비스 설계에서 두 메서드를 어떻게 구분해서 써야 하는지 알아본다.
+thumbnail: /thumbnails/put-vs-patch.svg
+---
+
+REST API에서 `PUT`과 `PATCH`는 실제 서비스 설계에서 어떻게 다르게 써야 할까? 둘 다 리소스를 수정하는 메서드이지만, HTTP 명세에서 규정한 의미와 멱등성 보장 여부가 다르기 때문에 용도에 맞게 선택해야 한다.
+
+## PUT과 PATCH의 명세 차이
+
+### PUT — 전체 교체(Idempotent)
+
+RFC 7231에 따르면 `PUT`은 대상 리소스의 상태를 요청 바디로 **완전히 교체**한다. 누락된 필드는 기본값 또는 null로 처리된다.
+
+```http
+PUT /users/42 HTTP/1.1
+Content-Type: application/json
+
+{
+  "name": "김철수",
+  "email": "cs@example.com",
+  "role": "USER"
+}
+```
+
+위 요청을 여러 번 반복해도 결과가 동일하므로 **멱등(idempotent)**하다.
+
+### PATCH — 부분 수정(Not necessarily idempotent)
+
+RFC 5789에 따르면 `PATCH`는 리소스에 **변경 명세(patch document)**를 적용한다. 포함된 필드만 변경하고 나머지는 그대로 둔다.
+
+```http
+PATCH /users/42 HTTP/1.1
+Content-Type: application/json
+
+{
+  "email": "new@example.com"
+}
+```
+
+PATCH는 기본적으로 멱등하지 않다. 예를 들어 "배열에 항목을 추가하라"는 PATCH 연산을 여러 번 보내면 중복 데이터가 쌓인다.
+
+## 실전 비교
+
+| 항목 | PUT | PATCH |
+|------|-----|-------|
+| 동작 | 리소스 전체 교체 | 리소스 일부 변경 |
+| 멱등성 | O | 구현에 따라 다름 |
+| 누락 필드 | null / 기본값 | 변경 없음 |
+| 페이로드 크기 | 항상 전체 | 변경분만 |
+| 사용 예 | 설정 파일 덮어쓰기, 문서 교체 | 프로필 수정, 상태 변경 |
+
+## 실수하기 쉬운 패턴
+
+### 흔한 실수 — PUT을 부분 업데이트로 쓰기
+
+```java
+// 나쁜 예: PUT이지만 null 필드를 무시
+@PutMapping("/users/{id}")
+public User update(@PathVariable Long id, @RequestBody UserUpdateRequest req) {
+    User user = userRepo.findById(id).orElseThrow();
+    if (req.getName() != null) user.setName(req.getName());  // PUT인데 부분 업데이트
+    if (req.getEmail() != null) user.setEmail(req.getEmail());
+    return userRepo.save(user);
+}
+```
+
+이 코드는 HTTP 명세와 어긋난다. 클라이언트가 `PUT`을 보냈을 때 누락 필드가 유지된다면, 캐시나 API Gateway가 멱등 가정을 잘못 적용할 수 있다.
+
+### 올바른 패턴 — PUT과 PATCH 분리
+
+```java
+// PUT: 전체 교체
+@PutMapping("/users/{id}")
+public User replace(@PathVariable Long id, @RequestBody UserReplaceRequest req) {
+    User user = User.builder()
+        .id(id)
+        .name(req.getName())
+        .email(req.getEmail())
+        .role(req.getRole())
+        .build();
+    return userRepo.save(user);
+}
+
+// PATCH: 부분 수정
+@PatchMapping("/users/{id}")
+public User partialUpdate(@PathVariable Long id,
+                          @RequestBody Map<String, Object> changes) {
+    User user = userRepo.findById(id).orElseThrow();
+    changes.forEach((field, value) -> {
+        switch (field) {
+            case "name"  -> user.setName((String) value);
+            case "email" -> user.setEmail((String) value);
+        }
+    });
+    return userRepo.save(user);
+}
+```
+
+### JSON Patch 명세 활용
+
+대규모 API에서는 RFC 6902의 JSON Patch 형식을 사용해 변경 의도를 명확히 표현할 수 있다.
+
+```http
+PATCH /users/42 HTTP/1.1
+Content-Type: application/json-patch+json
+
+[
+  { "op": "replace", "path": "/email", "value": "new@example.com" },
+  { "op": "add",     "path": "/tags/-", "value": "admin" }
+]
+```
+
+## 멱등성과 캐시 전략
+
+PUT의 멱등성은 네트워크 재시도 전략과 직결된다.
+
+```
+클라이언트          서버
+   |---PUT /doc---->|
+   |                | (처리 중 타임아웃)
+   |---PUT /doc---->| (재시도)
+   |<---200 OK------|
+```
+
+타임아웃 후 PUT을 재시도해도 동일한 결과이므로 안전하다. 반면 PATCH가 멱등하지 않다면 재시도 전에 현재 상태를 확인해야 한다.
+
+## 카테고리별 권장 메서드
+
+```
+리소스 유형               권장 메서드
+─────────────────────────────────────────
+문서/설정 전체 갱신        PUT
+사용자 프로필 일부 수정    PATCH
+주문 상태 단일 변경        PATCH
+파일 업로드(전체 덮어쓰기)  PUT
+배열 항목 추가             PATCH (주의: 비멱등)
+```
+
+## 마무리
+
+PUT은 "이 리소스를 이 내용으로 교체하라"는 전체 교체 계약이고, PATCH는 "이 변경만 적용하라"는 부분 수정 계약이다. 명세에 맞게 메서드를 구분해야 클라이언트 캐시, 재시도 로직, API 문서화 모두 일관성을 유지할 수 있다.

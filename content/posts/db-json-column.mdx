@@ -1,0 +1,163 @@
+---
+title: DB JSON 컬럼의 유연성과 그 대가
+date: '2026-05-10'
+category: Backend
+tags:
+  - Database
+  - PostgreSQL
+  - JSON
+  - 스키마 설계
+summary: >-
+  JSON 컬럼은 스키마 없이 유연한 데이터를 저장할 수 있지만, 검색·인덱싱·스키마 검증 측면에서 명확한 트레이드오프가 있다.
+  언제 쓰고 언제 피해야 하는지 PostgreSQL 기준으로 정리한다.
+thumbnail: /thumbnails/db-json-column.svg
+---
+
+JSON 컬럼은 유연하지만, 검색·인덱싱·스키마 검증 측면에서 어떤 트레이드오프가 있을까? 관계형 DB에 JSON을 저장하는 방식은 NoSQL의 유연성과 RDBMS의 안정성을 동시에 얻으려는 시도지만, 그 편리함 뒤에는 무시하기 어려운 비용이 따른다.
+
+## JSON vs JSONB — 먼저 타입부터
+
+PostgreSQL에는 두 가지 JSON 타입이 있다.
+
+| 항목 | `json` | `jsonb` |
+|------|--------|----------|
+| 저장 방식 | 텍스트 그대로 | 바이너리 파싱 후 저장 |
+| 쓰기 속도 | 빠름 | 느림 (파싱 비용) |
+| 읽기 속도 | 느림 (매번 파싱) | 빠름 |
+| 인덱스 지원 | 제한적 | GIN, 부분 인덱스 |
+| 키 순서 보존 | O | X |
+| 중복 키 | 마지막 값 유지 | 제거됨 |
+
+실무에서는 거의 항상 `jsonb`를 선택한다.
+
+## 유연성의 실제 사례
+
+### 동적 속성 저장
+
+상품마다 속성 종류가 다른 경우, JSON 컬럼은 ALTER TABLE 없이 새 속성을 수용한다.
+
+```sql
+CREATE TABLE products (
+  id      BIGSERIAL PRIMARY KEY,
+  name    TEXT NOT NULL,
+  category TEXT NOT NULL,
+  attrs   JSONB NOT NULL DEFAULT '{}'
+);
+
+-- 전자제품
+INSERT INTO products VALUES (1, 'TV 55인치', 'electronics',
+  '{"resolution": "4K", "hz": 120, "hdr": true}');
+
+-- 의류
+INSERT INTO products VALUES (2, '청바지', 'clothing',
+  '{"size": "M", "color": "blue", "material": "cotton"}');
+```
+
+ALTER TABLE 없이 카테고리별로 다른 속성을 저장할 수 있다.
+
+### 이벤트 로그 / 감사 로그
+
+변경 전후 상태를 JSON으로 저장하면 스키마 변경에 강하다.
+
+```sql
+CREATE TABLE audit_logs (
+  id         BIGSERIAL PRIMARY KEY,
+  entity     TEXT NOT NULL,
+  entity_id  BIGINT NOT NULL,
+  action     TEXT NOT NULL,
+  before     JSONB,
+  after      JSONB,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+## 검색의 한계
+
+### 연산자는 있지만 비용이 다르다
+
+```sql
+-- JSON 경로로 조회 (->>'는 텍스트로 추출)
+SELECT * FROM products WHERE attrs->>'color' = 'blue';
+
+-- 중첩 경로
+SELECT * FROM products WHERE attrs->'dimensions'->>'width' = '100';
+
+-- 포함 관계 (@> 연산자)
+SELECT * FROM products WHERE attrs @> '{"hdr": true}';
+```
+
+인덱스 없이 이런 쿼리를 실행하면 테이블 전체를 스캔하면서 매 행마다 JSON을 파싱한다. 일반 컬럼 조건보다 수십 배 느릴 수 있다.
+
+### GIN 인덱스로 검색 성능 확보
+
+```sql
+-- 전체 jsonb 컬럼에 GIN 인덱스
+CREATE INDEX idx_products_attrs ON products USING GIN (attrs);
+
+-- 특정 키만 인덱스 (부분 인덱스)
+CREATE INDEX idx_products_color
+  ON products ((attrs->>'color'));
+```
+
+GIN 인덱스는 `@>`, `?`, `?|`, `?&` 같은 포함·존재 연산자를 지원하지만, 범위 쿼리에는 별도 함수형 인덱스가 필요하다.
+
+## 스키마 검증의 부재
+
+관계형 컬럼은 타입·NOT NULL·CHECK 제약이 DB 수준에서 보장된다. JSON 컬럼은 애플리케이션이 이 책임을 진다.
+
+```sql
+-- 일반 컬럼: DB가 타입과 범위 강제
+ALTER TABLE products ADD COLUMN price NUMERIC(10, 2) NOT NULL CHECK (price >= 0);
+
+-- JSON 컬럼: 아무 값이나 들어올 수 있음
+INSERT INTO products (attrs) VALUES ('{"price": "무료"}');    -- 타입 혼재
+INSERT INTO products (attrs) VALUES ('{"price": -9999}');     -- 음수 가격
+INSERT INTO products (attrs) VALUES ('{}');                    -- 필드 누락
+```
+
+애플리케이션 코드에서 JSON Schema나 Zod 같은 도구로 검증해야 한다.
+
+```java
+// Spring + Jackson 기반 검증 예시
+@Validated
+public class ProductAttrs {
+    @NotNull
+    @Min(0)
+    private BigDecimal price;
+
+    @Size(min = 1)
+    private String color;
+}
+```
+
+## 마이그레이션 어려움
+
+JSON 컬럼 내부 구조를 바꾸는 것은 일반 컬럼 ALTER TABLE보다 훨씬 복잡하다.
+
+```sql
+-- 일반 컬럼 이름 변경: 쉬움
+ALTER TABLE products RENAME COLUMN colour TO color;
+
+-- JSON 키 이름 변경: 전체 업데이트 필요
+UPDATE products
+SET attrs = attrs - 'colour' || jsonb_build_object('color', attrs->'colour')
+WHERE attrs ? 'colour';
+```
+
+대용량 테이블에서 이 작업은 잠금과 I/O 부하를 동반한다.
+
+## 언제 쓰고 언제 피할까
+
+```
+JSON 컬럼이 적합한 경우           피해야 하는 경우
+──────────────────────────────    ─────────────────────────────
+속성 종류가 카테고리마다 다름       자주 조건 검색이 필요한 필드
+스키마가 빠르게 변함               집계·집계 쿼리 대상 필드
+외부 API 응답 원본 저장            외래키 참조가 필요한 ID 필드
+이벤트/감사 로그 원본 보존         여러 테이블이 공유하는 구조
+PoC·초기 탐색 단계                 타입·NULL 제약이 중요한 필드
+```
+
+## 마무리
+
+JSON 컬럼은 유연성의 대가로 인덱싱 복잡도, 스키마 검증 책임, 마이그레이션 비용을 애플리케이션으로 이전시킨다. "지금 빠르게 저장한다"는 편리함이 나중에 "어떻게 조회하지?"라는 고통으로 돌아오지 않으려면, 저장보다 검색 패턴을 먼저 설계해야 한다.

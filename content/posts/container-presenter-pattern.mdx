@@ -1,0 +1,187 @@
+---
+title: Container/Presenter 패턴 — 2026년에도 유효한가
+date: '2026-05-10'
+category: Frontend
+tags:
+  - React
+  - 컴포넌트 설계
+  - 아키텍처
+  - 상태 관리
+summary: >-
+  프론트엔드에서 container/presenter 분리는 상태 관리와 UI 재사용 측면에서 여전히 의미 있는 접근이다.
+  React Hooks 시대에 이 패턴이 어떻게 진화했는지, 언제 적용하고 언제 피해야 하는지 살펴본다.
+thumbnail: /thumbnails/container-presenter-pattern.svg
+---
+
+프론트엔드에서 container/presenter 분리는 상태 관리와 UI 재사용 측면에서 여전히 유효할까? Dan Abramov가 2015년에 소개하고 2019년에 "Hooks가 생겼으니 더 이상 추천하지 않는다"고 철회한 이 패턴은 실제로 어떤 맥락에서 살아남고 어디서 불필요한 과설계가 될까.
+
+## 패턴의 원래 아이디어
+
+Container/Presenter(또는 Smart/Dumb) 패턴의 핵심 아이디어는 단순하다.
+
+```
+Container (Smart)          Presenter (Dumb)
+─────────────────          ────────────────
+데이터 페칭                  데이터를 props로 받음
+상태 관리                    상태 없음 (또는 UI 상태만)
+비즈니스 로직               렌더링 전담
+외부 의존성 포함             순수 함수에 가까움
+```
+
+```tsx
+// Container: 데이터와 로직 담당
+function UserProfileContainer({ userId }: { userId: string }) {
+  const { data: user, isLoading } = useQuery(['user', userId], () => fetchUser(userId))
+  const { mutate: updateUser } = useMutation(patchUser)
+
+  if (isLoading) return <Spinner />
+  return (
+    <UserProfileView
+      user={user}
+      onEmailChange={(email) => updateUser({ id: userId, email })}
+    />
+  )
+}
+
+// Presenter: 렌더링만 담당
+function UserProfileView({
+  user,
+  onEmailChange,
+}: {
+  user: User
+  onEmailChange: (email: string) => void
+}) {
+  return (
+    <div>
+      <h2>{user.name}</h2>
+      <input
+        value={user.email}
+        onChange={(e) => onEmailChange(e.target.value)}
+      />
+    </div>
+  )
+}
+```
+
+## Hooks가 등장한 후 무엇이 달라졌나
+
+React Hooks 이전에는 로직 재사용을 위해 Higher-Order Component나 Render Props가 필요했고, 그 결과물이 Container였다. Hooks로 커스텀 훅을 뽑아낼 수 있게 되면서 Container 파일 자체가 불필요해졌다는 것이 Dan Abramov의 요지다.
+
+```tsx
+// Hooks 이전 — Container가 필요했던 이유
+const withUserData = (WrappedComponent) => ({ userId }) => {
+  const [user, setUser] = useState(null)
+  useEffect(() => { fetchUser(userId).then(setUser) }, [userId])
+  return <WrappedComponent user={user} />
+}
+
+// Hooks 이후 — 커스텀 훅으로 대체
+function useUser(userId: string) {
+  return useQuery(['user', userId], () => fetchUser(userId))
+}
+
+// 이제 어느 컴포넌트에서든 직접 사용
+function UserProfile({ userId }: { userId: string }) {
+  const { data: user } = useUser(userId)
+  return <div>{user?.name}</div>
+}
+```
+
+## 그래도 패턴이 유효한 시나리오
+
+### 1. 디자인 시스템 컴포넌트
+
+UI 라이브러리를 만들 때 Presenter는 외부 의존성이 없어야 한다. Storybook 스토리를 작성하거나 Figma와 1:1 대응하려면 Presenter가 순수 props 컴포넌트일수록 유리하다.
+
+```tsx
+// 디자인 시스템 컴포넌트 — 외부 의존성 없음
+export function DataTable<T>({
+  rows,
+  columns,
+  onSort,
+  onRowClick,
+}: DataTableProps<T>) {
+  return (
+    <table>
+      {/* 순수 렌더링 */}
+    </table>
+  )
+}
+
+// 제품 화면에서 Container 역할
+function OrderListPage() {
+  const { data } = useOrders()
+  return (
+    <DataTable
+      rows={data ?? []}
+      columns={ORDER_COLUMNS}
+      onSort={handleSort}
+    />
+  )
+}
+```
+
+### 2. 테스트 용이성
+
+Presenter가 순수 props 컴포넌트라면 테스트에서 네트워크, 스토어, 컨텍스트를 모킹할 필요가 없다.
+
+```tsx
+// Presenter 테스트 — 의존성 없음
+it('이름을 렌더링한다', () => {
+  render(<UserProfileView user={mockUser} onEmailChange={jest.fn()} />)
+  expect(screen.getByText('김철수')).toBeInTheDocument()
+})
+
+// Container 테스트 — 네트워크/스토어 포함
+it('유저 데이터를 불러와 표시한다', async () => {
+  server.use(rest.get('/users/42', (req, res, ctx) => res(ctx.json(mockUser))))
+  render(<UserProfileContainer userId="42" />)
+  expect(await screen.findByText('김철수')).toBeInTheDocument()
+})
+```
+
+### 3. 서버 컴포넌트(RSC) 환경
+
+React Server Components는 사실상 "서버에서 실행되는 Container"다. 데이터 페칭을 서버에서 하고, 클라이언트 Presenter에 props로 내려준다는 점에서 패턴의 변형이라 볼 수 있다.
+
+```tsx
+// Server Component — Container 역할
+async function ProductDetailPage({ id }: { id: string }) {
+  const product = await db.product.findUnique({ where: { id } })
+  return <ProductDetailView product={product} />
+}
+
+// Client Component — Presenter 역할
+'use client'
+function ProductDetailView({ product }: { product: Product }) {
+  const [quantity, setQuantity] = useState(1)
+  return (
+    <div>
+      <h1>{product.name}</h1>
+      <QuantitySelector value={quantity} onChange={setQuantity} />
+    </div>
+  )
+}
+```
+
+## 언제 패턴을 쓰지 않아도 되는가
+
+| 상황 | 이유 |
+|------|------|
+| 단순 CRUD 페이지 | 커스텀 훅으로 충분 |
+| 재사용이 없는 단일 화면 | 분리 비용이 이득보다 큼 |
+| 팀 전체가 RSC 사용 | 서버/클라이언트 경계가 자연스러운 분리선 |
+| 로직이 1-2개 상태뿐 | 훅 하나로 끝남 |
+
+## 현대적인 해석
+
+Container/Presenter를 파일 단위 분리로 강제하기보다, **로직 레이어와 렌더링 레이어를 의식적으로 분리**한다는 원칙으로 받아들이는 것이 실용적이다.
+
+```
+hooks/useUserProfile.ts   ← 로직 레이어 (구 Container 역할)
+components/UserProfile.tsx ← 렌더링 레이어 (구 Presenter 역할)
+```
+
+## 마무리
+
+Container/Presenter 패턴은 Hooks 등장으로 구현 방식이 바뀌었을 뿐, "로직과 UI를 분리한다"는 원칙 자체는 여전히 유효하다. 핵심은 파일 구조가 아니라 컴포넌트가 데이터 출처를 알아야 하는지, 아니면 받은 것만 그려야 하는지를 명확히 하는 설계 의도다.
