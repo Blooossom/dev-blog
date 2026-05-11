@@ -29,7 +29,7 @@
 ## Transaction / Lock
 
 ~~171. ACID는 각각 무엇을 보장하고, 실제 DB 설정에서는 어떤 보장이 약해질 수 있을까?~~ `작성완료`
-172. dirty read, non-repeatable read, phantom read는 각각 어떤 동시성 상황에서 발생할까?
+~~172. dirty read, non-repeatable read, phantom read는 각각 어떤 동시성 상황에서 발생할까?~~ `작성완료`
 173. repeatable read에서도 phantom read가 발생할 수 있는 DB와 그렇지 않은 DB가 갈리는 이유는 무엇일까?
 ~~174. MVCC는 읽기와 쓰기의 충돌을 어떻게 줄이고, 대신 어떤 저장 공간 비용을 만들까?~~ `작성완료`
 175. row lock과 table lock은 어떤 상황에서 선택되거나 확대될 수 있을까?

@@ -1,0 +1,237 @@
+---
+title: TypeScript 제네릭은 재사용 문법이 아니라 타입 관계를 표현하는 도구다
+date: '2026-05-11'
+category: Frontend
+tags:
+  - TypeScript
+  - Generic
+  - 타입 시스템
+  - Frontend
+summary: >-
+  TypeScript의 제네릭은 단순히 여러 타입에서 재사용되는 함수를 만들기 위한 문법이 아니다.
+  입력과 출력, 인자와 인자 사이의 타입 관계를 정확히 표현함으로써 타입 안전성을 높이는 핵심 도구다.
+thumbnail: /thumbnails/typescript-generic.svg
+---
+
+TypeScript의 제네릭은 단순 재사용 문법이 아니라 타입 관계를 표현하는 도구라고 볼 수 있을까? 제네릭의 진짜 가치는 "어떤 타입이든 받는다"가 아니라 "입력과 출력 타입 사이의 관계를 보존한다"는 데 있다.
+
+## any와 제네릭의 차이
+
+```typescript
+// any를 쓰면 타입 관계가 끊긴다
+function identity_bad(value: any): any {
+  return value;
+}
+const result1 = identity_bad("hello"); // 타입: any → 정보 손실
+
+// 제네릭은 타입 관계를 보존한다
+function identity<T>(value: T): T {
+  return value;
+}
+const result2 = identity("hello"); // 타입: string
+const result3 = identity(42);      // 타입: number
+```
+
+`any`를 쓰면 "어떤 타입이든 받겠다"는 선언이고, 제네릭을 쓰면 "입력 타입과 출력 타입이 같다"는 관계를 선언하는 것이다.
+
+## 타입 관계 표현
+
+### 배열의 첫 번째 요소
+
+```typescript
+// 잘못된 방식: 관계가 없음
+function first_bad(arr: any[]): any {
+  return arr[0];
+}
+first_bad([1, 2, 3]); // any
+
+// 제네릭: 배열 요소 타입과 반환 타입이 같음
+function first<T>(arr: T[]): T | undefined {
+  return arr[0];
+}
+first([1, 2, 3]);       // number | undefined
+first(["a", "b", "c"]); // string | undefined
+```
+
+### 객체의 특정 키에서 값 추출
+
+```typescript
+// K extends keyof T: K는 T의 키여야 한다는 제약
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+
+const user = { id: 1, name: "Alice", active: true };
+getProperty(user, "id");     // number
+getProperty(user, "name");   // string
+getProperty(user, "active"); // boolean
+// getProperty(user, "foo"); // 컴파일 에러: "foo"는 키가 아님
+```
+
+`K extends keyof T`와 `T[K]` 조합이 입력과 출력 사이의 관계를 정확히 표현한다.
+
+## 제약 조건(Constraints)
+
+제네릭에 제약을 걸면 특정 속성이 보장된 타입만 받을 수 있다.
+
+```typescript
+interface HasLength {
+  length: number;
+}
+
+function logLength<T extends HasLength>(value: T): T {
+  console.log(value.length);
+  return value;
+}
+
+logLength("hello");      // OK: string은 length를 가짐
+logLength([1, 2, 3]);    // OK: 배열도 length를 가짐
+logLength({ length: 5 }); // OK: length 속성 존재
+// logLength(42);         // 에러: number는 length 없음
+```
+
+## 여러 타입 파라미터 간의 관계
+
+제네릭은 여러 타입 파라미터 간의 관계도 표현한다.
+
+```typescript
+// 두 타입의 관계: K는 반드시 T의 키
+function pick<T, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
+  return keys.reduce((acc, key) => {
+    acc[key] = obj[key];
+    return acc;
+  }, {} as Pick<T, K>);
+}
+
+const user = { id: 1, name: "Alice", email: "a@b.com", role: "admin" };
+const subset = pick(user, ["id", "name"]);
+// 타입: { id: number; name: string }
+```
+
+## 함수형 패턴에서의 제네릭
+
+```typescript
+// Promise 체이닝에서 타입 관계 보존
+async function fetchAndTransform<T, U>(
+  url: string,
+  transform: (data: T) => U
+): Promise<U> {
+  const response = await fetch(url);
+  const data: T = await response.json();
+  return transform(data);
+}
+
+interface UserDTO {
+  user_id: number;
+  user_name: string;
+}
+
+interface User {
+  id: number;
+  name: string;
+}
+
+const user = await fetchAndTransform<UserDTO, User>(
+  "/api/user",
+  (dto) => ({ id: dto.user_id, name: dto.user_name })
+);
+// user의 타입: User (정확하게 추론)
+```
+
+## React에서의 제네릭 컴포넌트
+
+```typescript
+// 어떤 타입의 아이템이든 처리할 수 있는 리스트 컴포넌트
+interface ListProps<T> {
+  items: T[];
+  renderItem: (item: T, index: number) => React.ReactNode;
+  keyExtractor: (item: T) => string;
+}
+
+function List<T>({ items, renderItem, keyExtractor }: ListProps<T>) {
+  return (
+    <ul>
+      {items.map((item, i) => (
+        <li key={keyExtractor(item)}>{renderItem(item, i)}</li>
+      ))}
+    </ul>
+  );
+}
+
+// 사용: T가 User로 추론됨
+<List
+  items={users}
+  keyExtractor={(u) => String(u.id)}
+  renderItem={(u) => <span>{u.name}</span>}
+/>
+```
+
+컴포넌트 레벨에서 제네릭을 사용하면 `items`와 `renderItem`, `keyExtractor`의 타입이 일관되게 연결된다.
+
+## 커스텀 훅에서의 제네릭
+
+```typescript
+function useLocalStorage<T>(key: string, initialValue: T) {
+  const [storedValue, setStoredValue] = useState<T>(() => {
+    try {
+      const item = window.localStorage.getItem(key);
+      return item ? (JSON.parse(item) as T) : initialValue;
+    } catch {
+      return initialValue;
+    }
+  });
+
+  const setValue = (value: T) => {
+    setStoredValue(value);
+    window.localStorage.setItem(key, JSON.stringify(value));
+  };
+
+  return [storedValue, setValue] as const;
+}
+
+// 사용
+const [theme, setTheme] = useLocalStorage("theme", "light");
+// theme: string, setTheme: (value: string) => void
+```
+
+## 제네릭이 필요 없는 경우
+
+제네릭을 과하게 사용하면 오히려 코드가 복잡해진다.
+
+```typescript
+// 과한 제네릭: T가 string 고정이면 의미 없음
+function greet<T extends string>(name: T): string {
+  return `Hello, ${name}`;
+}
+
+// 간단하게 쓰면 충분
+function greet(name: string): string {
+  return `Hello, ${name}`;
+}
+```
+
+타입 관계가 없거나 타입이 고정되어 있다면 제네릭 없이 구체 타입을 쓰는 것이 낫다.
+
+## 자주 쓰이는 유틸리티 타입과 제네릭
+
+TypeScript 내장 유틸리티 타입들도 제네릭으로 타입 관계를 표현한다.
+
+```typescript
+// Partial<T>: T의 모든 속성을 선택적으로
+type Partial<T> = { [K in keyof T]?: T[K] }
+
+// Required<T>: T의 모든 속성을 필수로
+type Required<T> = { [K in keyof T]-?: T[K] }
+
+// ReturnType<T>: 함수의 반환 타입 추출
+type ReturnType<T extends (...args: any) => any> =
+  T extends (...args: any) => infer R ? R : any;
+
+function fetchUser() { return { id: 1, name: "Alice" }; }
+type FetchedUser = ReturnType<typeof fetchUser>;
+// { id: number; name: string }
+```
+
+---
+
+제네릭은 "어떤 타입이든 받겠다"는 유연성 도구가 아니라 "입력과 출력 사이의 타입 관계를 컴파일러가 추적할 수 있도록 명시하는" 표현 도구다. 제네릭을 쓸 때마다 "어떤 타입 관계를 보존하려는가"를 먼저 묻는 것이 핵심이다.

@@ -1,0 +1,168 @@
+---
+title: Dirty Read, Non-Repeatable Read, Phantom Read는 각각 언제 발생할까
+date: '2026-05-11'
+category: Backend
+tags:
+  - Database
+  - Transaction
+  - 동시성
+  - 격리 수준
+  - MySQL
+summary: >-
+  dirty read, non-repeatable read, phantom read는 트랜잭션 격리 수준이 낮을 때 발생하는 세 가지 읽기 이상현상이다.
+  각 현상이 어떤 동시성 상황에서 왜 발생하는지 이해하면 격리 수준 선택의 근거가 명확해진다.
+thumbnail: /thumbnails/db-read-anomalies.svg
+---
+
+dirty read, non-repeatable read, phantom read는 각각 어떤 동시성 상황에서 발생할까? 이 세 가지 읽기 이상현상은 트랜잭션 격리 수준(Isolation Level)이 어느 정도의 동시성 보장을 하는지를 정의하는 기준이기도 하다.
+
+## 트랜잭션 격리 수준 개요
+
+ANSI SQL 표준은 네 가지 격리 수준을 정의한다.
+
+| 격리 수준 | Dirty Read | Non-Repeatable Read | Phantom Read |
+|---------|-----------|---------------------|-------------|
+| READ UNCOMMITTED | 발생 | 발생 | 발생 |
+| READ COMMITTED | 방지 | 발생 | 발생 |
+| REPEATABLE READ | 방지 | 방지 | 발생 (이론상) |
+| SERIALIZABLE | 방지 | 방지 | 방지 |
+
+## Dirty Read
+
+### 어떤 상황에서 발생하는가
+
+커밋되지 않은 다른 트랜잭션의 변경 데이터를 읽어버리는 현상이다.
+
+```
+T1: BEGIN
+T1: UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+                        -- 아직 커밋 안 함
+
+T2: BEGIN
+T2: SELECT balance FROM accounts WHERE id = 1;
+    -- T1이 쓴 미완성 데이터를 읽음 (dirty read)
+
+T1: ROLLBACK
+    -- T2가 읽은 값은 존재한 적 없는 값
+```
+
+T2는 T1이 롤백할 데이터를 기준으로 비즈니스 로직을 수행했다. 잔액이 충분하다고 판단해 다음 단계를 진행했지만, 실제로는 그 잔액이 존재하지 않는다.
+
+### 발생 조건
+
+- 격리 수준: READ UNCOMMITTED
+
+### 실제 영향
+
+금융 시스템에서 Dirty Read가 발생하면 이중 출금이나 잘못된 잔액 표시로 이어질 수 있다. 이 때문에 READ UNCOMMITTED는 실무에서 거의 사용하지 않는다.
+
+## Non-Repeatable Read
+
+### 어떤 상황에서 발생하는가
+
+같은 트랜잭션 내에서 같은 행을 두 번 읽었는데 다른 값이 반환되는 현상이다.
+
+```
+T1: BEGIN
+T1: SELECT balance FROM accounts WHERE id = 1;
+    -- 결과: 1000
+
+    (T2가 시작되어 해당 행을 UPDATE하고 COMMIT)
+
+T1: SELECT balance FROM accounts WHERE id = 1;
+    -- 결과: 900  ← 같은 쿼리인데 다른 값
+T1: COMMIT
+```
+
+T1 입장에서는 트랜잭션이 끝나기 전에 데이터가 바뀌었다. 한 번 읽은 값을 기준으로 계산 로직을 짰다면 결과가 틀어진다.
+
+### 발생 조건
+
+- 격리 수준: READ UNCOMMITTED, READ COMMITTED
+
+### 실제 영향
+
+보고서를 생성하는 긴 트랜잭션이 중간에 다른 사용자가 데이터를 수정하면 집계 결과가 불일치하는 문제가 생긴다.
+
+## Phantom Read
+
+### 어떤 상황에서 발생하는가
+
+같은 쿼리 조건으로 두 번 조회했는데, 두 번째 조회에서 처음에 없던 행이 나타나거나 있던 행이 사라지는 현상이다.
+
+```
+T1: BEGIN
+T1: SELECT COUNT(*) FROM orders WHERE status = 'PENDING';
+    -- 결과: 5
+
+    (T2가 status='PENDING'인 새 주문을 INSERT하고 COMMIT)
+
+T1: SELECT COUNT(*) FROM orders WHERE status = 'PENDING';
+    -- 결과: 6  ← 유령 행 등장
+T1: COMMIT
+```
+
+Non-Repeatable Read는 기존 행의 값이 바뀌는 것이고, Phantom Read는 행의 집합 자체가 달라지는 것이다.
+
+### 발생 조건
+
+- 격리 수준: READ UNCOMMITTED, READ COMMITTED, REPEATABLE READ (이론적)
+
+### MySQL InnoDB의 예외
+
+MySQL InnoDB는 REPEATABLE READ에서 **Next-Key Lock**을 사용해 Phantom Read를 대부분 방지한다.
+
+```
+-- T1이 범위를 읽으면 해당 범위에 갭 락이 걸림
+T1: SELECT * FROM orders WHERE amount BETWEEN 100 AND 200 FOR UPDATE;
+-- T2가 이 범위에 INSERT를 시도하면 락 대기
+T2: INSERT INTO orders (amount) VALUES (150); -- 대기
+```
+
+PostgreSQL은 MVCC 방식으로 Snapshot을 통해 Phantom Read를 방지한다.
+
+## 각 이상현상 비교
+
+```
+[Dirty Read]
+T1: WRITE (미커밋)
+T2: READ ← 미커밋 데이터 읽기
+T1: ROLLBACK → T2가 읽은 값은 무효
+
+[Non-Repeatable Read]
+T1: READ → 값 A
+T2: WRITE (커밋)
+T1: READ → 값 B (같은 행, 다른 값)
+
+[Phantom Read]
+T1: SELECT WHERE cond → 5개 행
+T2: INSERT (cond 조건 만족) 커밋
+T1: SELECT WHERE cond → 6개 행
+```
+
+## 격리 수준 선택 기준
+
+| 격리 수준 | 적합한 상황 |
+|---------|------------|
+| READ UNCOMMITTED | 정확도보다 속도가 중요한 통계 (거의 사용 안 함) |
+| READ COMMITTED | 일반 OLTP, 다수의 RDBMS 기본값 (PostgreSQL, Oracle) |
+| REPEATABLE READ | 트랜잭션 내 일관된 읽기가 필요한 리포트, 재고 처리 (MySQL 기본값) |
+| SERIALIZABLE | 금융 정산, 재고 수량 등 완전한 직렬 실행이 필요한 경우 |
+
+## Spring에서 격리 수준 설정
+
+```java
+@Transactional(isolation = Isolation.REPEATABLE_READ)
+public ReportResult generateMonthlyReport(LocalDate month) {
+    // 트랜잭션 내 여러 SELECT가 동일한 스냅샷을 본다
+    long totalOrders = orderRepository.countByMonth(month);
+    BigDecimal revenue = orderRepository.sumRevenueByMonth(month);
+    return new ReportResult(totalOrders, revenue);
+}
+```
+
+기본값은 `Isolation.DEFAULT`로, 연결된 DB 드라이버의 기본 격리 수준을 따른다.
+
+---
+
+세 가지 읽기 이상현상은 "어떤 타이밍에 다른 트랜잭션의 변경이 보이는가"라는 하나의 연속된 질문에 대한 답이며, 격리 수준은 성능과 정합성 사이에서 그 경계를 어디에 그을지를 결정한다.

@@ -1,0 +1,199 @@
+---
+title: Rate Limiting은 어느 계층에서 처리해야 할까
+date: '2026-05-11'
+category: Backend
+tags:
+  - Rate Limiting
+  - API Gateway
+  - Nginx
+  - Backend
+  - 트래픽 제어
+summary: >-
+  대용량 트래픽에서 rate limiting을 어느 계층에 두느냐는 단순한 구현 선택이 아니라 장애 격리와 운영 비용에 직결되는 설계 결정이다.
+  애플리케이션, API Gateway, Nginx 각 위치의 특성과 트레이드오프를 이해하고 상황에 맞게 조합해야 한다.
+thumbnail: /thumbnails/rate-limiting-strategy.svg
+---
+
+대용량 트래픽에서 rate limiting은 애플리케이션, API Gateway, Nginx 중 어디에서 처리하는 것이 좋을까? 이 질문은 어느 한 계층이 항상 정답이 아니라, 각 위치가 서로 다른 문제를 해결한다는 것을 이해하는 데서 시작한다.
+
+## Rate Limiting이 필요한 이유
+
+Rate limiting 없이 열린 API는 다음과 같은 위험에 노출된다.
+
+- **DDoS / abuse**: 악의적인 클라이언트가 초당 수만 건을 요청해 서버 자원을 고갈시킨다.
+- **비용 폭발**: LLM API, 외부 SMS 등 유료 리소스를 무한 호출할 수 있다.
+- **공정 사용 보장**: 특정 사용자가 과다 소비해 다른 사용자의 응답 지연이 길어진다.
+
+## 세 계층의 역할과 특성
+
+```
+Client → Nginx (L4/L7) → API Gateway → Application Server → DB
+```
+
+### Nginx에서의 Rate Limiting
+
+Nginx는 `limit_req_zone` 디렉티브로 IP 기반 요청 속도를 제한한다.
+
+```nginx
+http {
+  limit_req_zone $binary_remote_addr zone=api:10m rate=100r/m;
+
+  server {
+    location /api/ {
+      limit_req zone=api burst=20 nodelay;
+      proxy_pass http://upstream;
+    }
+  }
+}
+```
+
+**장점**
+- 요청이 애플리케이션에 도달하기 전에 차단해 **자원 소비가 최소화**된다.
+- L4/L7 레벨에서 동작해 TCP 연결 단계에서도 제어 가능하다.
+- 설정이 간단하고 오버헤드가 거의 없다.
+
+**한계**
+- IP 기반이므로 NAT 뒤 여러 사용자를 하나로 묶어버린다.
+- 사용자 ID, 토큰, API 키 등 비즈니스 맥락을 모른다.
+- 분산 환경에서 Nginx 인스턴스끼리 상태를 공유하지 않는다.
+
+### API Gateway에서의 Rate Limiting
+
+Kong, AWS API Gateway, Apigee 같은 제품은 API 키, JWT 클레임, 플랜 등을 기준으로 제한한다.
+
+```yaml
+# Kong Rate Limiting 플러그인 예시
+plugins:
+  - name: rate-limiting
+    config:
+      minute: 1000
+      policy: redis
+      redis_host: redis.internal
+```
+
+**장점**
+- API 키 / 사용자 / 플랜 단위 세밀한 제어가 가능하다.
+- Redis 등 중앙 저장소를 통해 여러 인스턴스 간 상태를 공유한다.
+- 엔드포인트별로 다른 제한 정책을 선언적으로 관리한다.
+
+**한계**
+- 별도 인프라 비용이 발생하고 게이트웨이가 단일 장애점이 될 수 있다.
+- 게이트웨이 내부 구현에 의존하므로 커스텀 로직 적용이 제한된다.
+
+### 애플리케이션에서의 Rate Limiting
+
+Spring Boot + Bucket4j, Resilience4j 등을 사용해 코드 레벨에서 제한한다.
+
+```java
+@Component
+public class RateLimitFilter extends OncePerRequestFilter {
+
+    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest req,
+                                    HttpServletResponse res,
+                                    FilterChain chain) throws IOException, ServletException {
+        String userId = extractUserId(req);
+        Bucket bucket = buckets.computeIfAbsent(userId, k ->
+            Bucket.builder()
+                .addLimit(Bandwidth.simple(100, Duration.ofMinutes(1)))
+                .build()
+        );
+
+        if (!bucket.tryConsume(1)) {
+            res.setStatus(429);
+            return;
+        }
+        chain.doFilter(req, res);
+    }
+}
+```
+
+**장점**
+- 비즈니스 로직과 통합하기 쉽다: 유료 플랜, 역할, 기능 플래그 등 임의 조건으로 제한 가능하다.
+- 세밀한 에러 응답(남은 요청 수, 재시도 시간) 반환이 용이하다.
+
+**한계**
+- 요청이 애플리케이션 프로세스까지 도달한 후 차단하므로 **스레드 / 커넥션 자원을 이미 소비**한다.
+- 인스턴스가 여러 개면 Redis 같은 외부 저장소로 카운터를 공유해야 한다.
+- 게이트웨이나 Nginx보다 설정·유지 비용이 크다.
+
+## 계층별 비교 요약
+
+| 기준 | Nginx | API Gateway | Application |
+|------|-------|-------------|-------------|
+| 차단 시점 | 가장 이른 단계 | 게이트웨이 레이어 | 가장 늦은 단계 |
+| 기준 값 | IP / 연결 | API 키 / 플랜 | 임의 비즈니스 조건 |
+| 분산 상태 공유 | 어려움 | 지원 (Redis 등) | 직접 구현 필요 |
+| 커스텀 유연성 | 낮음 | 중간 | 높음 |
+| 자원 소비 | 최소 | 적음 | 상대적으로 큼 |
+
+## 알고리즘 선택
+
+Rate limiting 알고리즘도 중요하다.
+
+| 알고리즘 | 특징 | 적합한 상황 |
+|---------|------|------------|
+| Fixed Window | 구현 단순, 윈도우 경계 버스트 취약 | 간단한 내부 API |
+| Sliding Window | 더 정교한 평활화, 메모리 사용 증가 | 일반적인 공개 API |
+| Token Bucket | 순간 버스트 허용, 평균 속도 제어 | 스트리밍, 업로드 API |
+| Leaky Bucket | 일정한 처리 속도 보장, 큐 지연 발생 | 메시지 처리, 배치 |
+
+## 실제 조합 전략
+
+단일 계층보다 **다층 방어(Defence in Depth)** 가 효과적이다.
+
+```
+[Nginx]  → IP 기반 거친 필터 (DoS 차단)
+    ↓
+[API Gateway] → API 키·플랜 기반 사용량 제어
+    ↓
+[Application] → 기능별 세밀한 제어 (LLM 호출 등 고비용 연산)
+```
+
+예를 들어 AI 기능이라면:
+- Nginx: IP당 초당 500 req 초과 시 즉시 차단
+- API Gateway: 사용자 플랜별 일일 10,000 req 제한
+- Application: LLM 호출 엔드포인트만 분당 20 req 추가 제한
+
+## 분산 환경에서의 주의점
+
+인스턴스가 여러 개면 각 서버가 독립된 카운터를 가지면 제한이 무력화된다.
+
+```
+인스턴스 A: 사용자 X 60/100 req 소비
+인스턴스 B: 사용자 X 60/100 req 소비
+→ 실제로는 120 req 허용됨 (의도한 100 초과)
+```
+
+해결책은 Redis를 중앙 카운터 저장소로 사용하는 것이다.
+
+```java
+// Bucket4j + Redis 예시
+ProxyManager<String> buckets = Bucket4jRedis.casBasedBuilder(redisClient)
+    .build();
+
+BucketConfiguration config = BucketConfiguration.builder()
+    .addLimit(Bandwidth.simple(100, Duration.ofMinutes(1)))
+    .build();
+
+Bucket bucket = buckets.builder().build(userId, () -> config);
+```
+
+## 응답 헤더 설계
+
+적절한 헤더를 내려주면 클라이언트가 스스로 속도를 조절할 수 있다.
+
+```
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 37
+X-RateLimit-Reset: 1715424000
+Retry-After: 23
+```
+
+HTTP 429 응답 시 `Retry-After` 헤더를 포함하면 클라이언트 재시도 폭풍을 방지할 수 있다.
+
+---
+
+Rate limiting은 단일 계층에서 해결하려 하지 말고, Nginx로 거친 DoS를 막고 API Gateway로 사용량을 관리하며 애플리케이션에서 비즈니스 맥락이 필요한 세밀한 제어를 담당하는 다층 구조로 설계하는 것이 가장 견고하다.
