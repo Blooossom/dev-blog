@@ -1,0 +1,226 @@
+---
+title: Gap Lock과 Next-Key Lock이 막는 것
+date: '2026-05-12'
+category: Backend
+tags:
+  - MySQL
+  - InnoDB
+  - 동시성
+  - 트랜잭션
+  - Lock
+summary: >-
+  Gap Lock과 Next-Key Lock은 MySQL InnoDB가 Phantom Read를 막기 위해 도입한 범위 잠금 메커니즘이다.
+  단순한 행 단위 잠금을 넘어, 인덱스 범위 안의 빈 공간까지 잠근다는 개념을 이해하면 예상치 못한 데드락을 방지할 수 있다.
+thumbnail: /thumbnails/gap-lock-next-key-lock.svg
+---
+
+Gap Lock과 Next-Key Lock은 어떤 문제를 막기 위해 존재할까? 단순히 "같은 행을 동시에 수정하지 못하게 막는다"는 일반적인 행 잠금만으로는 해결되지 않는 동시성 문제가 있기 때문이다.
+
+## Phantom Read 문제
+
+트랜잭션 격리 수준이 `REPEATABLE READ`일 때 동일한 SELECT를 두 번 실행하면 같은 결과가 나와야 한다. 그러나 행 잠금(Record Lock)만 존재한다면 다음 상황이 발생한다.
+
+```
+트랜잭션 A                          트랜잭션 B
+-----------                         -----------
+BEGIN;
+SELECT * FROM orders
+  WHERE amount > 1000;
+  → 결과: 3행
+                                    BEGIN;
+                                    INSERT INTO orders
+                                      (amount) VALUES (1500);
+                                    COMMIT;
+SELECT * FROM orders
+  WHERE amount > 1000;
+  → 결과: 4행  ← Phantom!
+COMMIT;
+```
+
+트랜잭션 A는 같은 쿼리를 두 번 실행했지만, 트랜잭션 B가 중간에 삽입한 행이 두 번째 조회에서 보인다. 이것이 **Phantom Read**다.
+
+Record Lock은 이미 존재하는 행에만 걸리므로, 아직 없는 행의 삽입을 막을 수 없다. 이 빈틈을 메우는 것이 Gap Lock이다.
+
+## Gap Lock: 인덱스 사이의 빈 공간 잠금
+
+Gap Lock은 인덱스 레코드 사이의 간격(gap)에 걸리는 잠금이다. 실제 행이 아니라 행이 삽입될 수 있는 공간을 잠근다.
+
+```
+인덱스 값: 10, 20, 30, 40
+           ↑    ↑    ↑    ↑
+         [gap] [gap] [gap] [gap] ← Gap Lock이 걸리는 공간
+
+예: WHERE id BETWEEN 15 AND 25
+    → 10-20 사이 gap, 20-30 사이 gap에 lock
+    → id=15, 17, 22 같은 신규 INSERT 차단
+```
+
+Gap Lock의 핵심 특성:
+
+| 특성 | 설명 |
+|------|------|
+| 대상 | 인덱스 레코드 사이의 구간 (실제 행 없음) |
+| 목적 | 해당 구간에 새 행 INSERT 차단 |
+| 호환성 | Gap Lock끼리는 충돌하지 않음 |
+| 비활성화 | `innodb_locks_unsafe_for_binlog=1` 또는 격리 수준을 READ COMMITTED로 낮추면 비활성화 |
+
+Gap Lock끼리 충돌하지 않는다는 점이 중요하다. 트랜잭션 A와 B가 같은 gap에 Gap Lock을 걸어도 서로 블로킹하지 않는다. 그러나 두 트랜잭션 모두 그 gap에 INSERT하려 하면 문제가 생긴다.
+
+## Next-Key Lock: Record Lock + Gap Lock의 결합
+
+실제 InnoDB의 기본 잠금 단위는 **Next-Key Lock**이다. 이는 Record Lock과 그 앞의 Gap Lock을 합친 구간 잠금이다.
+
+```
+인덱스 레코드: ..., 10, 20, 30, ...
+
+Next-Key Lock 구간:
+  (-∞, 10]  ← 10을 포함한 앞쪽 gap
+  (10, 20]  ← 20을 포함한 앞쪽 gap
+  (20, 30]  ← 30을 포함한 앞쪽 gap
+  (30, +∞)  ← supremum pseudo-record
+```
+
+`WHERE id = 20`으로 조회하면 `(10, 20]` 구간에 Next-Key Lock이 걸린다. 이 덕분에 10보다 크고 20보다 작은 값의 INSERT가 차단된다.
+
+## 실제 잠금 범위 확인
+
+InnoDB가 어떤 잠금을 거는지 확인하는 방법:
+
+```sql
+-- 잠금 정보 조회 (MySQL 8.0 이상)
+SELECT
+    ENGINE_LOCK_ID,
+    LOCK_TYPE,
+    LOCK_MODE,
+    LOCK_STATUS,
+    LOCK_DATA
+FROM performance_schema.data_locks;
+```
+
+`LOCK_MODE` 컬럼에서 잠금 유형을 볼 수 있다:
+
+| LOCK_MODE 값 | 의미 |
+|-------------|------|
+| `X` | Next-Key Lock (배타적) |
+| `X,REC_NOT_GAP` | Record Lock만 (gap 제외) |
+| `X,GAP` | Gap Lock만 (record 제외) |
+| `S` | Shared Next-Key Lock |
+
+## Gap Lock이 발생하는 조건
+
+Gap Lock은 항상 걸리는 게 아니다. 인덱스 유형과 조건에 따라 다르게 동작한다.
+
+```sql
+-- 테이블 구조
+CREATE TABLE orders (
+    id    INT PRIMARY KEY,
+    code  VARCHAR(10),
+    amount INT,
+    INDEX idx_amount (amount)
+);
+```
+
+**유일 인덱스(Primary Key, Unique Index)로 정확한 값 조회 → Record Lock만**:
+
+```sql
+-- id는 PK (유일 인덱스)
+SELECT * FROM orders WHERE id = 5 FOR UPDATE;
+-- → Record Lock만 걸림, Gap Lock 없음
+```
+
+**범위 조건 또는 비유일 인덱스 → Next-Key Lock**:
+
+```sql
+-- amount는 일반 인덱스
+SELECT * FROM orders WHERE amount = 1000 FOR UPDATE;
+-- → Next-Key Lock: (이전값, 1000] 범위 잠금
+
+SELECT * FROM orders WHERE id BETWEEN 5 AND 10 FOR UPDATE;
+-- → id=5, 6, 7, 8, 9, 10에 Next-Key Lock
+--   (4, 5], (5, 6], ..., (9, 10] 구간 모두 잠금
+```
+
+**존재하지 않는 값 조회 → Gap Lock**:
+
+```sql
+-- id=7이 없을 때
+SELECT * FROM orders WHERE id = 7 FOR UPDATE;
+-- → id=7이 들어갈 수 있는 gap에만 Gap Lock
+--   예: id=5와 id=10 사이라면 (5, 10) 구간 잠금
+```
+
+## Gap Lock으로 인한 데드락 패턴
+
+Gap Lock은 직접 충돌하지 않기 때문에 의외의 데드락을 만들어낸다.
+
+```
+트랜잭션 A                          트랜잭션 B
+-----------                         -----------
+BEGIN;
+DELETE FROM orders
+  WHERE id = 7;
+-- id=7 없음 → (5, 10) gap lock 획득
+                                    BEGIN;
+                                    DELETE FROM orders
+                                      WHERE id = 8;
+                                    -- id=8 없음 → (5, 10) gap lock 획득
+                                    -- (Gap Lock끼리는 호환, 즉시 획득)
+
+INSERT INTO orders
+  (id, amount) VALUES (7, 500);
+-- (5, 10) gap에 INSERT 시도
+-- 트랜잭션 B의 Gap Lock에 막힘 → 대기
+                                    INSERT INTO orders
+                                      (id, amount) VALUES (8, 600);
+                                    -- (5, 10) gap에 INSERT 시도
+                                    -- 트랜잭션 A의 Gap Lock에 막힘
+                                    -- → 데드락!
+```
+
+두 트랜잭션이 같은 gap에 Gap Lock을 동시에 획득한 뒤, 서로 그 gap에 INSERT를 시도하면 데드락이 발생한다.
+
+## READ COMMITTED에서의 차이
+
+격리 수준을 `READ COMMITTED`로 낮추면 Gap Lock이 거의 사용되지 않는다.
+
+```sql
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+```
+
+`READ COMMITTED`에서는:
+- Gap Lock 비활성화
+- Record Lock만 사용
+- Phantom Read 허용
+- 동시성 향상, 데드락 감소
+
+트랜잭션 정합성이 최우선인 금융·결제 시스템은 `REPEATABLE READ`를 유지하되 Gap Lock 패턴을 숙지하고, 높은 동시성이 필요한 서비스는 `READ COMMITTED`를 선택적으로 검토할 수 있다.
+
+## 실무 설계 시 주의점
+
+**1. 범위 DELETE는 큰 gap을 잠근다**
+
+```sql
+-- 이 쿼리는 amount 인덱스 범위 전체를 잠글 수 있음
+DELETE FROM orders WHERE amount BETWEEN 1000 AND 2000;
+```
+
+**2. INSERT 충돌 회피에 유니크 인덱스 활용**
+
+```sql
+-- 유니크 인덱스가 있으면 정확한 값 잠금 → gap lock 최소화
+ALTER TABLE orders ADD UNIQUE KEY uq_code (code);
+```
+
+**3. 잠금 범위를 좁히는 인덱스 설계**
+
+Gap Lock의 범위는 인덱스 분포에 따라 결정된다. 카디널리티가 높은 인덱스를 사용하면 gap의 크기가 좁아져 충돌 확률이 낮아진다.
+
+```sql
+-- amount 값이 1000, 2000, 3000처럼 듬성할 때
+-- WHERE amount = 1500 → (1000, 2000) 전체가 잠김
+-- amount 값이 촘촘하면 gap이 좁아져 충돌 줄어듦
+```
+
+## 정리
+
+Gap Lock과 Next-Key Lock은 Phantom Read를 막기 위한 InnoDB의 핵심 메커니즘으로, 존재하지 않는 공간까지 잠근다는 개념이 핵심이다. 이 잠금 범위를 예측하지 못하면 예상치 못한 데드락이 발생하므로, 범위 조건 쿼리와 INSERT가 공존하는 트랜잭션 설계에서는 반드시 잠금 범위를 명확히 파악하고 인덱스를 설계해야 한다.
