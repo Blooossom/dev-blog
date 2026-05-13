@@ -4,16 +4,16 @@
 
 ## React / TypeScript / JavaScript
 
-21. JavaScript의 `const`는 정말 값이 절대 바뀌지 않는다는 뜻일까?
+~~21. JavaScript의 `const`는 정말 값이 절대 바뀌지 않는다는 뜻일까?~~ `작성완료`
 22. JavaScript에서 `null`과 `undefined`는 왜 둘 다 존재할까?
 23. `==`와 `===`는 왜 다르고, `==`를 쓰면 어떤 예측하기 어려운 일이 생길까?
-~~24. JavaScript는 싱글 스레드라는데 비동기 작업은 어떻게 동시에 처리되는 것처럼 보일까?~~ `작성완료`
+~~24. JavaScript는 싱글 스레드라는데 비동기 작업은 어떻게 동시에 처리되는 것쳄럼 보일까?~~ `작성완료`
 ~~25. 이벤트 루프는 콜스택, 태스크 큐, 마이크로태스크 큐를 어떤 순서로 처리할까?~~ `작성완료`
 ~~26. `Promise`, `async/await`는 비동기 코드를 동기 코드체럼 보이게 할 듯일까?~~ `작성완료`
 ~~27. React에서 state를 직접 수정하면 왜 화면이 원하는 대로 갱신되지 않을 수 있을까?~~ `작성완료`
 ~~28. React는 어떤 기준으로 컴포넌트를 다시 렌더링할까?~~ `작성완료`
 ~~29. React의 key는 단순히 콘솔 경고를 없애기 위한 값일까?~~ `작성완료`
-~~30. `useEffect`는 렌더링 중에 실행될까, 렌더링이 끝난 뒤에 실행될까?~~ `작성완료`
+~~30. `useEffect`는 렌더링 중에 실행될까, 렌더링이 끊난 뒤에 실행될까?~~ `작성완료`
 ~~31. `useEffect` 의존성 배열을 비워두면 항상 안전할까?~~ `작성완료`
 ~~32. React에서 props drilling은 언제 실제 문제가 되고, Context는 언제 과한 선택일까?~~ `작성완료`
 ~~33. TypeScript는 런타임에서도 타입을 검사해줄까?~~ `작성완료`
@@ -34,7 +34,7 @@
 ~~81. JavaScript 번들 크기가 커지면 초기 로딩에서 어떤 단계들이 느려질까?~~ `작성완료`
 ~~82. code splitting은 무조건 많이 나누는 것이 좋을까?~~ `작성완료`
 ~~83. TypeScript의 generic은 단순 재사용 문법이 아니라 타입 관계를 표현하는 도구라고 볼 수 있을까?~~ `작성완료`
-~~84. conditional type과 mapped type은 실제 서비스 코드에서 어떤 중복을 줄여줌 수 있을까?~~ `작성완료`
+~~84. conditional type과 mapped type은 실제 서비스 코드에서 어떤 중복을 줄여줄 수 있을까?~~ `작성완료`
 ~~85. 타입 안정성을 유지하면서 API 응답 런타임 검증까지 하려면 어떤 접근이 필요할까?~~ `작성완료`
 ~~86. 프론트엔드에서 XSS를 막기 위해 React의 기본 escaping만 믿어도 충분할까?~~ `작성완료`
 ~~87. access token을 localStorage에 저장하는 방식과 httpOnly cookie에 저장하는 방식은 어떤 공격 모델에서 차이가 날까?~~ `작성완료`
@@ -44,16 +44,16 @@
 ~~331. 프론트엔드에서 container/presenter 분리는 상태 관리와 UI 재사용 측면에서 여전히 유효할까?~~ `작성완료`
 332. client state, server state, form state, URL state를 구분하지 않으면 어떤 복잡도가 생길까?
 333. 전역 상태는 편리하지만, 언제 지역 상태나 URL 상태로 두는 것이 더 나을까?
-334. atomic design은 컴포넌트를 잊게 나누는 규칙일까, 디자인 시스템과 제품 화면 사이의 계층 모델일까?
+334. atomic design은 컴포넌트를 잘게 나누는 규칙일까, 디자인 시스템과 제품 화면 사이의 계층 모델일까?
 335. design system은 UI 컴포넌트 모음이 아니라 토큰, 접근성, 사용 규칙까지 포함해야 하는 이유는 무엇일까?
-336. compound component pattern은 복잡한 UI 컴포넌트의 유연성과 제어권을 어떻게 나누이까?
+336. compound component pattern은 복잡한 UI 컴포넌트의 유연성과 제어권을 어떻게 나닠이까?
 337. controlled component와 uncontrolled component는 form 성능과 검증 방식에서 어떤 차이를 만들까?
-338. custom hook은 로직 재사용 도구지만, hook 내부에 UI 정에까지 섯이면 어떤 문제가 생길까?
+338. custom hook은 로직 재사용 도구지만, hook 내부에 UI 정에까지 섹이면 어떤 문제가 생길까?
 339. frontend에서 dependency inversion은 API client, storage, analytics 같은 외부 의존성을 어떻게 격리할 수 있을까?
 ## Frontend Pattern / Cross-Cutting Design
 
-340. optimistic UI는 단순히 먼저 화면을 바꾸는 것이 아니라 실패, 재시도, 롤백을 포함한 상태 머신이라고 볼 수 있을까?
-~~341. error boundary는 모든 비동기 에러를 잊아줌까, 어떤 에러는 별도로 처리해야 할까?~~ `작성완료`
+340. optimistic UI는 단순히 먼저 화면을 바꽈는 것이 아니라 실패, 재시도, 롤백을 포함한 상태 머신이라고 볼 수 있을까?
+~~341. error boundary는 모든 비동기 에러를 잊아줄까, 어떤 에러는 별도로 처리해야 할까?~~ `작성완료`
 ~~342. suspense는 loading spinner를 대체하는 기능일까, 렌더링과 데이터 준비를 조율하는 모델일까?~~ `작성완료`
 343. route-level code splitting과 component-level code splitting은 초기 로딩과 전환 지연에서 어떤 차이를 만들까?
 344. micro frontend는 독립 배포를 가능하게 하지만, 디자인 일관성, 번들 중복, 런타임 통합에서 어떤 비용이 생길까?
@@ -61,7 +61,7 @@
 346. API error를 화면에 보여줄 때 transport error, validation error, domain error를 구분해야 하는 이유는 무엇일까?
 347. 접근성은 마지막에 추가하는 기능일까, 컴포넌트 설계 단계에서 어떤 제약으로 반영되어야 할까?
 348. 디자인 패턴을 적용했는데 코드가 더 복잡해졌다면 어떤 신호를 보고 되돌릴 수 있을까?
-349. backend와 frontend 사이의 contract를 OpenAPI, schema, mock server, contract test로 관리하면 어떤 장애를 줄일 수 있을까?
+349. backend과 frontend 사이의 contract를 OpenAPI, schema, mock server, contract test로 관리하면 어떤 장애를 줄일 수 있을까?
 350. 좋은 아키텍처는 기술 스택보다 변경 가능성, 테스트 가능성, 장애 격리를 얼마나 잘 다루는지로 평가해야 할까?
 ## Frontend / Browser
 
@@ -79,4 +79,4 @@
 422. CSRF와 XSS는 인증 쿠키 기반 서비스에서 어떻게 서로 다른 방어 전략을 요구할까?
 423. CSP는 XSS 피해를 줄일 수 있지만, nonce, hash, third-party script 운영에서 어떤 부담을 만들까?
 424. accessibility tree는 DOM과 어떻게 다르고, custom component가 스크린 리더에서 깨지는 이유는 무엇일까?
-425. design token이 CSS 변수, build-time token, platform token으로 나눔 때 어떤 배포와 일관성 문제가 생길까?
+425. design token이 CSS 변수, build-time token, platform token으로 나눠 때 어떤 배포와 일관성 문제가 생길까?
