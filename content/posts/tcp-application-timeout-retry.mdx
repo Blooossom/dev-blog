@@ -1,0 +1,156 @@
+---
+title: TCP가 신뢰성을 보장해도 애플리케이션 Timeout과 Retry가 필요한 이유
+date: '2026-05-13'
+category: Backend
+tags:
+  - TCP
+  - Timeout
+  - Retry
+  - 네트워크
+  - 신뢰성
+summary: >-
+  TCP는 패킷 손실, 순서, 중복 전송을 OS 레벨에서 처리해준다. 그러나 애플리케이션이 응답을 하지
+  않거나 처리에 지연이 생기는 상황은 TCP가 알 수 없기 때문에, 애플리케이션 수준의 timeout과
+  retry 전략이 반드시 필요하다.
+thumbnail: /thumbnails/tcp-application-timeout-retry.svg
+---
+
+TCP는 신뢰성을 보장한다는데, 애플리케이션 레벨에서 timeout과 retry가 여전히 필요한 이유는 무엇일까? TCP는 패킷 손실과 재전송, 순서 보장, 흐름 제어를 OS 커널 수준에서 처리한다. 그런데도 실제 서비스에서는 커넥션 타임아웃, 리드 타임아웃, 재시도 로직이 필수적으로 들어간다. 그 이유를 TCP의 신뢰성 보장 범위를 중심으로 살펴본다.
+
+## TCP가 보장하는 것
+
+TCP가 제공하는 신뢰성은 **전송 레이어**에 국한된다.
+
+| 보장 항목 | 설명 |
+|-----------|------|
+| 패킷 손실 복구 | 중간에 패킷이 유실되면 자동 재전송 |
+| 순서 보장 | 세그먼트를 받은 순서가 다르면 버퍼에서 재조립 |
+| 중복 제거 | 같은 시퀀스 번호의 패킷은 한 번만 처리 |
+| 흐름 제어 | 수신 버퍼가 넘치지 않도록 전송 속도 조절 |
+
+이 보장은 "양쪽 커널이 살아 있고 연결이 유지된 경우"에 한정된다.
+
+## TCP가 보장하지 못하는 것
+
+### 1. 애플리케이션 처리 시간
+
+TCP 연결이 살아 있어도 서버 프로세스가 요청을 처리하지 못할 수 있다. DB 쿼리가 무한히 블로킹되거나, GC pause가 길어지거나, 로직 버그로 무한 루프에 빠진 경우 TCP는 이를 전혀 감지하지 못한다.
+
+```
+클라이언트                서버
+   |  --- SYN --------->  |   (연결 수립)
+   |  <-- SYN+ACK ------  |
+   |  --- ACK --------->  |
+   |                      |
+   |  --- Request ------>  |   (요청 전송)
+   |                      |   <- 여기서 서버 처리 멈춤
+   |                      |   (TCP 연결은 살아 있음)
+   |         ??? (응답 없음)
+```
+
+클라이언트 입장에서 TCP 연결은 정상이므로 OS 레벨에서 어떤 오류도 발생하지 않는다.
+
+### 2. 절반만 열린 연결(Half-Open Connection)
+
+네트워크 중간 장비(방화벽, NAT)가 유휴 연결을 강제로 끊었을 때, 한쪽만 연결이 끊어진 것처럼 보이는 상태가 된다. TCP keepalive를 설정하지 않으면 이 상태는 감지되지 않는다.
+
+### 3. 느린 응답
+
+패킷은 계속 오고 있지만 데이터가 의미 없이 느리게 전달되는 경우, TCP는 이를 문제로 인식하지 않는다.
+
+## Timeout의 세 종류
+
+```java
+HttpClient client = HttpClient.newBuilder()
+    .connectTimeout(Duration.ofSeconds(3))   // 연결 수립 대기
+    .build();
+
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create("https://api.example.com/data"))
+    .timeout(Duration.ofSeconds(10))         // 응답 수신 대기
+    .GET()
+    .build();
+```
+
+| 종류 | 의미 | 권장 값 |
+|------|------|--------|
+| Connection timeout | TCP 3-way handshake 완료까지 대기 | 3초 이내 |
+| Read timeout | 데이터 수신 시작까지 대기 | 서비스 SLA 기준 |
+| Idle timeout | 연결을 유휴 상태로 유지하는 시간 | 커넥션 풀 설정에 따름 |
+
+커넥션 풀(예: HikariCP)은 `connectionTimeout`, `idleTimeout`, `maxLifetime`을 별도로 관리한다.
+
+## Retry와 Idempotency
+
+타임아웃 이후 재시도가 필요한데, 무조건 재시도하면 **중복 처리** 문제가 생긴다.
+
+```java
+@Retryable(
+    value = {TimeoutException.class, ConnectException.class},
+    maxAttempts = 3,
+    backoff = @Backoff(delay = 500, multiplier = 2)
+)
+public OrderResponse placeOrder(OrderRequest req) {
+    return orderClient.create(req);
+}
+```
+
+멱등성이 보장된 API(GET, PUT)는 재시도가 안전하지만, POST처럼 상태를 변경하는 작업은 **idempotency key**를 함께 보내야 한다.
+
+```
+POST /orders
+Idempotency-Key: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+서버는 같은 키로 들어온 요청을 한 번만 처리하고, 이후 요청에는 캐싱된 응답을 반환한다.
+
+## 지수 백오프와 Jitter
+
+일정한 간격으로 재시도하면 장애 서버에 동시에 많은 요청이 몰리는 **thundering herd** 현상이 생긴다. 이를 막기 위해 지수 백오프에 jitter를 더한다.
+
+```java
+long delay = (long)(Math.pow(2, attempt) * 500) + random.nextInt(200);
+Thread.sleep(delay);
+```
+
+| 시도 횟수 | 기본 딜레이 |
+|-----------|------------|
+| 1회 | 500ms + jitter |
+| 2회 | 1,000ms + jitter |
+| 3회 | 2,000ms + jitter |
+
+## Circuit Breaker와의 관계
+
+timeout + retry만으로는 장애 서버를 계속 두드리는 문제가 남는다. Circuit Breaker는 연속 실패율이 임계치를 넘으면 즉시 요청을 차단해 장애 전파를 막는다.
+
+```
+CLOSED --> (실패율 상승) --> OPEN --> (일정 시간 후) --> HALF-OPEN
+                                                            |
+                                               성공 시 --> CLOSED
+                                               실패 시 --> OPEN
+```
+
+Resilience4j 설정 예시:
+
+```java
+CircuitBreakerConfig config = CircuitBreakerConfig.custom()
+    .failureRateThreshold(50)
+    .waitDurationInOpenState(Duration.ofSeconds(10))
+    .slidingWindowSize(10)
+    .build();
+```
+
+세 가지를 조합하면 다음 구조가 된다.
+
+```
+요청 발생
+  └─ Circuit Breaker 확인 (OPEN이면 즉시 실패)
+      └─ Connection timeout 내 연결 시도
+          └─ Read timeout 내 응답 대기
+              └─ 실패 시 Retry (지수 백오프 + jitter)
+                  └─ 최대 재시도 초과 시 fallback 처리
+```
+
+## 핵심 원칙
+
+TCP는 전송 레이어의 신뢰성을 보장하지만 애플리케이션 처리 지연과 절반만 열린 연결은 탐지하지 못한다. 서비스 안정성을 위해서는 적절한 timeout 설정, 멱등성 기반의 retry, 그리고 circuit breaker를 계층적으로 조합해야 한다.
