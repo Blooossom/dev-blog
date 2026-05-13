@@ -554,6 +554,8 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'container-presenter-pattern':    { pattern: 'layers',   colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'db-json-column':                 { pattern: 'code',     colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'gap-lock-next-key-lock':         { pattern: 'threads',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'tcp-application-timeout-retry':  { pattern: 'flow',     colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'javascript-const-immutability':  { pattern: 'code',     colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
@@ -631,14 +633,14 @@ function generateSVG(slug: string, title: string, category: string): string {
   <text x="74" y="73"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
     font-size="13" font-weight="700" letter-spacing="2.5"
-    fill="${colors.accent}" fill-opacity="0.95">${'${esc(category.toUpperCase())}'}</text>
+    fill="${colors.accent}" fill-opacity="0.95">${esc(category.toUpperCase())}</text>
 
   <!-- Title -->
-  ${'${lines.map((line, i) => `'}
-  <text x="60" y="${'${titleY + i * (fontSize + 6)}'}">
+  ${lines.map((line, i) => `
+  <text x="60" y="${titleY + i * (fontSize + 6)}"
     font-family="system-ui,-apple-system,Segoe UI,sans-serif"
-    font-size="${'${fontSize}'}" font-weight="800"
-    fill="white" fill-opacity="0.95">${'${esc(line)}'}</text>${'`).join(\'\')}'
+    font-size="${fontSize}" font-weight="800"
+    fill="white" fill-opacity="0.95">${esc(line)}</text>`).join('')}
 </svg>`
 }
 
