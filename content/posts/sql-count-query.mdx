@@ -1,0 +1,146 @@
+---
+title: 'SQL COUNT 쿼리가 대용량 테이블에서 병목이 되는 이유'
+date: '2026-05-15'
+category: Backend
+tags:
+  - SQL
+  - Database
+  - 성능 최적화
+  - Index
+summary: >-
+  COUNT 쿼리는 단순해 보이지만 대용량 테이블에서는 심각한 성능 병목이 될 수 있다.
+  스토리지 엔진의 동작 방식과 MVCC 구조를 이해하면 올바른 최적화 방향을 찾을 수 있다.
+thumbnail: /thumbnails/sql-count-query.svg
+---
+
+`COUNT` 쿼리는 단순해 보여도 대용량 테이블에서 왜 병목이 될 수 있을까? `SELECT COUNT(*) FROM orders` 한 줄짜리 쿼리가 수십 초씩 걸리는 상황은 실제 운영 환경에서 드물지 않다. 이 현상의 원인을 이해하려면 스토리지 엔진이 COUNT를 어떻게 처리하는지 알아야 한다.
+
+## MySQL InnoDB에서 COUNT가 느린 이유
+
+MySQL의 InnoDB 엔진은 **테이블 전체 행 수를 미리 저장하지 않는다**. MyISAM은 메타데이터에 총 행 수를 캐시하지만, InnoDB는 MVCC(Multi-Version Concurrency Control) 구조 때문에 그럴 수 없다.
+
+MVCC 환경에서는 각 트랜잭션마다 "보이는 행의 수"가 다를 수 있다. 트랜잭션 A가 시작된 시점에는 100만 건이 보이지만, 그 사이에 트랜잭션 B가 행을 삭제했다면 다른 수가 보인다. 따라서 InnoDB의 `COUNT(*)`는 매번 **테이블 또는 인덱스를 순회**하며 현재 트랜잭션이 볼 수 있는 행을 세어야 한다.
+
+```
+트랜잭션 격리 수준별 COUNT 결과 차이:
+
+TX A 시작 → orders: 1,000,000행
+TX B: DELETE 50,000행 (미커밋)
+
+TX A의 SELECT COUNT(*):
+  REPEATABLE READ → 1,000,000 (TX B 변경 미반영)
+  READ COMMITTED  → 950,000   (TX B 변경 반영)
+```
+
+## Full Table Scan vs Index Scan
+
+COUNT는 어떤 인덱스를 타는가에 따라 성능이 크게 달라진다.
+
+```sql
+-- 실행 계획 확인
+EXPLAIN SELECT COUNT(*) FROM orders;
+```
+
+옵티마이저는 가능하면 **가장 작은 인덱스**를 선택한다. 테이블 데이터 파일 전체를 읽는 것보다 인덱스만 읽는 것이 I/O 비용이 낮기 때문이다. 그러나 WHERE 조건이 붙으면 해당 조건에 맞는 인덱스를 탐색하고, 적절한 인덱스가 없으면 풀 테이블 스캔이 발생한다.
+
+```sql
+-- 인덱스가 없는 컬럼에 조건: 풀 테이블 스캔 발생 가능
+SELECT COUNT(*) FROM orders WHERE status = 'PENDING';
+
+-- status 컬럼에 인덱스 생성 후: 인덱스 스캔으로 전환
+CREATE INDEX idx_orders_status ON orders(status);
+```
+
+| 쿼리 유형 | 접근 방식 | 비용 |
+|-----------|-----------|------|
+| `COUNT(*)` (조건 없음) | 가장 작은 보조 인덱스 스캔 | 중간 |
+| `COUNT(*)` + WHERE (인덱스 있음) | 인덱스 range scan | 낮음 |
+| `COUNT(*)` + WHERE (인덱스 없음) | Full table scan | 높음 |
+| `COUNT(DISTINCT col)` | 정렬 또는 해시 집계 필요 | 매우 높음 |
+
+## COUNT(*)와 COUNT(컬럼)의 차이
+
+```sql
+SELECT COUNT(*)    FROM orders; -- 모든 행 카운트 (NULL 포함)
+SELECT COUNT(note) FROM orders; -- note가 NULL이 아닌 행만 카운트
+```
+
+`COUNT(*)`는 NULL 여부와 무관하게 모든 행을 센다. `COUNT(컬럼)`은 해당 컬럼이 NULL인 행을 제외한다. 대부분 "전체 행 수"를 원할 때는 `COUNT(*)`가 올바른 선택이다.
+
+`COUNT(DISTINCT col)`은 중복 제거가 필요해 집계 비용이 급격히 올라간다. 카디널리티가 높은 컬럼(예: user_id)에 `COUNT(DISTINCT)`를 대용량 테이블에서 실행하면 메모리와 CPU를 많이 소모한다.
+
+## 실전 최적화 전략
+
+### 1. 커버링 인덱스 활용
+
+```sql
+-- note 컬럼 없이 status, created_at 컬럼만으로 처리
+SELECT COUNT(*) FROM orders WHERE status = 'PAID' AND created_at > '2026-01-01';
+
+-- 복합 인덱스 생성으로 인덱스만 읽도록 유도
+CREATE INDEX idx_orders_status_created ON orders(status, created_at);
+```
+
+WHERE 조건에 사용되는 컬럼이 인덱스에 포함되면 테이블 본체에 접근하지 않아도 되므로 I/O가 크게 줄어든다.
+
+### 2. 근사값으로 대체 (정확한 수가 불필요한 경우)
+
+```sql
+-- MySQL: information_schema 통계 활용
+SELECT table_rows
+FROM information_schema.tables
+WHERE table_name = 'orders' AND table_schema = 'mydb';
+```
+
+관리자 대시보드처럼 정확한 숫자보다 대략적인 규모를 보여줘도 되는 곳에서는 통계 정보를 활용한다. 다만 이 값은 ANALYZE TABLE 실행 주기에 따라 오차가 있다.
+
+### 3. 별도 카운터 테이블
+
+```sql
+-- 별도 집계 테이블 관리
+CREATE TABLE order_counts (
+  status  VARCHAR(20) PRIMARY KEY,
+  cnt     BIGINT NOT NULL DEFAULT 0
+);
+
+-- 주문 생성/취소 시 업데이트 (애플리케이션 또는 트리거)
+UPDATE order_counts SET cnt = cnt + 1 WHERE status = 'PAID';
+```
+
+정확한 실시간 카운트가 필요하지만 COUNT 쿼리 비용을 감당하기 어려울 때 쓰는 패턴이다. 쓰기 시점에 카운터를 관리하면 읽기는 단순 키 조회로 O(1)에 처리된다. 단, 트랜잭션 실패 시 카운터 불일치가 생기지 않도록 보상 로직이 필요하다.
+
+### 4. Redis를 이용한 카운터
+
+```
+orders:status:PAID → INCR/DECR
+```
+
+높은 쓰기 빈도와 낮은 읽기 지연이 모두 필요한 경우 Redis의 INCR/DECR 명령으로 카운터를 관리한다. Redis는 단일 명령이 원자적으로 처리되어 동시성 문제가 없고, 메모리 기반이라 응답이 빠르다. DB 카운터와의 정합성 관리를 위한 주기적 동기화가 필요하다.
+
+### 5. 페이지네이션에서 COUNT 제거
+
+실무에서 COUNT 쿼리가 가장 많이 나타나는 곳은 페이지네이션 구현이다.
+
+```sql
+-- 대부분의 경우 total count가 반드시 필요하지 않다
+-- "1000개 이상의 결과가 있습니다" 형태로 대체 가능
+
+SELECT * FROM orders WHERE status = 'PAID' ORDER BY id LIMIT 21;
+-- 21개를 가져와서 21개면 "다음 페이지 있음", 아니면 마지막 페이지
+```
+
+keyset 기반 페이지네이션으로 전환하면 COUNT 쿼리 자체를 제거할 수 있다.
+
+## PostgreSQL에서의 차이점
+
+PostgreSQL도 MVCC를 사용하므로 InnoDB와 마찬가지로 `COUNT(*)`가 sequential scan을 유발할 수 있다. 다만 PostgreSQL은 `pg_stat_user_tables`에 통계를 저장하며, 근사값이 필요할 때 활용할 수 있다.
+
+```sql
+SELECT reltuples::bigint AS approximate_count
+FROM pg_class
+WHERE relname = 'orders';
+```
+
+VACUUM 실행 후 갱신되는 값이므로 정확도는 VACUUM 빈도에 의존한다.
+
+COUNT 쿼리는 단순한 집계처럼 보이지만 MVCC 구조, 인덱스 구성, 트랜잭션 격리 수준이 모두 성능에 영향을 미친다. 정확한 숫자가 필요한 상황인지, 근사값이나 대안 설계로 대체할 수 있는 상황인지를 먼저 판단하는 것이 올바른 최적화의 시작점이다.
