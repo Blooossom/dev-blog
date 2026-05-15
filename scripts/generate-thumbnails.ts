@@ -556,6 +556,9 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'gap-lock-next-key-lock':         { pattern: 'threads',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'tcp-application-timeout-retry':  { pattern: 'flow',     colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'javascript-const-immutability':  { pattern: 'code',     colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
+  'javascript-null-undefined':      { pattern: 'code',     colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
+  'sql-count-query':                { pattern: 'chart',    colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'false-sharing-cache-line':       { pattern: 'threads',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
