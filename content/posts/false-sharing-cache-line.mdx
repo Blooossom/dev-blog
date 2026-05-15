@@ -1,0 +1,177 @@
+---
+title: 'False Sharing — CPU 캐시 라인이 만드는 멀티스레드 성능 함정'
+date: '2026-05-15'
+category: Backend
+tags:
+  - Java
+  - 동시성
+  - CPU
+  - 성능 최적화
+  - JVM
+summary: >-
+  False sharing은 멀티스레드 환경에서 서로 다른 스레드가 같은 CPU 캐시 라인을 공유할 때
+  발생하는 성능 저하 현상이다. 락 없이도 캐시 동기화 오버헤드가 발생하므로 원인을 파악하기 어렵다.
+thumbnail: /thumbnails/false-sharing-cache-line.svg
+---
+
+False sharing은 멀티스레드 프로그램에서 CPU 캐시 라인 때문에 어떤 성능 저하를 만들까? 이 문제는 동기화 코드가 전혀 없는 상황에서도 나타나고, 논리적으로는 독립적인 변수들 사이에서 발생하기 때문에 프로파일러 없이는 원인을 찾기 어렵다.
+
+## CPU 캐시 라인 기초
+
+CPU는 메모리에서 데이터를 읽을 때 바이트 단위가 아니라 **캐시 라인(cache line)** 단위로 읽는다. 현대 x86 CPU의 캐시 라인 크기는 일반적으로 64바이트다.
+
+```
+메모리 레이아웃 예시 (64바이트 캐시 라인)
+
+주소: 0x00                         0x3F
+      |-------- 캐시 라인 1 --------|
+      | long a | long b | long c | ... |
+      각 long은 8바이트 → 캐시 라인 하나에 8개 long 변수
+```
+
+멀티코어 환경에서 각 CPU 코어는 자신의 L1/L2 캐시를 갖는다. 한 코어가 캐시 라인의 어떤 변수든 수정하면 **다른 코어의 캐시에 있는 동일한 캐시 라인이 무효화(invalidate)** 된다. 이것이 MESI 프로토콜의 핵심 동작이다.
+
+## False Sharing이란
+
+```
+핵심 시나리오:
+
+Thread 1 (Core 1): counter1을 계속 증가
+Thread 2 (Core 2): counter2를 계속 증가
+
+counter1과 counter2가 같은 캐시 라인에 존재하면?
+```
+
+두 변수는 논리적으로 독립적이다. 락도 없고 공유 상태도 없다. 그러나 물리 메모리에서 같은 캐시 라인에 배치되면 다음 상황이 반복된다.
+
+```
+1. Core 1: counter1 수정 → 자신의 캐시 라인 갱신
+2. 캐시 일관성 프로토콜: Core 2의 캐시 라인 무효화
+3. Core 2: counter2 읽기 위해 메모리에서 캐시 라인 다시 로드
+4. Core 2: counter2 수정 → Core 1의 캐시 라인 무효화
+5. 반복 ...
+```
+
+두 스레드가 서로의 캐시를 계속 무효화하면서 메모리 접근 레이턴시가 L1 캐시 히트(1~4 사이클)에서 메모리 액세스(200사이클 이상)로 급증한다. 이것이 false sharing이다.
+
+## Java에서의 재현
+
+```java
+// False sharing 발생 예시
+public class Counter {
+    public volatile long a = 0;
+    public volatile long b = 0;
+    // a와 b는 같은 객체 내에 위치 → 같은 캐시 라인에 배치될 가능성 높음
+}
+
+Counter counter = new Counter();
+
+Thread t1 = new Thread(() -> {
+    for (int i = 0; i < 100_000_000; i++) counter.a++;
+});
+
+Thread t2 = new Thread(() -> {
+    for (int i = 0; i < 100_000_000; i++) counter.b++;
+});
+```
+
+`volatile` 키워드는 가시성을 보장하지만, false sharing을 악화시킨다. 모든 쓰기가 다른 코어의 캐시 라인을 즉시 무효화하기 때문이다.
+
+## 패딩으로 해결
+
+캐시 라인 크기(64바이트)만큼 패딩을 추가해 두 변수가 서로 다른 캐시 라인에 위치하도록 강제한다.
+
+```java
+// 패딩을 이용한 false sharing 방지
+public class PaddedCounter {
+    public volatile long a = 0;
+    // 64바이트 캐시 라인 채우기: a(8) + 7 * 8 = 64바이트
+    public long p1, p2, p3, p4, p5, p6, p7;
+    public volatile long b = 0;
+    public long q1, q2, q3, q4, q5, q6, q7;
+}
+```
+
+## @Contended 어노테이션 (Java 8+)
+
+Java 8부터 `@jdk.internal.vm.annotation.Contended`(내부 API) 또는 JDK 21부터 공식화된 방식으로 자동 패딩을 적용할 수 있다. `ConcurrentHashMap`, `ForkJoinPool` 같은 JDK 내부 구현에서 이 방식을 사용한다.
+
+```java
+// JVM 플래그 필요: -XX:-RestrictContended
+@sun.misc.Contended
+public volatile long counter = 0;
+```
+
+`-XX:-RestrictContended` 플래그 없이는 써드파티 코드에서 이 어노테이션이 무시된다.
+
+## 실제 벤치마크 비교
+
+아래는 일반적인 측정 결과 패턴이다.
+
+```
+스레드 2개, 각 1억 회 증가:
+
+                  수행 시간(ms)    상대 속도
+일반 Counter        ~3,000ms       1x
+PaddedCounter        ~200ms       15x
+```
+
+패딩만으로 10배 이상 성능 차이가 나는 케이스가 빈번하다.
+
+## False Sharing이 잘 발생하는 상황
+
+| 상황 | 이유 |
+|------|------|
+| 배열의 인접 원소를 다른 스레드가 처리 | 원소가 같은 캐시 라인에 위치 |
+| 객체 배열에서 인접 객체 수정 | 참조값들이 같은 캐시 라인에 위치 |
+| 클래스의 여러 volatile 필드를 다른 스레드가 수정 | 필드가 메모리에 연속 배치 |
+| ThreadLocal 대신 공유 배열 인덱스 사용 | 스레드 인덱스가 가까우면 인접 배치 |
+
+## 배열에서의 False Sharing
+
+```java
+// 스레드별 카운터를 배열로 관리 — false sharing 발생
+long[] counters = new long[threadCount];
+
+// 각 스레드 i가 counters[i]를 수정
+// counters[0]과 counters[1]은 배열 내에서 인접 → 같은 캐시 라인
+```
+
+이 경우 각 스레드별 슬롯 간격을 캐시 라인 크기로 맞추어 해결한다.
+
+```java
+// 슬롯 간격을 8 long(64바이트)으로 조정
+long[] counters = new long[threadCount * 8];
+// 스레드 i는 counters[i * 8]을 사용
+```
+
+## 탐지 방법
+
+Linux `perf` 명령이나 Intel VTune 같은 하드웨어 성능 카운터 도구로 캐시 미스 비율을 측정한다.
+
+```bash
+# Linux perf로 캐시 미스 확인
+perf stat -e cache-misses,cache-references ./my-app
+```
+
+Java 애플리케이션에서는 JMH(Java Microbenchmark Harness)로 시나리오를 재현하고 수치를 비교한다.
+
+```java
+@BenchmarkMode(Mode.Throughput)
+@Warmup(iterations = 3)
+@Measurement(iterations = 5)
+public class FalseSharingBenchmark {
+
+    @Benchmark
+    public void withFalseSharing(SharedState state, Blackhole bh) {
+        state.counter.a++;
+    }
+
+    @Benchmark
+    public void withoutFalseSharing(PaddedState state, Blackhole bh) {
+        state.counter.a++;
+    }
+}
+```
+
+False sharing은 락 경합과 달리 코드에 아무런 동기화 표시가 없어도 발생한다. 멀티코어 환경에서 독립적이어야 할 변수들이 물리 메모리 배치 때문에 서로를 간섭하는 이 문제는, 캐시 라인 단위의 사고 없이는 원인을 파악하기 어렵다. 성능이 중요한 공유 자료구조를 설계할 때는 데이터 배치가 캐시 라인 경계와 어떻게 맞닿는지를 반드시 고려해야 한다.
