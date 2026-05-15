@@ -1,0 +1,141 @@
+---
+title: 'JavaScript에서 null과 undefined는 왜 둘 다 존재할까?'
+date: '2026-05-15'
+category: Frontend
+tags:
+  - JavaScript
+  - TypeScript
+  - 타입 시스템
+summary: >-
+  JavaScript에서 null과 undefined는 모두 "없음"을 표현하지만 설계 의도가 다르다.
+  둘의 차이를 이해하면 예상치 못한 버그를 줄이고 타입 안전한 코드를 작성할 수 있다.
+thumbnail: /thumbnails/javascript-null-undefined.svg
+---
+
+JavaScript에서 `null`과 `undefined`는 왜 둘 다 존재할까? 두 값 모두 "값이 없다"는 의미처럼 보이지만, 언어 설계 차원에서 명확히 다른 용도를 갖는다. 이 차이를 무시하면 런타임 오류와 미묘한 버그의 원인이 된다.
+
+## undefined — 초기화되지 않은 상태
+
+`undefined`는 자바스크립트 엔진이 자동으로 할당하는 값이다. 변수를 선언했지만 초기화하지 않았을 때, 함수에서 명시적으로 반환하지 않았을 때, 객체에 없는 프로퍼티에 접근했을 때 등 **런타임이 스스로 "아직 값이 없다"고 표시**할 때 나타난다.
+
+```javascript
+let x;
+console.log(x); // undefined
+
+function greet() {}
+console.log(greet()); // undefined
+
+const obj = {};
+console.log(obj.name); // undefined
+```
+
+## null — 개발자가 명시적으로 비운 상태
+
+반면 `null`은 개발자가 **의도적으로 "값이 없음"을 설정**할 때 사용한다. "이 변수는 현재 어떤 객체도 가리키지 않는다"는 의미를 코드로 표현하는 것이다.
+
+```javascript
+let user = null; // 아직 로그인하지 않은 상태
+user = fetchUser(); // 이후 실제 값 할당
+```
+
+이 구분은 의미론적으로 중요하다. `undefined`는 "설정된 적 없음", `null`은 "비어 있음을 명시"다.
+
+## 타입 비교에서의 함정
+
+```javascript
+console.log(typeof undefined); // "undefined"
+console.log(typeof null);      // "object"  ← 역사적 버그
+```
+
+`typeof null`이 `"object"`를 반환하는 것은 JavaScript 초기 구현의 버그로, 하위 호환성 때문에 수정되지 않았다.
+
+동등 비교에서도 차이가 난다.
+
+```javascript
+null == undefined;  // true  (느슨한 동등)
+null === undefined; // false (엄격한 동등)
+
+null == 0;     // false
+null == false; // false
+null == '';    // false
+```
+
+느슨한 동등(`==`)에서 `null`과 `undefined`는 서로에게만 동등하며, 다른 falsy 값과는 동등하지 않다. 이 특성을 활용해 두 값을 동시에 체크할 수 있다.
+
+```javascript
+// user가 null이거나 undefined일 때만 실행
+if (user == null) {
+  console.log('사용자 없음');
+}
+```
+
+## 산술 연산에서의 차이
+
+```javascript
+null + 1;      // 1  (null은 숫자 변환 시 0)
+undefined + 1; // NaN (undefined는 숫자 변환 시 NaN)
+```
+
+이 차이는 의도치 않은 계산 오류의 원인이 된다. 총합, 평균 계산처럼 숫자를 다루는 로직에서 `undefined`가 섞이면 결과 전체가 `NaN`이 된다.
+
+## 함수 파라미터와의 관계
+
+```javascript
+function connect(host, port = 3306) {
+  console.log(host, port);
+}
+
+connect('localhost', undefined); // 'localhost' 3306  (기본값 적용)
+connect('localhost', null);      // 'localhost' null   (기본값 미적용)
+```
+
+기본값은 `undefined`일 때만 적용된다. `null`을 전달하면 기본값이 무시되고 `null`이 그대로 사용된다.
+
+## TypeScript에서의 처리
+
+TypeScript는 두 값을 별도 타입으로 구분하며, `strictNullChecks` 옵션이 켜져 있으면 둘을 혼용하지 않도록 강제한다.
+
+```typescript
+function getUser(id: string): User | null {
+  // 명시적으로 없음을 반환
+  return db.find(id) ?? null;
+}
+
+function getName(user: User | undefined): string {
+  // 초기화 전 상태를 표현
+  return user?.name ?? '이름 없음';
+}
+```
+
+API 응답 처리 시 자주 쓰는 패턴을 비교하면 다음과 같다.
+
+| 상황 | 권장 표현 | 이유 |
+|------|-----------|------|
+| 아직 로드되지 않은 데이터 | `undefined` | 초기 상태, 런타임 기본값과 일치 |
+| 의도적으로 비운 필드 | `null` | "값이 없음"을 명시적으로 선언 |
+| 서버 응답에서 필드 없음 | `null` | JSON은 null만 존재, undefined는 직렬화되지 않음 |
+| 함수 기본값 트리거 | `undefined` | 기본값 파라미터는 undefined에만 반응 |
+
+## null 병합과 옵셔널 체이닝
+
+```javascript
+const value = data?.field ?? '기본값';
+```
+
+`??`(null 병합 연산자)는 좌변이 `null` 또는 `undefined`일 때만 우변을 반환한다. `0`, `false`, `''` 같은 falsy 값에는 반응하지 않으므로 `||` 연산자보다 안전하다.
+
+```javascript
+const count = data.count ?? 0;  // count가 0이어도 0으로 유지
+const count2 = data.count || 0; // count가 0이면 0으로 바뀜 (의도치 않은 결과 가능)
+```
+
+## JSON 직렬화 동작
+
+```javascript
+JSON.stringify({ a: null, b: undefined }); // '{"a":null}'
+// undefined 프로퍼티는 JSON에 포함되지 않는다
+```
+
+API 통신에서 `undefined`를 사용하면 해당 필드가 요청/응답 본문에서 사라진다. 의도적으로 필드를 제거하고 싶을 때는 유용하지만, 실수로 `null` 대신 `undefined`를 넣으면 서버가 필드를 받지 못하는 문제가 생긴다.
+
+`null`과 `undefined`의 구분은 단순한 문법 규칙이 아니라 "이 값이 왜 없는가"에 대한 의도를 코드로 표현하는 방식이다. 런타임 기본값(`undefined`)과 명시적 부재(`null`)를 일관되게 구분하면 타입 오류와 예상치 못한 동작을 크게 줄일 수 있다.
