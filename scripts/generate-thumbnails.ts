@@ -559,6 +559,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'javascript-null-undefined':      { pattern: 'code',     colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'sql-count-query':                { pattern: 'chart',    colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'false-sharing-cache-line':       { pattern: 'threads',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'javascript-equality-operators':  { pattern: 'code',     colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
