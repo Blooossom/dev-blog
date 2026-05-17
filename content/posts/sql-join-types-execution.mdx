@@ -1,0 +1,188 @@
+---
+title: INNER JOIN vs OUTER JOIN 실행 계획 차이
+date: '2026-05-17'
+category: Backend
+tags:
+  - SQL
+  - Database
+  - Query Optimization
+  - Execution Plan
+summary: >-
+  INNER JOIN과 OUTER JOIN은 결과 행 차이 외에도 옵티마이저의 실행 계획에서 의미 있는 차이를 만든다.
+  JOIN 종류에 따라 인덱스 활용 방식과 조인 순서 최적화 여부가 달라지며, 이를 이해해야 느린 쿼리를 효과적으로 개선할 수 있다.
+thumbnail: /thumbnails/sql-join-types-execution.svg
+---
+
+INNER JOIN과 OUTER JOIN은 결과 차이뿐만 아니라 실행 계획에서도 어떤 차이를 만들 수 있을까? 많은 개발자가 두 JOIN의 결과 행 수 차이만 인지하지만, 옵티마이저가 실행 계획을 수립하는 방식에도 중요한 차이가 있다. 이를 모르면 LEFT JOIN을 남발하다가 인덱스를 타지 못하는 쿼리를 만들게 된다.
+
+## JOIN 종류별 결과 비교
+
+```
+테이블 A (orders)       테이블 B (users)
+┌────┬─────────┐        ┌────┬───────────┐
+│ id │ user_id │        │ id │ name      │
+├────┼─────────┤        ├────┼───────────┤
+│  1 │       1 │        │  1 │ 홍길동    │
+│  2 │       2 │        │  2 │ 이순신    │
+│  3 │    NULL │        │  3 │ 강감찬    │
+└────┴─────────┘        └────┴───────────┘
+```
+
+| JOIN 종류 | 결과 행 | 특징 |
+|-----------|---------|------|
+| INNER JOIN | id=1,2 (2행) | 양쪽 모두 일치하는 행만 |
+| LEFT OUTER JOIN | id=1,2,3 (3행) | 왼쪽 테이블 전체 + 오른쪽 일치 |
+| RIGHT OUTER JOIN | 모든 users + 일치 orders | 오른쪽 테이블 전체 |
+| FULL OUTER JOIN | 양쪽 전체 | MySQL 미지원, UNION으로 구현 |
+
+## 실행 계획에서 달라지는 점
+
+### INNER JOIN: 옵티마이저가 조인 순서를 자유롭게 바꿀 수 있다
+
+INNER JOIN은 교환 법칙이 성립하므로 옵티마이저가 통계 정보를 바탕으로 **더 작은 결과 집합을 먼저 처리하는 순서**를 선택한다.
+
+```sql
+-- 옵티마이저가 실제 실행 순서를 바꿀 수 있음
+SELECT o.id, u.name
+FROM orders o
+INNER JOIN users u ON o.user_id = u.id
+WHERE u.name = '홍길동';
+
+-- 옵티마이저는 users를 먼저 필터링하고 orders와 조인할 수 있음
+-- (users.name 인덱스가 있으면 효율적)
+```
+
+```
+실행 계획 예시 (EXPLAIN):
++----+-------+--------+------+---------------+------+---------+-------+------+
+| id | table | type   | key  | rows          | ...  |
++----+-------+--------+------+---------------+------+---------+-------+------+
+|  1 | u     | ref    | name | 1 (name 인덱스) |
+|  1 | o     | ref    | user_id | 5          |
++----+-------+--------+------+---------------+------+---------+-------+------+
+```
+
+### LEFT JOIN: 드라이빙 테이블이 고정된다
+
+LEFT JOIN은 왼쪽 테이블의 **모든 행을 반드시 보존**해야 하므로 옵티마이저가 조인 순서를 임의로 바꿀 수 없다. 왼쪽 테이블이 항상 드라이빙(Driving) 테이블이 된다.
+
+```sql
+-- 왼쪽 orders가 항상 먼저 스캔됨
+SELECT o.id, u.name
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.id
+WHERE u.name = '홍길동';
+```
+
+**문제**: `WHERE u.name = '홍길동'` 조건이 있으면 이는 사실상 INNER JOIN과 동일한 결과를 내지만, 실행 계획은 여전히 orders를 먼저 풀스캔하고 users를 NL(Nested Loop) 조인하는 방식을 택할 수 있다.
+
+```
+실행 계획 예시 (비효율):
++----+-------+------+------+------+
+| id | table | type | key  | rows |
++----+-------+------+------+------+
+|  1 | o     | ALL  | NULL | 10만 |  ← orders 풀스캔!
+|  1 | u     | ref  | PK   | 1    |
++----+-------+------+------+------+
+```
+
+## LEFT JOIN에서 인덱스를 놓치는 전형적인 패턴
+
+### 패턴 1: NULL 체크를 의도했지만 WHERE로 필터를 추가한 경우
+
+```sql
+-- LEFT JOIN의 의미가 희석됨
+SELECT o.*
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.id
+WHERE u.status = 'ACTIVE';   -- NULL인 행은 이미 걸러짐 → INNER JOIN과 동일
+```
+
+이런 쿼리는 INNER JOIN으로 바꾸면 옵티마이저가 더 자유롭게 최적화할 수 있다.
+
+### 패턴 2: ON 절에 오른쪽 테이블 조건을 넣는 것과 WHERE에 넣는 것의 차이
+
+```sql
+-- ON 절에 조건: LEFT JOIN 보존 유지
+SELECT o.id, u.name
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.id AND u.status = 'ACTIVE';
+-- user가 ACTIVE가 아니어도 orders 행은 살아있음 (u.name = NULL)
+
+-- WHERE 절에 조건: INNER JOIN과 동일하게 동작
+SELECT o.id, u.name
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.id
+WHERE u.status = 'ACTIVE';
+-- user가 없는 orders 행은 제거됨
+```
+
+## MySQL 실행 계획에서 JOIN 타입 읽기
+
+`EXPLAIN` 결과의 `type` 컬럼이 JOIN 효율을 나타낸다.
+
+| type 값 | 의미 | 효율 |
+|---------|------|------|
+| system | 단일 행 테이블 | 최고 |
+| const | PK/Unique 인덱스 1건 조회 | 매우 좋음 |
+| eq_ref | JOIN 시 PK/Unique 인덱스 사용 | 좋음 |
+| ref | 일반 인덱스 사용 | 보통 |
+| range | 인덱스 범위 스캔 | 보통 |
+| index | 인덱스 풀스캔 | 나쁨 |
+| ALL | 테이블 풀스캔 | 매우 나쁨 |
+
+INNER JOIN은 옵티마이저가 `eq_ref`나 `ref`를 더 적극적으로 활용할 수 있다. LEFT JOIN은 드라이빙 테이블이 고정되므로 `ALL`이 나타나기 더 쉽다.
+
+## 실전 최적화 체크리스트
+
+### LEFT JOIN을 INNER JOIN으로 바꿀 수 있는지 확인
+
+```sql
+-- 변경 전
+SELECT * FROM orders o
+LEFT JOIN users u ON o.user_id = u.id
+WHERE u.id IS NOT NULL;  -- NULL 체크 → 사실 INNER JOIN
+
+-- 변경 후
+SELECT * FROM orders o
+INNER JOIN users u ON o.user_id = u.id;
+```
+
+### JOIN 대상 컬럼에 인덱스 확인
+
+```sql
+-- orders.user_id와 users.id에 인덱스가 있는지 확인
+SHOW INDEX FROM orders;
+SHOW INDEX FROM users;
+
+-- 없으면 추가
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+```
+
+### EXPLAIN ANALYZE로 실제 행 수 확인 (MySQL 8.0+)
+
+```sql
+EXPLAIN ANALYZE
+SELECT o.id, u.name
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.id
+WHERE o.created_at > '2026-01-01';
+```
+
+```
+출력 예시:
+-> Nested loop left join  (actual rows=5000, loops=1)
+    -> Index range scan on o using idx_created_at (actual rows=5000)
+    -> Single-row index lookup on u using PRIMARY (actual rows=1)
+```
+
+## 언제 어떤 JOIN을 선택할까
+
+| 상황 | 선택 |
+|------|------|
+| 양쪽 모두 존재하는 데이터만 필요 | INNER JOIN |
+| 왼쪽 테이블 전체 + 오른쪽 있으면 포함 | LEFT JOIN (ON 절에 조건) |
+| 오른쪽에 없는 행만 찾기 (안티조인) | LEFT JOIN + WHERE 오른쪽.id IS NULL |
+| 성능이 중요하고 NULL 보존 불필요 | INNER JOIN 우선 검토 |
+
+JOIN 종류 선택은 결과 정확성이 최우선이지만, INNER JOIN을 사용할 수 있는 상황이라면 옵티마이저에게 더 많은 최적화 기회를 주는 선택이기도 하다. LEFT JOIN을 쓸 때는 ON 절과 WHERE 절의 조건 위치가 결과와 실행 계획 모두에 영향을 준다는 점을 반드시 인지해야 한다.
