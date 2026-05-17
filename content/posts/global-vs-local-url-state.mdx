@@ -1,0 +1,178 @@
+---
+title: 전역 상태 vs 지역 상태 vs URL 상태
+date: '2026-05-17'
+category: Frontend
+tags:
+  - React
+  - State Management
+  - URL State
+  - Architecture
+summary: >-
+  전역 상태는 편리하지만, 모든 상태를 전역으로 올리면 불필요한 리렌더링과 디버깅 어려움이 생긴다.
+  지역 상태와 URL 상태가 더 적합한 상황을 구분하면 컴포넌트 설계가 단순해지고 공유·북마크 같은 기능도 자연스럽게 구현된다.
+thumbnail: /thumbnails/global-vs-local-url-state.svg
+---
+
+전역 상태는 편리하지만, 언제 지역 상태나 URL 상태로 두는 것이 더 나을까? 상태를 무조건 전역 스토어로 올리는 습관은 컴포넌트 간 의존성을 높이고, 변경 추적을 어렵게 하며, 리렌더링 범위를 불필요하게 넓힌다. 상태가 **어디서 소비되는지**, **공유가 필요한지**, **페이지를 벗어나도 유지해야 하는지**를 기준으로 저장 위치를 결정해야 한다.
+
+## 상태 종류와 책임 범위
+
+| 상태 유형 | 예시 | 소비 범위 | 새로고침 후 유지 |
+|-----------|------|-----------|----------------|
+| 지역(Local) 상태 | 드롭다운 열림·닫힘, 입력 포커스 | 컴포넌트 내부 | ✗ |
+| 전역(Global) 상태 | 로그인 사용자, 장바구니 | 앱 전역 | 조건부 |
+| URL 상태 | 검색어, 필터, 페이지 번호 | 링크를 공유하는 모든 곳 | ✓ |
+| 서버(Server) 상태 | API 응답 데이터, 캐시 | 훅 경계 | 캐시 설정에 따라 |
+
+## 지역 상태 — 컴포넌트 경계 안에서 끝나는 상태
+
+컴포넌트 바깥에서 알 필요 없는 상태는 `useState`나 `useReducer`로 관리하는 것이 맞다. 모달 열림 여부, 아코디언 확장 상태, 폼 유효성 오류 메시지가 여기에 해당한다.
+
+```tsx
+// 좋은 예: 드롭다운은 해당 컴포넌트만 알면 됨
+function CategoryDropdown() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div>
+      <button onClick={() => setOpen(prev => !prev)}>카테고리</button>
+      {open && <DropdownMenu />}
+    </div>
+  );
+}
+```
+
+이를 전역 스토어로 올리면 드롭다운 하나가 열릴 때마다 스토어를 구독하는 모든 컴포넌트가 불필요하게 재평가된다.
+
+**지역 상태를 선택하는 기준:**
+- 부모 컴포넌트가 이 값을 알아야 할 이유가 없다
+- 페이지를 이동하거나 새로고침하면 리셋되어도 무방하다
+- 다른 컴포넌트와 동기화할 필요가 없다
+
+## 전역 상태 — 앱 어디서든 읽어야 하는 상태
+
+```tsx
+// Zustand 예시: 로그인 사용자는 여러 컴포넌트에서 공유
+interface AuthStore {
+  user: User | null;
+  setUser: (user: User | null) => void;
+}
+
+const useAuthStore = create<AuthStore>()(set => ({
+  user: null,
+  setUser: user => set({ user }),
+}));
+```
+
+전역 스토어가 정말 필요한 경우는 다음과 같다:
+- **인증 정보**: Header, Sidebar, 라우트 가드가 동시에 읽는다
+- **장바구니**: 상품 목록, 결제 페이지, 미니 카트가 공유한다
+- **테마/언어**: 앱 전역 UI에 영향을 준다
+
+전역 상태는 소비자가 많고 변경 빈도가 낮을 때 효과적이다. 반대로 변경이 잦고 소비자가 한 곳뿐이라면 지역 상태가 낫다.
+
+## URL 상태 — 새로고침과 공유가 필요한 상태
+
+검색어, 필터, 정렬 기준, 페이지 번호는 URL에 두는 것이 가장 자연스럽다.
+
+```
+✗ useState로 관리 시:
+  - 브라우저 뒤로가기로 이전 검색 복원 불가
+  - 링크 공유 시 현재 상태 전달 불가
+  - 새로고침하면 초기화
+
+✓ URL로 관리 시:
+  /products?q=운동화&sort=price&page=2
+  - 뒤로가기, 앞으로가기가 자연스럽게 동작
+  - URL만 공유해도 동일한 결과를 볼 수 있음
+  - 새로고침해도 상태 유지
+```
+
+```tsx
+// Next.js App Router에서 URL 상태 읽기·쓰기
+'use client';
+import { useRouter, useSearchParams } from 'next/navigation';
+
+function ProductFilter() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const sort = searchParams.get('sort') ?? 'latest';
+
+  function handleSortChange(value: string) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('sort', value);
+    router.push(`?${params.toString()}`);
+  }
+
+  return (
+    <select value={sort} onChange={e => handleSortChange(e.target.value)}>
+      <option value="latest">최신순</option>
+      <option value="price">가격순</option>
+    </select>
+  );
+}
+```
+
+**URL 상태를 선택하는 기준:**
+- 링크로 공유되어야 한다 (검색 결과, 필터 조합)
+- 브라우저 히스토리가 의미를 가진다 (뒤로가기로 이전 상태 복원)
+- 새로고침 후에도 동일한 화면을 보여야 한다
+
+## 상태 유형 선택 흐름도
+
+```
+이 상태를 다른 컴포넌트가 읽어야 하는가?
+│
+├─ 아니오 ──▶ 지역 상태 (useState)
+│
+└─ 예
+    │
+    ├─ URL로 공유·북마크가 필요한가?
+    │   │
+    │   ├─ 예 ──▶ URL 상태 (searchParams)
+    │   │
+    │   └─ 아니오
+    │       │
+    │       ├─ 서버에서 가져오는 데이터인가?
+    │       │   │
+    │       │   ├─ 예 ──▶ 서버 상태 (React Query / SWR)
+    │       │   │
+    │       │   └─ 아니오 ──▶ 전역 상태 (Zustand / Context)
+```
+
+## 흔한 실수
+
+### 서버 상태를 전역 스토어에 복사하기
+
+```tsx
+// 나쁜 예: API 데이터를 Redux에 그대로 저장
+dispatch(setProducts(await fetchProducts()));
+
+// 좋은 예: React Query가 서버 상태를 직접 관리
+const { data: products } = useQuery(['products'], fetchProducts);
+```
+
+서버 상태를 전역 스토어에 복사하면 캐시 만료, 동기화, 낙관적 업데이트를 직접 구현해야 한다. React Query나 SWR은 이를 자동으로 처리한다.
+
+### 전역 상태로 올려야 할 것을 props drilling으로 해결하기
+
+컴포넌트 트리가 3단계 이상 깊어지면서 같은 값을 계속 props로 전달하고 있다면 전역 상태나 Context가 적합한 신호다.
+
+```tsx
+// props drilling이 3단계를 넘기 시작할 때 검토
+//  App → Layout → Sidebar → UserAvatar (user prop 4번 전달)
+
+// Context나 Zustand로 해결
+const user = useAuthStore(s => s.user);
+```
+
+## 실전 요약
+
+| 상황 | 권장 선택 |
+|------|-----------|
+| 모달, 드롭다운, 아코디언 열림 상태 | 지역 상태 |
+| 로그인 사용자, 테마, 장바구니 | 전역 상태 |
+| 검색어, 필터, 정렬, 페이지 번호 | URL 상태 |
+| API 응답 데이터, 목록, 상세 정보 | 서버 상태 |
+
+상태의 위치는 **소비 범위**와 **생명주기**가 결정한다. 모든 상태를 전역으로 올리는 것도, 모든 것을 URL에 넣는 것도 과잉이다. 각 유형의 경계를 명확히 하면 컴포넌트가 단순해지고, 디버깅이 쉬워지며, 사용자 경험도 자연스럽게 개선된다.
