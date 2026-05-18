@@ -1,0 +1,250 @@
+---
+title: 도메인 레이어가 인프라에 의존하면 생기는 유지보수 문제
+date: '2026-05-18'
+category: Architecture
+tags:
+  - Clean Architecture
+  - DDD
+  - 의존성 방향
+  - 레이어드 아키텍처
+  - 헥사고날 아키텍처
+summary: >-
+  도메인 레이어가 애플리케이션 레이어나 인프라 레이어에 의존하면 비즈니스 로직이 기술 세부사항에 오염되어 테스트가 어려워지고
+  변경 비용이 급격히 높아진다. 의존성 방향을 안쪽(도메인)으로 향하게 설계해야 레이어 간 격리가 유지된다.
+thumbnail: /thumbnails/domain-layer-dependency-violation.svg
+---
+
+도메인 레이어가 애플리케이션 레이어나 인프라 레이어에 의존하면 어떤 유지보수 문제가 생길까? 이 질문은 단순한 패키지 구조 문제가 아니라 변경 비용과 테스트 가능성에 직접 영향을 주는 설계의 핵심이다.
+
+## 레이어드 아키텍처에서의 의존성 방향
+
+전통적인 레이어드 아키텍처는 다음 방향으로 의존한다.
+
+```
+Presentation → Application → Domain → Infrastructure
+```
+
+하지만 "의존성 역전 원칙(DIP)"을 적용한 클린 아키텍처나 헥사고날 아키텍처에서는 방향이 달라진다.
+
+```
+Presentation → Application → Domain
+                    ↓              ↑
+               Infrastructure ────┘
+               (Domain 인터페이스 구현)
+```
+
+핵심 원칙: **모든 의존성은 도메인을 향해야 한다.** 도메인은 바깥 레이어를 절대 알아서는 안 된다.
+
+## 도메인이 인프라에 의존하는 실제 예시
+
+가장 흔한 위반 패턴은 도메인 엔티티나 도메인 서비스가 JPA, Spring, 외부 라이브러리를 직접 참조하는 것이다.
+
+### 위반 예시 1: 도메인 엔티티의 JPA 어노테이션
+
+```java
+// 나쁜 예: 도메인 엔티티가 JPA(인프라)에 의존
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Column;
+
+@Entity
+public class Order {
+    @Id
+    private Long id;
+
+    @Column(name = "status")
+    private OrderStatus status;
+
+    public void complete() {
+        // 비즈니스 로직
+        this.status = OrderStatus.COMPLETED;
+    }
+}
+```
+
+이 코드에서 `Order` 도메인 엔티티는 JPA 어노테이션에 의존한다. JPA를 MyBatis나 다른 저장소로 교체하면 도메인 클래스를 직접 수정해야 한다.
+
+### 위반 예시 2: 도메인 서비스가 Spring 빈에 의존
+
+```java
+// 나쁜 예: 도메인 서비스가 @Service(Spring)에 의존
+import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+
+@Service
+public class OrderDomainService {
+    @Autowired
+    private EmailClient emailClient; // 인프라 레이어 클라이언트
+
+    public void confirmOrder(Order order) {
+        order.confirm();
+        emailClient.send(order.getBuyerEmail(), "주문이 확인되었습니다"); // 인프라 의존
+    }
+}
+```
+
+도메인 서비스가 이메일 발송이라는 인프라 관심사를 직접 처리하고 있다.
+
+### 위반 예시 3: 도메인 로직에서 HTTP 클라이언트 호출
+
+```java
+// 나쁜 예: 도메인 레이어에서 외부 API 직접 호출
+public class PricingDomain {
+    private final RestTemplate restTemplate; // 인프라
+
+    public Money calculatePrice(Product product) {
+        ExchangeRate rate = restTemplate.getForObject(
+            "https://api.exchange.com/rate", ExchangeRate.class
+        );
+        return product.getBasePrice().multiply(rate.getUsdToKrw());
+    }
+}
+```
+
+도메인 로직이 네트워크 통신에 의존하면, 단위 테스트를 할 때마다 외부 서버가 필요해진다.
+
+## 위반이 만드는 구체적 유지보수 문제
+
+| 문제 | 원인 | 증상 |
+|------|------|------|
+| 테스트 불가 | 도메인이 DB/네트워크에 의존 | 단위 테스트에 컨테이너, Mock 서버 필요 |
+| 기술 교체 비용 증가 | 도메인에 JPA/Spring 코드 존재 | ORM 변경 시 비즈니스 로직 수정 필요 |
+| 변경 전파 | 인프라 변경이 도메인까지 전파 | 외부 API 스펙 변경으로 도메인 수정 |
+| 순환 의존성 | 레이어 간 양방향 참조 | 컴파일 오류, 스프링 빈 충돌 |
+| 응집도 저하 | 비즈니스 로직과 기술 코드 혼재 | 코드 이해·수정 범위 불명확 |
+
+## 올바른 의존성 방향 설계
+
+### 포트와 어댑터 패턴 적용
+
+도메인이 인프라를 직접 사용하는 대신, 도메인이 **인터페이스(포트)**를 정의하고 인프라가 그것을 **구현(어댑터)**한다.
+
+```java
+// 도메인 레이어: 인터페이스(포트) 정의
+public interface ExchangeRatePort {
+    ExchangeRate getCurrentRate(Currency from, Currency to);
+}
+
+// 도메인 서비스: 포트에만 의존
+public class PricingDomainService {
+    private final ExchangeRatePort exchangeRatePort; // 도메인 내부 인터페이스
+
+    public Money calculatePrice(Product product) {
+        ExchangeRate rate = exchangeRatePort.getCurrentRate(
+            Currency.USD, Currency.KRW
+        );
+        return product.getBasePrice().multiply(rate.getValue());
+    }
+}
+
+// 인프라 레이어: 어댑터 구현
+@Component
+public class HttpExchangeRateAdapter implements ExchangeRatePort {
+    private final RestTemplate restTemplate;
+
+    @Override
+    public ExchangeRate getCurrentRate(Currency from, Currency to) {
+        return restTemplate.getForObject(
+            "https://api.exchange.com/rate?from=" + from + "&to=" + to,
+            ExchangeRate.class
+        );
+    }
+}
+```
+
+이제 `PricingDomainService`를 테스트할 때는 `ExchangeRatePort`의 가짜 구현만 주입하면 된다.
+
+### 도메인 엔티티와 JPA 엔티티 분리
+
+```java
+// 도메인 모델: 순수 Java, 프레임워크 의존 없음
+public class Order {
+    private final OrderId id;
+    private OrderStatus status;
+    private final List<OrderLine> lines;
+
+    public void confirm() {
+        if (this.status != OrderStatus.PENDING) {
+            throw new IllegalStateException("대기 중인 주문만 확인할 수 있습니다");
+        }
+        this.status = OrderStatus.CONFIRMED;
+    }
+}
+
+// 인프라 레이어: JPA 엔티티 (별도)
+@Entity
+@Table(name = "orders")
+public class OrderJpaEntity {
+    @Id
+    private Long id;
+
+    @Enumerated(EnumType.STRING)
+    private String status;
+
+    // 도메인 모델로 변환
+    public Order toDomain() {
+        return new Order(new OrderId(this.id), OrderStatus.valueOf(this.status));
+    }
+
+    // 도메인 모델에서 생성
+    public static OrderJpaEntity from(Order order) {
+        OrderJpaEntity entity = new OrderJpaEntity();
+        entity.id = order.getId().getValue();
+        entity.status = order.getStatus().name();
+        return entity;
+    }
+}
+```
+
+### 패키지 구조 예시
+
+```
+src/main/java/com/example/
+├── domain/                    # 외부 의존 없음
+│   ├── model/Order.java
+│   ├── model/OrderStatus.java
+│   ├── service/PricingDomainService.java
+│   └── port/ExchangeRatePort.java   ← 인터페이스 (도메인 소유)
+├── application/               # 도메인에만 의존
+│   └── usecase/ConfirmOrderUseCase.java
+└── infrastructure/            # 도메인 + 외부 프레임워크에 의존
+    ├── persistence/OrderJpaRepository.java
+    ├── persistence/OrderJpaEntity.java
+    └── external/HttpExchangeRateAdapter.java  ← 포트 구현
+```
+
+## 위반 감지 방법
+
+ArchUnit 같은 라이브러리로 의존성 규칙을 테스트 코드로 검증할 수 있다.
+
+```java
+@Test
+void 도메인은_인프라에_의존하지_않아야_한다() {
+    JavaClasses classes = new ClassFileImporter()
+        .importPackages("com.example");
+
+    ArchRule rule = noClasses()
+        .that().resideInAPackage("..domain..")
+        .should().dependOnClassesThat()
+        .resideInAPackage("..infrastructure..");
+
+    rule.check(classes);
+}
+```
+
+이 테스트가 빌드 파이프라인에 포함되면 위반이 코드 리뷰 이전에 자동으로 차단된다.
+
+## 언제 타협이 현실적인가
+
+완전한 분리가 항상 최선은 아니다. 프로젝트 규모와 팀 상황에 따라 타협 지점이 있다.
+
+| 상황 | 현실적 선택 |
+|------|------------|
+| 소규모 CRUD 서비스 | JPA 어노테이션을 도메인 엔티티에 직접 사용 |
+| 빠른 프로토타입 | 레이어 분리 없이 단일 모델 사용 |
+| 복잡한 도메인 로직 | 도메인-인프라 완전 분리 (포트-어댑터) |
+| 교체 가능성이 명확한 외부 의존 | 인터페이스 추상화 |
+
+중요한 것은 타협의 이유와 비용을 명확히 인지하는 것이다. 편의로 시작한 위반이 시스템이 커지면서 고치기 어려운 기술 부채로 굳어진다.
+
+도메인은 비즈니스 규칙의 핵심이며, 기술 세부사항으로부터 보호받아야 할 대상이다. 의존성의 방향을 도메인 안쪽으로 고정하는 것이 장기적으로 변경에 유연한 시스템을 만드는 기본 원칙이다.
