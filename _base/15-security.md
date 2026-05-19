@@ -8,7 +8,7 @@
 502. reflected XSS, stored XSS, DOM-based XSS는 공격 위치와 방어 지점이 어떻게 다를까?
 503. React의 기본 escaping이 XSS 위험을 줄여주지만 `dangerouslySetInnerHTML`이나 third-party widget에서는 어떤 위험이 남을까?
 504. CSP는 XSS를 완전히 막는 기능일까, 피해 범위를 줄이는 defense-in-depth 장치일까?
-505. CSRF는 CORS와 어떤 점에서 다르고, SameSite cookie는 어떤 공격을 줄여줄 수 있을까?
+~~505. CSRF는 CORS와 어떤 점에서 다르고, SameSite cookie는 어떤 공격을 줄여줄 수 있을까?~~ `작성완료`
 506. SameSite=Lax, Strict, None 설정은 로그인 세션과 외부 연동 UX에 어떤 영향을 줄까?
 507. CORS preflight는 보안 기능이라기보다 브라우저의 어떤 정책 협상 절차라고 볼 수 있을까?
 508. CORS에서 `Access-Control-Allow-Origin: *`와 credentials 허용을 함께 쓸 수 없는 이유는 무엇일까?

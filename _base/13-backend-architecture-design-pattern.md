@@ -7,7 +7,7 @@
 ~~301. layered architecture는 단순히 controller, service, repository 폴더를 나누는 것일까?~~ `작성완료`
 ~~302. domain layer가 application layer나 infrastructure layer에 의존하면 어떤 유지보수 문제가 생길까?~~ `작성완료`
 ~~303. hexagonal architecture에서 port와 adapter는 외부 의존성을 어떻게 격리할까?~~ `작성완료`
-304. clean architecture는 모든 프로젝트에 필요한 구조일까, 복잡도 대비 이점은 언제 커질까?
+~~304. clean architecture는 모든 프로젝트에 필요한 구조일까, 복잡도 대비 이점은 언제 커질까?~~ `작성완료`
 ~~305. CQRS는 읽기와 쓰기 모델을 분리하지만, 데이터 동기화와 운영 복잡도는 어떻게 증가할까?~~ `작성완료`
 ~~306. event sourcing은 상태를 저장하는 대신 이벤트를 저장하면서 어떤 장점과 디버깅 난제를 만들까?~~ `작성완료`
 ~~307. DDD의 aggregate는 단순 엔티티 묶음이 아니라 어떤 일관성 경계를 의미할까?~~ `작성완료`
