@@ -1,0 +1,151 @@
+---
+title: CSRF와 SameSite Cookie — CORS와 무엇이 다를까
+date: '2026-05-19'
+category: Backend
+tags:
+  - CSRF
+  - SameSite
+  - Cookie
+  - 보안
+  - CORS
+summary: >-
+  CSRF는 CORS와 다르게 브라우저가 쿠키를 자동으로 첨부한다는 특성을 악용한 공격이다. SameSite 쿠키 속성은
+  크로스 사이트 요청에서 쿠키 전송 여부를 제한하여 CSRF 피해를 줄이는 핵심 방어 수단이다.
+thumbnail: /thumbnails/csrf-samesite-cookie.svg
+---
+
+CSRF는 CORS와 어떤 점에서 다르고, SameSite 쿠키는 어떤 공격을 줄여줄 수 있을까. 두 개념은 모두 "다른 출처에서 오는 요청"과 관련이 있지만, 보호 대상과 방어 계층이 다르다.
+
+## CORS와 CSRF의 차이
+
+CORS(Cross-Origin Resource Sharing)는 **브라우저가 다른 출처의 응답을 읽지 못하게 막는** 메커니즘이다. 서버가 특정 출처를 허용하지 않으면, 브라우저는 응답을 차단한다.
+
+CSRF(Cross-Site Request Forgery)는 **피해자의 인증 정보(쿠키)를 이용해 의도하지 않은 요청을 실행시키는** 공격이다. CORS가 응답을 차단한다고 해도, 서버는 이미 요청을 처리했을 수 있다.
+
+```
+CORS 방어:  요청은 도달하지만 → 브라우저가 응답을 읽지 못함
+CSRF 공격:  요청이 도달하는 것 자체가 문제 → 서버는 이미 실행
+```
+
+둘의 관계를 정확히 이해하면 "CORS를 설정했으니 CSRF도 막혔다"는 착각을 피할 수 있다.
+
+## CSRF 공격이 동작하는 이유
+
+브라우저는 특정 사이트로 요청을 보낼 때 해당 사이트의 쿠키를 자동으로 첨부한다. 이 자동 첨부 동작이 CSRF의 핵심 전제다.
+
+### 공격 시나리오
+
+```
+1. 사용자가 bank.com에 로그인 (쿠키 session=abc 발급)
+2. 사용자가 같은 브라우저로 evil.com 방문
+3. evil.com이 아래 폼을 자동 제출
+
+   <form action="https://bank.com/transfer" method="POST">
+     <input name="to" value="attacker" />
+     <input name="amount" value="1000000" />
+   </form>
+
+4. 브라우저가 bank.com에 요청 전송 시 session=abc 자동 첨부
+5. bank.com은 유효한 세션 쿠키를 보고 요청을 처리
+```
+
+사용자는 아무것도 입력하지 않았고, 공격자는 쿠키를 훔치지도 않았다. 브라우저의 자동 쿠키 첨부 동작만 악용했다.
+
+### 단순 GET 요청의 경우
+
+`img` 태그, `script src`, `iframe` 등으로도 GET 요청을 유발할 수 있다.
+
+```html
+<!-- evil.com에서 피해자의 세션으로 logout 실행 -->
+<img src="https://bank.com/logout" />
+```
+
+## SameSite 쿠키가 하는 일
+
+SameSite는 쿠키가 **크로스 사이트 요청에 첨부될지 여부**를 제어하는 속성이다.
+
+### SameSite 값별 동작
+
+| 값 | 동작 |
+|----|------|
+| `Strict` | 같은 사이트에서 시작된 요청에만 쿠키 전송 |
+| `Lax` | 같은 사이트 요청 + 탑 레벨 GET 네비게이션에만 전송 |
+| `None` | 모든 크로스 사이트 요청에 전송 (Secure 필수) |
+
+```
+Set-Cookie: session=abc; SameSite=Lax; HttpOnly; Secure
+```
+
+### Strict vs Lax 차이
+
+`Strict`는 가장 강력하지만 UX 문제가 있다. 외부 링크를 클릭해서 사이트에 진입할 때도 쿠키가 전송되지 않아, 로그인 상태가 유지되지 않는다.
+
+`Lax`는 이 문제를 절충한다. 탑 레벨 GET 네비게이션(링크 클릭, 주소창 직접 입력)에는 쿠키를 보내지만, POST 폼이나 iframe 같은 크로스 사이트 요청에는 보내지 않는다.
+
+```
+evil.com의 form POST → bank.com     : SameSite=Lax 쿠키 미전송 (차단)
+external.com의 링크 → bank.com      : SameSite=Lax 쿠키 전송 (허용)
+evil.com의 fetch POST → bank.com    : SameSite=Lax 쿠키 미전송 (차단)
+```
+
+### 2020년 이후 브라우저 기본값 변경
+
+Chrome 80부터 `SameSite` 속성을 명시하지 않은 쿠키는 `Lax`가 기본값이 됐다. 이전까지는 `None`이 기본이었다. 이 변경으로 많은 앱이 의도치 않게 CSRF 방어력을 얻었지만, 동시에 서드파티 쿠키 연동이 깨지는 사례도 생겼다.
+
+## SameSite가 막지 못하는 경우
+
+SameSite는 완벽한 방어가 아니다.
+
+### 같은 사이트 내 XSS
+
+SameSite는 크로스 사이트 요청을 막는다. 하지만 동일 사이트에서 XSS가 발생하면 같은 사이트 요청이 되므로 SameSite는 무력화된다.
+
+### 서브도메인 공격
+
+`SameSite=Lax/Strict`에서 "같은 사이트"의 기준은 eTLD+1(예: `bank.com`)이다. `evil.bank.com`이 존재하고 공격자가 이 서브도메인을 통제할 수 있다면 같은 사이트 요청으로 간주된다.
+
+### 오래된 브라우저
+
+SameSite를 지원하지 않는 구형 브라우저에서는 속성 자체가 무시된다.
+
+## CSRF 방어 조합
+
+SameSite만으로는 충분하지 않다. 실제 서비스에서는 여러 방어를 조합한다.
+
+| 방어 수단 | 동작 원리 |
+|----------|----------|
+| SameSite 쿠키 | 크로스 사이트 쿠키 자동 전송 차단 |
+| CSRF 토큰 | 서버가 발급한 예측 불가능한 토큰을 요청마다 검증 |
+| Double Submit Cookie | 쿠키 값과 요청 파라미터 값을 비교 |
+| Origin / Referer 검증 | 요청 출처가 신뢰할 수 있는 도메인인지 확인 |
+| Custom Request Header | `XMLHttpRequest`, `fetch`에서만 커스텀 헤더 추가 가능 |
+
+Spring Security는 기본으로 CSRF 토큰 방식을 적용한다.
+
+```java
+// Spring Security 6.x 기본 설정
+@Bean
+SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    http
+        .csrf(csrf -> csrf
+            .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+        );
+    return http.build();
+}
+```
+
+REST API에서 JWT를 Authorization 헤더로 전달하는 경우에는 쿠키를 사용하지 않으므로 CSRF 위험이 없다. CSRF는 쿠키 기반 인증에서만 의미 있는 공격이다.
+
+## CORS와의 관계 정리
+
+```
+CORS: 브라우저가 크로스 오리진 응답을 읽지 못하게 제한
+      → 응답 데이터 유출 방지
+
+CSRF: 공격자가 피해자의 쿠키로 요청을 실행
+      → 요청 자체를 막아야 함 (SameSite, CSRF 토큰)
+```
+
+CORS를 설정해도 CSRF 공격은 막히지 않는다. CORS는 응답 읽기를 막을 뿐, 요청이 서버에 도달하는 것 자체는 막지 못하기 때문이다. 단, SameSite 쿠키와 CSRF 토큰을 조합하면 현실적인 CSRF 위험을 충분히 줄일 수 있다.
+
+CSRF 방어는 쿠키가 자동으로 전송된다는 브라우저 동작을 이해하는 것에서 시작한다. SameSite 쿠키는 가장 낮은 비용으로 가장 많은 CSRF 시나리오를 차단하는 현실적인 첫 번째 방어선이다.
