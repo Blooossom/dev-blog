@@ -1,0 +1,157 @@
+---
+title: SQL 서브쿼리와 JOIN, 항상 바꿔 쓸 수 있을까?
+date: '2026-05-21'
+category: Backend
+tags:
+  - SQL
+  - 쿼리 최적화
+  - 서브쿼리
+  - JOIN
+  - 데이터베이스
+summary: >-
+  서브쿼리와 JOIN은 같은 결과를 내는 경우가 많지만, 옵티마이저가 처리하는 방식이 달라 성능 차이가 생긴다. 어떤 상황에서 어떤 선택이 유리한지 이해해야 쿼리 튜닝이 가능하다.
+thumbnail: /thumbnails/sql-subquery-vs-join.svg
+---
+
+서브쿼리와 JOIN은 항상 서로 바꿔 쓸 수 있을까? 같은 결과를 반환하는 쿼리라도 실행 계획이 달라져 성능 차이가 수십 배까지 벌어질 수 있다.
+
+## 서브쿼리의 종류
+
+서브쿼리는 위치에 따라 세 종류로 나뉜다.
+
+| 종류 | 위치 | 특징 |
+|------|------|------|
+| 스칼라 서브쿼리 | SELECT 절 | 행마다 한 번 실행, 단일 값 반환 |
+| 인라인 뷰 | FROM 절 | 임시 결과 집합, 집계 선행 가능 |
+| 중첩 서브쿼리 | WHERE 절 | IN, EXISTS, 비교 연산자와 사용 |
+
+## WHERE IN 서브쿼리 vs INNER JOIN
+
+가장 흔한 비교다. 아래 두 쿼리는 같은 결과를 낸다.
+
+```sql
+-- 서브쿼리 버전
+SELECT o.id, o.amount
+FROM orders o
+WHERE o.user_id IN (
+  SELECT id FROM users WHERE grade = 'VIP'
+);
+
+-- JOIN 버전
+SELECT o.id, o.amount
+FROM orders o
+INNER JOIN users u ON o.user_id = u.id
+WHERE u.grade = 'VIP';
+```
+
+MySQL 5.5 이하에서는 서브쿼리 버전이 외부 쿼리 행마다 반복 실행(DEPENDENT SUBQUERY)으로 동작해 느렸다. MySQL 5.6 이후 옵티마이저가 서브쿼리를 세미조인(semi-join)으로 변환해 JOIN과 같은 실행 계획을 만들 수 있게 됐다.
+
+그러나 옵티마이저가 변환에 실패하는 경우도 있으므로, 성능이 중요한 쿼리는 반드시 EXPLAIN으로 확인해야 한다.
+
+## EXISTS vs IN
+
+`EXISTS`는 조건을 만족하는 행이 존재하는지만 확인하고 즉시 멈춘다(short-circuit). NULL을 포함한 컬럼에서도 `IN`보다 안전하게 동작한다.
+
+```sql
+-- EXISTS 버전
+SELECT o.id
+FROM orders o
+WHERE EXISTS (
+  SELECT 1 FROM users u
+  WHERE u.id = o.user_id AND u.grade = 'VIP'
+);
+```
+
+### IN vs EXISTS 성능 비교
+
+| 상황 | 유리한 선택 |
+|------|-------------|
+| 서브쿼리 결과가 작을 때 | IN |
+| 외부 테이블이 작고 서브쿼리 테이블이 클 때 | EXISTS |
+| 서브쿼리 컬럼에 NULL 가능성 있을 때 | EXISTS |
+| NOT IN vs NOT EXISTS | NOT EXISTS (NULL 안전) |
+
+`NOT IN`에서 서브쿼리 결과에 NULL이 하나라도 있으면 외부 쿼리 전체가 빈 결과를 반환한다. `NOT EXISTS`는 이 함정을 피한다.
+
+```sql
+-- NULL 안전한 NOT EXISTS
+SELECT o.id
+FROM orders o
+WHERE NOT EXISTS (
+  SELECT 1 FROM refunds r WHERE r.order_id = o.id
+);
+```
+
+## 스칼라 서브쿼리 vs LEFT JOIN
+
+SELECT 절에 스칼라 서브쿼리를 쓰면 결과 행마다 한 번씩 실행된다.
+
+```sql
+-- 스칼라 서브쿼리 버전 (행 수만큼 반복 실행)
+SELECT
+  o.id,
+  (SELECT u.name FROM users u WHERE u.id = o.user_id) AS user_name
+FROM orders o;
+
+-- LEFT JOIN 버전 (1회 조인)
+SELECT o.id, u.name AS user_name
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.id;
+```
+
+결과 행이 많아질수록 LEFT JOIN이 압도적으로 빠르다. 스칼라 서브쿼리는 결과 값이 캐시되는 경우에만 성능이 비슷해진다.
+
+## 서브쿼리가 JOIN보다 유리한 경우
+
+### 집계 결과를 먼저 줄이는 인라인 뷰
+
+큰 테이블을 집계한 뒤 JOIN하면 처리 행 수를 줄일 수 있다.
+
+```sql
+-- 부서별 평균 급여를 인라인 뷰로 먼저 집계
+SELECT d.dept_name, agg.avg_salary
+FROM departments d
+INNER JOIN (
+  SELECT dept_id, AVG(salary) AS avg_salary
+  FROM employees
+  GROUP BY dept_id
+) agg ON d.id = agg.dept_id;
+```
+
+employees 전체를 JOIN한 뒤 집계하는 것보다, 먼저 집계해 행 수를 줄인 뒤 JOIN하는 것이 더 빠를 수 있다.
+
+### 집합 차이 표현
+
+`NOT EXISTS`는 두 집합의 차이를 표현할 때 가독성이 높고 NULL에도 안전하다.
+
+```sql
+-- 환불 이력이 없는 주문 조회
+SELECT o.id, o.amount
+FROM orders o
+WHERE NOT EXISTS (
+  SELECT 1 FROM refunds r WHERE r.order_id = o.id
+);
+```
+
+## 실행 계획으로 확인하기
+
+어떤 방식이 유리한지는 `EXPLAIN`으로 실행 계획을 보고 판단해야 한다.
+
+```sql
+EXPLAIN SELECT ...;
+```
+
+주요 확인 포인트:
+
+| 키워드 | 의미 | 대응 |
+|--------|------|------|
+| DEPENDENT SUBQUERY | 외부 쿼리 행마다 반복 | JOIN으로 재작성 검토 |
+| MATERIALIZED | 서브쿼리를 임시 테이블로 변환 | 결과 집합 크기 확인 |
+| Using index | 인덱스만으로 처리 | 빠름 |
+| Using filesort | 정렬을 위해 추가 패스 발생 | 인덱스 재검토 |
+
+`DEPENDENT SUBQUERY`가 나타나면 거의 항상 성능 문제다. `SELECT 1 FROM ... WHERE ...` 패턴을 `EXISTS`나 JOIN으로 바꾸는 것을 먼저 시도해야 한다.
+
+## 마치며
+
+서브쿼리와 JOIN은 의미적으로 동치인 경우가 많지만, 옵티마이저가 항상 같은 실행 계획을 선택하지는 않는다. 쿼리를 작성한 뒤 반드시 실행 계획을 확인하고, 성능이 중요한 경로에서는 두 방식을 모두 시도해보는 것이 원칙이다.
