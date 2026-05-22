@@ -35,7 +35,7 @@
 175. row lock과 table lock은 어떤 상황에서 선택되거나 확대될 수 있을까?
 ~~176. gap lock과 next-key lock은 어떤 문제를 막기 위해 존재할까?~~ `작성완료`
 177. deadlock은 DB가 자동으로 감지해도 애플리케이션에서 왜 재시도 전략이 필요할까?
-178. 긴 트랜잭션은 락들 아니라 undo log, vacuum, replication lag에 어떤 영향을 줄 수 있을까?
+~~178. 긴 트랜잭션은 락들 아니라 undo log, vacuum, replication lag에 어떤 영향을 줄 수 있을까?~~ `작성완료`
 179. 트랜잭션 안에서 외부 API를 호출하면 어떤 장애와 정합성 문제가 생길 수 있을까?
 180. optimistic locking에서 version 컨럼 충돌이 발생하면 사용자 경험은 어떻게 설계해야 할까?
 ## Modeling / Constraint

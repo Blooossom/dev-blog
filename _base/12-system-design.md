@@ -26,7 +26,7 @@
 268. 외부 API 의존성이 있는 서비스는 timeout, retry, fallback, circuit breaker를 어떻게 조합해야 할까?
 ## Data / Scaling
 
-269. 대규모 피드 시스템에서 fan-out on write와 fan-out on read는 어떤 트래픽 패턴에서 유리할까?
+~~269. 대규모 피드 시스템에서 fan-out on write와 fan-out on read는 어떤 트래픽 패턴에서 유리할까?~~ `작성완료`
 270. 검색 기능을 DB `LIKE`로 구현할 때와 검색 엔진을 도입할 때의 경계는 무엇일까?
 271. 알림 시스템에서 실시간성, 중복 방지, 사용자 설정 반영은 어떻게 함께 설계해야 할까?
 272. 파일 업로드 시스템에서 애플리케이션 서버를 거치지 않고 object storage로 직접 업로드하게 하는 이유는 무엇일까?
