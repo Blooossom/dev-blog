@@ -570,6 +570,8 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'message-delivery-guarantee':      { pattern: 'flow',     colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'observability-logs-metrics-traces': { pattern: 'traces',  colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
   'sql-subquery-vs-join':              { pattern: 'code',    colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'long-transaction-effects':          { pattern: 'layers',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'feed-fanout-pattern':               { pattern: 'flow',    colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
