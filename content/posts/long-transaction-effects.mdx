@@ -1,0 +1,150 @@
+---
+title: 긴 트랜잭션이 undo log, vacuum, replication lag에 미치는 영향
+date: '2026-05-22'
+category: Backend
+tags:
+  - Database
+  - Transaction
+  - PostgreSQL
+  - MySQL
+  - Performance
+summary: >-
+  긴 트랜잭션은 락(lock) 점유 시간을 늘리는 것 외에도 undo log 누적, vacuum 지연, replication lag 확대라는 보이지 않는 부작용을 만든다. 각 부작용의 원인과 운영 현장에서의 대처법을 정리한다.
+thumbnail: /thumbnails/long-transaction-effects.svg
+---
+
+긴 트랜잭션은 락뿐 아니라 undo log, vacuum, replication lag에도 연쇄적인 영향을 줄 수 있다는 점에서, 단순한 "락 점유 시간" 문제로만 바라보면 놓치는 부분이 생긴다.
+
+## 긴 트랜잭션이란
+
+트랜잭션이 `BEGIN`(또는 자동 시작)된 후 `COMMIT` / `ROLLBACK` 없이 오랫동안 열려 있는 상태를 말한다. 수 초에서 수십 분, 심하면 몇 시간이 지나도록 활성 상태로 남아 있는 경우가 실제 운영 환경에서 종종 발생한다.
+
+주요 원인으로는 다음이 있다.
+
+| 원인 | 예시 |
+|------|------|
+| 애플리케이션 버그 | 트랜잭션 열고 루프 안에서 외부 API 호출 |
+| 배치 처리 | 한 트랜잭션 안에서 수백만 행 처리 |
+| 유지보수 쿼리 | 대용량 `UPDATE` 를 한 번에 실행 |
+| 커넥션 풀 누수 | 커넥션이 반환되지 않아 트랜잭션이 방치 |
+
+---
+
+## undo log 누적
+
+MVCC(Multi-Version Concurrency Control)를 사용하는 DB는 데이터 변경 시 이전 버전을 undo log(또는 undo segment)에 보관한다. 이 버전 체인은 아직 커밋되지 않은 트랜잭션이 과거 스냅샷을 읽어야 할 때 필요하다.
+
+```
+시점 T1: 트랜잭션 A 시작 (스냅샷 획득)
+시점 T2: 트랜잭션 B → 행 X 업데이트 → undo log 생성
+시점 T3: 트랜잭션 C → 행 X 재업데이트 → 또 다른 undo log 생성
+...
+시점 Tn: 트랜잭션 A 아직 열려 있음 → T1 시점 버전 체인 전부 유지 필요
+```
+
+결과적으로 긴 트랜잭션이 열려 있는 동안에는 그 이후 발생한 모든 변경에 대한 undo log가 정리되지 않는다.
+
+### MySQL InnoDB에서의 영향
+
+MySQL InnoDB는 undo log를 `ibdata1` 또는 별도 undo 테이블스페이스에 보관한다. 이 공간이 커지면:
+
+- 디스크 I/O 증가
+- 버전 체인 탐색 비용 증가(순차 스캔하는 SELECT도 느려짐)
+- `SHOW ENGINE INNODB STATUS` 에서 `History list length` 수치가 치솟음
+
+`History list length` 가 수만 단위를 초과하기 시작하면 긴 트랜잭션이 살아 있을 가능성이 높다.
+
+---
+
+## vacuum 지연 (PostgreSQL)
+
+PostgreSQL은 행을 삭제하거나 업데이트할 때 실제로 기존 행을 "dead tuple"로 표시하고 새 버전을 기록한다. 이 dead tuple은 vacuum 작업이 회수해야 디스크 공간이 반환된다.
+
+```
+UPDATE user SET name = 'B' WHERE id = 1;
+→ 기존 행 (name='A') → dead tuple
+→ 새 행 (name='B') → live tuple
+```
+
+vacuum은 더 이상 어떤 트랜잭션도 해당 dead tuple을 필요로 하지 않을 때 정리한다. **긴 트랜잭션이 오래된 스냅샷을 붙들고 있으면** vacuum은 그 트랜잭션이 시작한 시점 이후에 만들어진 dead tuple을 정리하지 못한다.
+
+### 결과
+
+- 테이블 bloat(파일 크기 증가): 디스크 공간 낭비
+- 인덱스 bloat: 인덱스도 dead entry로 가득 참
+- 극단적 케이스: `transaction ID wraparound` 위험 — PostgreSQL의 32비트 XID가 순환하기 전에 vacuum이 XID를 회수하지 못하면 DB 전체를 읽기 전용으로 강제 전환하는 보호 모드가 작동함
+
+```
+# pg_stat_activity로 긴 트랜잭션 탐지
+SELECT pid, now() - xact_start AS duration, state, query
+FROM pg_stat_activity
+WHERE xact_start IS NOT NULL
+ORDER BY duration DESC;
+```
+
+---
+
+## replication lag 확대
+
+Streaming replication(또는 binlog 기반 복제)에서는 primary의 WAL(Write-Ahead Log) / binlog를 replica가 수신하여 적용한다.
+
+긴 트랜잭션은 다음 경로로 replication lag를 만든다.
+
+```
+1. Primary: 긴 트랜잭션 진행 중
+   → WAL은 계속 쌓임 (중간 중간 체크포인트 필요)
+   → 트랜잭션 커밋 전까지 해당 변경이 replica에 apply 불가
+
+2. 대용량 트랜잭션 커밋 순간
+   → 한 번에 거대한 WAL 세그먼트가 replica로 전송
+   → replica apply 작업이 급증 → lag 급등
+
+3. replica에서 lag가 큰 상태에서 read replica로 조회 시
+   → 오래된 데이터 반환 (read-your-writes 위반 가능)
+```
+
+### 실무 대처
+
+| 상황 | 대응 |
+|------|------|
+| 대량 UPDATE/DELETE | `WHERE` 조건에 `LIMIT` 걸어 배치 분할 처리 |
+| 배치 작업 | 트랜잭션 단위를 1,000~10,000행으로 나눔 |
+| 외부 API 호출 | 트랜잭션 바깥에서 API 호출 후 결과를 받아 트랜잭션 진입 |
+| 긴 트랜잭션 탐지 | `statement_timeout`, `idle_in_transaction_session_timeout` 설정 |
+
+---
+
+## 락(Lock)과의 관계
+
+긴 트랜잭션은 락을 오래 점유한다는 것은 잘 알려져 있지만, undo log, vacuum, replication lag와의 연쇄 효과까지 고려하면 그 파급력이 훨씬 크다.
+
+```
+긴 트랜잭션
+  ├── 락 점유 지속 → 다른 트랜잭션 대기 → 처리량 저하
+  ├── undo log 누적 → 버전 체인 탐색 비용 → 읽기 쿼리 지연
+  ├── vacuum 지연 → 테이블·인덱스 bloat → I/O 비용 증가
+  └── replication lag → 복제본 읽기 불일치 → 서비스 품질 저하
+```
+
+---
+
+## 탐지와 예방 설정
+
+```sql
+-- PostgreSQL: 유휴 트랜잭션 자동 종료
+SET idle_in_transaction_session_timeout = '10min';
+
+-- PostgreSQL: 쿼리 타임아웃
+SET statement_timeout = '30s';
+
+-- MySQL: 긴 트랜잭션 조회
+SELECT trx_id, trx_started, trx_mysql_thread_id, trx_query
+FROM information_schema.INNODB_TRX
+WHERE TIMESTAMPDIFF(SECOND, trx_started, NOW()) > 60;
+```
+
+애플리케이션 레벨에서는 트랜잭션 스코프를 가능한 좁게 유지하고, 트랜잭션 내부에서 외부 I/O를 제거하는 것이 근본적인 해결책이다.
+
+---
+
+긴 트랜잭션은 단순한 락 경합 문제가 아니라 DB 내부의 undo log, vacuum 메커니즘, 그리고 복제 파이프라인 전체에 영향을 주는 시스템 레벨 문제다. 트랜잭션 경계를 최소화하고 타임아웃을 적극 설정하는 것이 핵심 예방 원칙이다.
