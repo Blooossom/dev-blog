@@ -46,7 +46,7 @@
 ~~70. 로그, 메트릭, 트레이스는 장애 분석에서 각각 어떤 질문에 답해줌 수 있을까?~~ `작성완료`
 ## Backend / JVM / Spring
 
-351. JVM safepoint는 GC띀 아니라 어떤 작업에서 발생하고, latency-sensitive 서비스에 어떤 영향을 줄 수 있을까?
+~~351. JVM safepoint는 GC띀 아니라 어떤 작업에서 발생하고, latency-sensitive 서비스에 어떤 영향을 줄 수 있을까?~~ `작성완료`
 352. biased locking, lightweight locking, heavyweight locking은 JVM의 낙 최적화 관점에서 어떻게 달라질까?
 ~~353. Java 메모리 모델에서 happens-before 관계를 이해하지 못하면 어떤 동시성 버그를 놓칠 수 있을까?~~ `작성완료`
 ~~354. false sharing은 멀티스레드 프로그램에서 CPU 캐시 라인 때문에 어떤 성능 저하를 만들까?~~ `작성완료`
