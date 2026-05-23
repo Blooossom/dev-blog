@@ -1,0 +1,155 @@
+---
+title: JVM Safepoint — GC만의 이야기가 아니다
+date: '2026-05-23'
+category: Backend
+tags:
+  - JVM
+  - Safepoint
+  - GC
+  - Performance
+  - Latency
+summary: >-
+  JVM Safepoint는 GC 외에도 다양한 런타임 작업에서 발생하며, 모든 스레드가 멈추는 STW 구간을 만든다.
+  latency-sensitive 서비스에서 Safepoint가 어디서 어떻게 레이턴시 스파이크를 일으키는지 이해해야 튜닝이 가능하다.
+thumbnail: /thumbnails/jvm-safepoint.svg
+---
+
+JVM Safepoint는 GC만의 이야기가 아니다 — 그런데 많은 개발자가 STW(Stop-The-World)를 GC의 전유물로 오해한다.
+
+## Safepoint란 무엇인가
+
+Safepoint는 JVM이 모든 애플리케이션 스레드를 안전하게 일시 중단할 수 있는 지점이다. JVM은 특정 런타임 작업을 수행하기 전에 전체 스레드를 Safepoint에서 멈춰야 한다.
+
+```
+Thread 1  ─────── running ──[safepoint]──── waiting ──── resume ──▶
+Thread 2  ──── running ────[safepoint]─── waiting ────── resume ──▶
+Thread 3  ───────────── running ─────[safepoint]─ waiting ─ resume ──▶
+                                          ▲
+                                   JVM Operation
+                                   (GC, deopt, ...)
+```
+
+모든 스레드가 Safepoint에 도달해야 JVM 작업이 시작된다. 이 구간이 STW다.
+
+## GC 외에 Safepoint를 트리거하는 작업들
+
+| 작업 | 설명 |
+|------|------|
+| GC | Young/Old/Full GC의 mark, compact, sweep 등 |
+| Deoptimization | JIT 컴파일된 코드를 인터프리터로 되돌리는 작업 |
+| Biased lock revocation | 편향 잠금 해제 시 해당 스레드가 멈춰야 함 |
+| Class redefinition | JVMTI를 통한 클래스 핫스왑 (디버거 연결 시) |
+| Thread dump | jstack, JMX를 통한 스레드 덤프 수집 |
+| Monitor deflation | 사용하지 않는 모니터 객체 정리 |
+| Code cache flush | JIT 코드 캐시가 가득 찼을 때 |
+| VM internal stats | CountedLoop를 사용하는 루프 카운터 수집 등 |
+
+이 중 GC 이외의 작업들은 모니터링되지 않는 경우가 많아 레이턴시 원인을 찾기 어렵다.
+
+## Safepoint 도달 지연 문제
+
+스레드는 Safepoint 도달이 즉각적이지 않다. JVM은 poll 방식으로 Safepoint 요청을 확인하는데, poll 지점이 없는 코드 구간에서는 그 구간이 끝날 때까지 기다려야 한다.
+
+### CountedLoop 문제
+
+Java에서 정수 카운터를 쓰는 루프는 JIT가 최적화하면서 Safepoint poll을 제거할 수 있다.
+
+```java
+// 이 루프는 JIT 최적화 후 Safepoint poll이 없어질 수 있다
+for (int i = 0; i < 1_000_000_000; i++) {
+    sum += array[i];
+}
+```
+
+루프가 실행되는 동안 다른 스레드가 Safepoint를 기다리면 수백 ms 지연이 발생한다. Java 11까지 이 문제가 있었고, Java 16부터는 JEP 376에서 이 동작을 개선했다.
+
+### 비교: long 루프 vs int 루프
+
+```java
+// Java 15 이하에서 Safepoint 문제 발생 가능
+for (int i = 0; i < Integer.MAX_VALUE; i++) { ... }
+
+// long 루프는 poll 지점을 유지함
+for (long i = 0; i < Long.MAX_VALUE; i++) { ... }
+```
+
+## JVM 플래그로 Safepoint 분석하기
+
+```bash
+# Safepoint 관련 로그 출력 (JDK 9 이상)
+java -Xlog:safepoint*=info:file=safepoint.log -jar app.jar
+
+# JDK 8 이하 (구 방식)
+java -XX:+PrintGCApplicationStoppedTime \
+     -XX:+PrintGCApplicationConcurrentTime \
+     -jar app.jar
+```
+
+출력 예시:
+
+```
+[info][safepoint] Reaching safepoint: 0.123 ms
+[info][safepoint] Cleanup:           0.002 ms
+[info][safepoint] Total time:        0.125 ms
+[info][safepoint] Reason: GC
+```
+
+`Total time`이 GC pause와 맞지 않으면 다른 원인의 Safepoint를 의심해야 한다.
+
+## latency-sensitive 서비스에서의 영향
+
+### API 서버에서의 레이턴시 스파이크 시나리오
+
+```
+정상 요청 p99: 5ms
+Safepoint 발생 순간 p99: 150ms
+```
+
+원인이 GC가 아닌 경우 —
+
+- 디버거나 프로파일러가 주기적으로 Thread dump를 수집하는 경우
+- Biased lock이 많은 객체에 걸려 있고 다수의 스레드가 경합하는 경우
+- JIT 컴파일 임계값 도달 후 deoptimization이 발생하는 경우
+
+### 모니터링 체크리스트
+
+```
+1. GC log의 pause와 실제 응답 지연이 일치하는가?
+2. -Xlog:safepoint 로그에서 GC 외 Reason이 보이는가?
+3. biased locking이 활성화되어 있고 경합이 심한가?
+   (-XX:-UseBiasedLocking으로 비활성화 테스트)
+4. JVMTI agent (APM, 디버거) 연결 여부를 확인했는가?
+5. CountedLoop 최적화 문제인가? (Java 버전 확인)
+```
+
+## GC 튜닝만으로는 부족한 이유
+
+GC pause를 줄이는 데 성공해도 레이턴시 스파이크가 남는다면 Safepoint의 다른 트리거를 봐야 한다.
+
+```
+잘못된 진단 흐름:
+  레이턴시 스파이크 → GC 로그 확인 → GC pause 짧음 → "GC 문제 아님" → 원인 미상
+
+올바른 진단 흐름:
+  레이턴시 스파이크 → GC 로그 + Safepoint 로그 함께 확인
+  → Safepoint total time 분석 → Reason 확인 → 근본 원인 특정
+```
+
+G1, ZGC, Shenandoah 같은 저지연 GC를 써도 Safepoint는 완전히 없어지지 않는다. 다만 GC 관련 Safepoint는 줄어든다. GC 외 Safepoint는 여전히 런타임 전반에서 발생한다.
+
+## 실전 권장 설정
+
+```bash
+# Safepoint 전체 로그 확보
+-Xlog:safepoint*=debug:file=safepoint-%p.log:time,uptime,level,tags
+
+# Biased locking 비활성화 (Java 21에서는 기본 제거됨)
+-XX:-UseBiasedLocking
+
+# JIT 코드 캐시 여유 확보
+-XX:ReservedCodeCacheSize=256m
+
+# Thread dump 수집 주기를 낮추거나 비동기 방식으로 전환
+```
+
+Safepoint를 이해하는 것은 JVM 레이턴시 분석의 출발점이다 — GC 로그만 보는 것은 반만 보는 것이다.
