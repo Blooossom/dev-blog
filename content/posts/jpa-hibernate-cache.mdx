@@ -1,0 +1,178 @@
+---
+title: JPA Hibernate 1차·2차 캐시 — 정합성과 경계
+date: '2026-05-24'
+category: Backend
+tags:
+  - JPA
+  - Hibernate
+  - Cache
+  - Spring
+summary: >-
+  Hibernate 1차 캐시는 트랜잭션 범위 안에서만 유효하지만, 2차 캐시는 여러 트랜잭션과 스레드가 공유한다. 두 캐시의 경계와 eviction, 정합성 문제를 이해하면 의도치 않은 버그를 예방할 수 있다.
+thumbnail: /thumbnails/jpa-hibernate-cache.svg
+---
+
+Hibernate 1차 캐시와 2차 캐시는 정합성, eviction, transaction boundary에서 어떻게 다를까? — 이 질문은 캐시를 "빠른 조회 수단"으로만 이해하면 놓치기 쉬운 핵심을 담고 있다. 두 캐시는 범위와 생명주기가 근본적으로 달라서, 잘못 사용하면 DB와 메모리가 서로 다른 데이터를 보여주는 정합성 오류로 이어진다.
+
+## 1차 캐시(First-Level Cache)
+
+### 범위와 생명주기
+
+1차 캐시는 `EntityManager`(Hibernate에서는 `Session`) 단위로 존재한다. 동일한 EntityManager 안에서 같은 식별자로 엔티티를 두 번 조회하면, 두 번째 조회는 DB에 쿼리를 보내지 않고 캐시에서 반환한다.
+
+```java
+@Transactional
+public void example(Long id) {
+    Member m1 = em.find(Member.class, id); // DB 조회
+    Member m2 = em.find(Member.class, id); // 1차 캐시 반환, SQL 없음
+    System.out.println(m1 == m2); // true — 같은 객체
+}
+```
+
+EntityManager가 닫히거나 트랜잭션이 종료되면 1차 캐시는 사라진다. **요청 하나가 끝나면 캐시도 끝난다**는 의미다.
+
+### 자동 Flush와 쓰기 지연
+
+1차 캐시는 변경 감지(Dirty Checking)와 쓰기 지연(Write-Behind) 저장소이기도 하다. `em.flush()`가 호출되거나 트랜잭션이 커밋될 때 캐시 안의 변경 사항이 SQL로 변환되어 DB에 반영된다.
+
+```java
+@Transactional
+public void update(Long id) {
+    Member m = em.find(Member.class, id);
+    m.setName("새 이름"); // SQL 미실행, 캐시만 변경
+    // 트랜잭션 커밋 시점에 UPDATE SQL 실행
+}
+```
+
+### eviction
+
+1차 캐시는 `em.detach(entity)`, `em.clear()`, `em.close()`로 명시적으로 비울 수 있다. 대량 데이터를 처리할 때 주기적으로 `em.flush(); em.clear();`를 호출하지 않으면 메모리가 계속 쌓인다.
+
+```java
+for (int i = 0; i < 10000; i++) {
+    em.persist(new Item(i));
+    if (i % 500 == 0) {
+        em.flush();
+        em.clear(); // 1차 캐시 비움으로써 OutOfMemoryError 예방
+    }
+}
+```
+
+---
+
+## 2차 캐시(Second-Level Cache)
+
+### 범위와 설정
+
+2차 캐시는 `SessionFactory`(JPA에서는 `EntityManagerFactory`) 수준에서 동작한다. 여러 요청, 여러 트랜잭션, 여러 스레드가 **같은 캐시 저장소를 공유**한다. 기본적으로 비활성화되어 있으며, Ehcache나 Caffeine 같은 캐시 프로바이더를 추가해야 한다.
+
+```properties
+# application.properties
+spring.jpa.properties.hibernate.cache.use_second_level_cache=true
+spring.jpa.properties.hibernate.cache.region.factory_class=org.hibernate.cache.jcache.JCacheRegionFactory
+spring.cache.jcache.config=classpath:ehcache.xml
+```
+
+엔티티에 `@Cache` 어노테이션을 붙여야 2차 캐시 대상이 된다.
+
+```java
+import org.hibernate.annotations.Cache;
+import org.hibernate.annotations.CacheConcurrencyStrategy;
+
+@Entity
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
+public class Product {
+    @Id
+    private Long id;
+    private String name;
+    private int price;
+}
+```
+
+### CacheConcurrencyStrategy 옵션
+
+| 전략 | 설명 | 적합 상황 |
+|------|------|-----------|
+| READ_ONLY | 읽기 전용, 변경 불가 | 코드 테이블, 불변 마스터 데이터 |
+| NONSTRICT_READ_WRITE | 락 없이 갱신, 짧은 불일치 허용 | 자주 변하지 않고 정합성이 덜 중요한 데이터 |
+| READ_WRITE | soft lock으로 갱신 중 일관성 보장 | 자주 읽히고 가끔 변하는 데이터 |
+| TRANSACTIONAL | XA 트랜잭션 수준 정합성 | 강한 일관성이 필요한 환경 (JTA 필요) |
+
+### eviction
+
+2차 캐시의 eviction은 캐시 프로바이더 설정(TTL, 최대 항목 수 등)과 Hibernate API로 제어한다.
+
+```java
+// 특정 엔티티 캐시 무효화
+Cache cache = em.getEntityManagerFactory().getCache();
+cache.evict(Product.class, productId);
+
+// 전체 2차 캐시 비우기
+cache.evictAll();
+```
+
+---
+
+## 정합성 문제
+
+### 2차 캐시와 DB 불일치
+
+2차 캐시를 사용할 때 가장 흔한 문제는 **다른 애플리케이션 인스턴스나 외부 툴이 DB를 직접 수정했을 때** 캐시가 이를 모르는 상황이다.
+
+```
+[인스턴스 A] Product(id=1, price=1000) → 2차 캐시에 저장
+[DB Admin]   UPDATE product SET price=2000 WHERE id=1  ← 직접 수정
+[인스턴스 A] Product(id=1) 조회 → 캐시에서 price=1000 반환 (stale data)
+```
+
+이런 상황에서 `cache.evict(Product.class, 1L)`로 캐시를 무효화하거나, 캐시 TTL을 짧게 설정해야 한다.
+
+### 낙관적 잠금과 2차 캐시
+
+`@Version`으로 낙관적 잠금을 쓸 때 2차 캐시가 오래된 버전을 돌려주면 `OptimisticLockException`이 잘못된 곳에서 발생할 수 있다. READ_WRITE나 TRANSACTIONAL 전략을 사용하면 이를 방지할 수 있다.
+
+---
+
+## Transaction Boundary와 캐시 상호작용
+
+### 1차 캐시와 트랜잭션
+
+1차 캐시는 트랜잭션 범위와 거의 동일하게 움직인다. 트랜잭션이 롤백되면 캐시의 변경 사항도 함께 폐기된다.
+
+```
+트랜잭션 시작
+  └─ 1차 캐시 활성화
+       └─ em.find() → DB 또는 캐시 조회
+       └─ 변경 감지 → flush 시 SQL 생성
+트랜잭션 커밋 → SQL 실행, 1차 캐시 종료
+트랜잭션 롤백 → SQL 미실행, 1차 캐시 폐기
+```
+
+### 2차 캐시와 트랜잭션 커밋
+
+READ_WRITE 전략에서는 트랜잭션이 엔티티를 수정할 때 해당 캐시 항목에 soft lock을 걸고, 커밋 후 새 데이터로 갱신한다. 롤백 시에는 lock만 해제하고 캐시를 무효화한다.
+
+```
+트랜잭션 A: Product(id=1) 수정 시작 → 2차 캐시 soft lock
+다른 트랜잭션: Product(id=1) 조회 → soft lock 감지 → DB 직접 조회
+트랜잭션 A 커밋: 2차 캐시 갱신, lock 해제
+```
+
+---
+
+## 실용적 지침
+
+| 상황 | 권장 캐시 전략 |
+|------|---------------|
+| 변하지 않는 참조 데이터(국가 코드, 카테고리) | 2차 캐시 READ_ONLY |
+| 자주 읽히고 가끔 변하는 상품 정보 | 2차 캐시 READ_WRITE |
+| 주문, 결제처럼 정합성이 중요한 엔티티 | 2차 캐시 사용 지양 |
+| 대량 배치 처리 | 1차 캐시 주기적 clear |
+
+### 쿼리 캐시 주의사항
+
+`hibernate.cache.use_query_cache=true`로 쿼리 캐시를 활성화하면 JPQL/HQL 결과도 캐싱된다. 하지만 쿼리 결과 내 엔티티 중 하나라도 변경되면 해당 쿼리 캐시 전체가 무효화되므로, 쓰기가 빈번한 환경에서는 오히려 성능이 떨어질 수 있다.
+
+---
+
+1차 캐시는 트랜잭션 단위의 동일성 보장 도구이고, 2차 캐시는 애플리케이션 전역 읽기 최적화 도구다. 두 캐시의 경계와 eviction 시점을 명확히 이해해야 의도치 않은 stale data와 정합성 버그를 막을 수 있다.
