@@ -1,0 +1,258 @@
+---
+title: Compound Component Pattern — 복잡한 UI의 제어권 분리
+date: '2026-05-24'
+category: Frontend
+tags:
+  - React
+  - TypeScript
+  - Component Design
+  - Pattern
+summary: >-
+  compound component pattern은 복잡한 UI 컴포넌트에서 내부 상태와 렌더링 제어를 분리하는 설계 기법이다. Context를 활용해 부모-자식 간 결합도를 낮추고, 사용자에게 구성 유연성을 제공한다.
+thumbnail: /thumbnails/compound-component-pattern.svg
+---
+
+compound component pattern은 복잡한 UI 컴포넌트의 유연성과 제어권을 어떻게 나눌 수 있을까? — 이 질문은 단일 컴포넌트에 props를 쌓아가다 보면 자연스럽게 마주치는 문제에서 시작한다. 탭(Tab), 아코디언(Accordion), 셀렉트(Select) 같은 UI는 내부 상태는 공유하되, 각 하위 요소의 렌더링은 사용하는 쪽에서 자유롭게 구성할 수 있어야 한다.
+
+## 문제: 모놀리식 컴포넌트의 한계
+
+처음에는 단순했던 컴포넌트가 요구사항이 늘면서 점점 비대해진다.
+
+```tsx
+// ❌ props가 계속 늘어나는 모놀리식 탭
+<Tabs
+  items={tabs}
+  activeIndex={0}
+  showIcons={true}
+  iconPosition="left"
+  onTabChange={handleChange}
+  renderExtra={<Badge />}
+  headerClassName="custom"
+  contentClassName="content"
+/>
+```
+
+이 방식은 두 가지 문제를 만든다.
+
+1. **props 폭발**: 모든 커스터마이징 옵션이 최상위 컴포넌트에 집중된다.
+2. **낮은 유연성**: 예상하지 못한 UI 변형은 구현이 불가능하거나 새 props를 추가해야 한다.
+
+---
+
+## Compound Component Pattern이란?
+
+compound component pattern은 **상태를 보유하는 부모 컴포넌트**와 **렌더링을 담당하는 자식 컴포넌트**들을 Context로 연결하는 패턴이다. HTML의 `select`와 `option`이 가장 직관적인 예시다.
+
+```html
+<select>
+  <option value="a">Apple</option>
+  <option value="b">Banana</option>
+</select>
+```
+
+`select`는 선택 상태를 관리하고, `option`은 각자의 렌더링만 담당한다. React에서도 같은 구조를 만들 수 있다.
+
+---
+
+## Context 기반 구현
+
+### 1단계: Context 정의
+
+```tsx
+interface TabsContextValue {
+  activeTab: string;
+  setActiveTab: (id: string) => void;
+}
+
+const TabsContext = React.createContext<TabsContextValue | null>(null);
+
+function useTabsContext() {
+  const ctx = React.useContext(TabsContext);
+  if (!ctx) throw new Error('Tabs 컴포넌트 내부에서 사용해야 합니다.');
+  return ctx;
+}
+```
+
+### 2단계: 부모 컴포넌트 (상태 관리)
+
+```tsx
+interface TabsProps {
+  defaultTab: string;
+  children: React.ReactNode;
+}
+
+function Tabs({ defaultTab, children }: TabsProps) {
+  const [activeTab, setActiveTab] = React.useState(defaultTab);
+
+  return (
+    <TabsContext.Provider value={{ activeTab, setActiveTab }}>
+      <div className="tabs">{children}</div>
+    </TabsContext.Provider>
+  );
+}
+```
+
+### 3단계: 자식 컴포넌트들 (렌더링 담당)
+
+```tsx
+interface TabListProps {
+  children: React.ReactNode;
+}
+
+function TabList({ children }: TabListProps) {
+  return <div role="tablist" className="tab-list">{children}</div>;
+}
+
+interface TabProps {
+  id: string;
+  children: React.ReactNode;
+}
+
+function Tab({ id, children }: TabProps) {
+  const { activeTab, setActiveTab } = useTabsContext();
+  return (
+    <button
+      role="tab"
+      aria-selected={activeTab === id}
+      onClick={() => setActiveTab(id)}
+      className={activeTab === id ? 'tab active' : 'tab'}
+    >
+      {children}
+    </button>
+  );
+}
+
+interface TabPanelProps {
+  id: string;
+  children: React.ReactNode;
+}
+
+function TabPanel({ id, children }: TabPanelProps) {
+  const { activeTab } = useTabsContext();
+  if (activeTab !== id) return null;
+  return <div role="tabpanel">{children}</div>;
+}
+```
+
+### 4단계: 컴포넌트 조합 (네임스페이스 패턴)
+
+```tsx
+Tabs.List  = TabList;
+Tabs.Tab   = Tab;
+Tabs.Panel = TabPanel;
+
+export { Tabs };
+```
+
+---
+
+## 사용하는 쪽의 유연성
+
+```tsx
+// 사용 예시 1: 기본 구성
+<Tabs defaultTab="react">
+  <Tabs.List>
+    <Tabs.Tab id="react">React</Tabs.Tab>
+    <Tabs.Tab id="vue">Vue</Tabs.Tab>
+  </Tabs.List>
+  <Tabs.Panel id="react"><ReactContent /></Tabs.Panel>
+  <Tabs.Panel id="vue"><VueContent /></Tabs.Panel>
+</Tabs>
+
+// 사용 예시 2: 탭 목록 옆에 버튼 추가
+<Tabs defaultTab="react">
+  <div className="header-row">
+    <Tabs.List>
+      <Tabs.Tab id="react">React</Tabs.Tab>
+      <Tabs.Tab id="vue">Vue</Tabs.Tab>
+    </Tabs.List>
+    <button onClick={addTab}>+ 추가</button>
+  </div>
+  <Tabs.Panel id="react"><ReactContent /></Tabs.Panel>
+  <Tabs.Panel id="vue"><VueContent /></Tabs.Panel>
+</Tabs>
+```
+
+두 번째 예시처럼 탭 목록 옆에 버튼을 추가하는 것은 모놀리식 방식에서는 별도 prop이 필요하지만, compound component에서는 JSX 구조 변경만으로 해결된다.
+
+---
+
+## 장점과 단점
+
+### 장점
+
+| 항목 | 설명 |
+|------|------|
+| 유연한 레이아웃 | 사용하는 쪽에서 자식 순서와 위치를 자유롭게 결정 |
+| 낮은 props 부담 | 부모 컴포넌트에 필요한 props만 전달 |
+| 암묵적 상태 공유 | 자식들이 Context를 통해 상태를 공유, 명시적 전달 불필요 |
+| 테스트 용이성 | 각 자식 컴포넌트를 독립적으로 테스트 가능 |
+
+### 단점
+
+| 항목 | 설명 |
+|------|------|
+| 구조 강제 없음 | 자식 컴포넌트를 잘못된 위치에 사용해도 컴파일 에러가 없음 |
+| 암묵적 결합 | Context 의존성이 보이지 않아 처음 접하는 사람이 이해하기 어려울 수 있음 |
+| Context 성능 | Context value가 변경되면 모든 소비자가 리렌더링될 수 있음 |
+
+Context 성능 문제는 `useMemo`로 value를 안정화하거나 상태를 분리된 Context로 나눠 해결할 수 있다.
+
+---
+
+## 실제 활용 사례
+
+Radix UI, Headless UI, Reach UI 등 유명 오픈소스 컴포넌트 라이브러리가 이 패턴을 채택하고 있다.
+
+```tsx
+// Radix UI의 Dialog (compound component 방식)
+<Dialog.Root open={open} onOpenChange={setOpen}>
+  <Dialog.Trigger asChild>
+    <button>열기</button>
+  </Dialog.Trigger>
+  <Dialog.Portal>
+    <Dialog.Overlay />
+    <Dialog.Content>
+      <Dialog.Title>제목</Dialog.Title>
+      <Dialog.Description>설명</Dialog.Description>
+      <Dialog.Close>닫기</Dialog.Close>
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>
+```
+
+Dialog의 오버레이, 콘텐츠, 타이틀을 사용하는 쪽에서 자유롭게 구성할 수 있다.
+
+---
+
+## controlled vs uncontrolled 지원
+
+라이브러리 수준에서는 외부에서 상태를 주입할 수 있는 controlled 모드도 함께 제공하는 것이 좋다.
+
+```tsx
+function Tabs({
+  defaultTab,    // uncontrolled
+  activeTab,     // controlled
+  onTabChange,   // controlled
+  children,
+}: TabsProps) {
+  const [internalTab, setInternalTab] = React.useState(defaultTab ?? '');
+  const isControlled = activeTab !== undefined;
+  const current = isControlled ? activeTab : internalTab;
+
+  const handleChange = (id: string) => {
+    if (!isControlled) setInternalTab(id);
+    onTabChange?.(id);
+  };
+
+  return (
+    <TabsContext.Provider value={{ activeTab: current, setActiveTab: handleChange }}>
+      {children}
+    </TabsContext.Provider>
+  );
+}
+```
+
+---
+
+compound component pattern의 핵심은 **상태를 부모가 소유하되, 렌더링 결정권은 사용하는 쪽에 위임**하는 것이다. Context로 연결된 컴포넌트 조각들을 레고처럼 조합할 수 있게 만들면, 복잡한 UI를 단순하고 유연하게 유지할 수 있다.
