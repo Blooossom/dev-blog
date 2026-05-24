@@ -46,7 +46,7 @@
 ~~333. 전역 상태는 편리하지만, 언제 지역 상태나 URL 상태로 두는 것이 더 나을까?~~ `작성완료`
 334. atomic design은 컴포넌트를 잘게 나누는 규칙일까, 디자인 시스템과 제품 화면 사이의 계층 모델일까?
 335. design system은 UI 컴포넌트 모음이 아니라 토큰, 접근성, 사용 규칙까지 포함해야 하는 이유는 무엇일까?
-336. compound component pattern은 복잡한 UI 컴포넌트의 유연성과 제어권을 어떻게 나닠이까?
+~~336. compound component pattern은 복잡한 UI 컴포넌트의 유연성과 제어권을 어떻게 나닠이까?~~ `작성완료`
 337. controlled component와 uncontrolled component는 form 성능과 검증 방식에서 어떤 차이를 만들까?
 338. custom hook은 로직 재사용 도구지만, hook 내부에 UI 정에까지 섹이면 어떤 문제가 생길까?
 339. frontend에서 dependency inversion은 API client, storage, analytics 같은 외부 의존성을 어떻게 격리할 수 있을까?
