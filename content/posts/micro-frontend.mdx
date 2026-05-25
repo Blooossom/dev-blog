@@ -1,0 +1,197 @@
+---
+title: Micro Frontend의 이점과 통합 비용
+date: '2026-05-25'
+category: Architecture
+tags:
+  - Micro Frontend
+  - 프론트엔드 아키텍처
+  - 모듈 페더레이션
+  - MSA
+summary: >-
+  Micro Frontend는 독립 배포를 가능하게 하지만 디자인 일관성, 번들 중복, 런타임 통합에서 실질적인 비용을 만든다. 팀 규모와 제품 단계에 따라 도입 여부를 신중하게 판단해야 한다.
+thumbnail: /thumbnails/micro-frontend.svg
+---
+
+Micro Frontend는 독립 배포를 가능하게 하지만, 디자인 일관성, 번들 중복, 런타임 통합에서 어떤 비용이 생길까? 백엔드의 MSA(Micro Service Architecture)를 프론트엔드로 확장한 개념인 만큼, 이점만큼이나 구체적인 트레이드오프를 이해해야 한다.
+
+## Micro Frontend란
+
+Micro Frontend는 하나의 프론트엔드 애플리케이션을 여러 팀이 독립적으로 개발·배포·운영할 수 있도록 수직 분할하는 아키텍처 패턴이다.
+
+```
+모놀리식 프론트엔드
+┌─────────────────────────────────┐
+│  팀 A + 팀 B + 팀 C             │
+│  단일 저장소 · 단일 빌드        │
+│  배포 사이클 공유               │
+└─────────────────────────────────┘
+
+Micro Frontend
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│  MFE A   │  │  MFE B   │  │  MFE C   │
+│ 팀 A 소유 │  │ 팀 B 소유 │  │ 팀 C 소유 │
+│ 독립 배포 │  │ 독립 배포 │  │ 독립 배포 │
+└────┬─────┘  └────┬─────┘  └────┬─────┘
+     └─────────────┼─────────────┘
+               Shell App
+            (컨테이너 앱)
+```
+
+Shell App(컨테이너 앱)은 각 MFE를 조합해 사용자에게 단일 페이지처럼 보이게 한다.
+
+## 주요 통합 방식
+
+### 빌드 타임 통합
+
+각 MFE를 npm 패키지로 배포하고 Shell에서 의존성으로 설치하는 방식이다.
+
+```json
+// shell/package.json
+{
+  "dependencies": {
+    "@company/mfe-orders": "2.1.0",
+    "@company/mfe-catalog": "1.8.3"
+  }
+}
+```
+
+**장점:** 타입 안전성, 트리쉐이킹 가능  
+**단점:** MFE 하나를 변경해도 Shell 재빌드·재배포 필요 → 독립 배포 이점 상쇄
+
+### 런타임 통합 — Module Federation
+
+Webpack 5의 Module Federation은 런타임에 원격 모듈을 로드하는 가장 일반적인 방식이다.
+
+```js
+// shell/webpack.config.js
+new ModuleFederationPlugin({
+  name: 'shell',
+  remotes: {
+    orders: 'orders@https://orders.example.com/remoteEntry.js',
+    catalog: 'catalog@https://catalog.example.com/remoteEntry.js',
+  },
+  shared: { react: { singleton: true }, 'react-dom': { singleton: true } },
+})
+
+// orders MFE/webpack.config.js
+new ModuleFederationPlugin({
+  name: 'orders',
+  filename: 'remoteEntry.js',
+  exposes: {
+    './OrdersApp': './src/OrdersApp',
+  },
+})
+```
+
+Shell에서 사용:
+
+```tsx
+const OrdersApp = React.lazy(() => import('orders/OrdersApp'))
+
+export function App() {
+  return (
+    <Suspense fallback={<Spinner />}>
+      <OrdersApp />
+    </Suspense>
+  )
+}
+```
+
+각 MFE가 `remoteEntry.js`를 새 버전으로 교체하면 Shell 재빌드 없이 즉시 반영된다.
+
+### iframe 통합
+
+가장 단순한 격리 방법이지만 UX 비용이 크다.
+
+```html
+<!-- shell -->
+<iframe src="https://orders.example.com" title="Orders App" />
+```
+
+**장점:** 완전한 격리, 레거시 시스템 통합에 유리  
+**단점:** 공유 상태 전달 복잡, 스크롤·포커스·모달 관리 어려움, 접근성 문제
+
+## 실질적인 비용
+
+### 번들 중복
+
+MFE마다 React, react-dom, axios 등 공통 라이브러리를 각자 번들링하면 사용자 다운로드 크기가 폭발적으로 증가한다.
+
+```
+MFE A 번들: React(45 kB) + axios(14 kB) + 고유 코드(80 kB)
+MFE B 번들: React(45 kB) + axios(14 kB) + 고유 코드(60 kB)
+MFE C 번들: React(45 kB) + axios(14 kB) + 고유 코드(50 kB)
+─────────────────────────────────────────────────────
+총 다운로드: 367 kB (공통 라이브러리 3배 중복)
+```
+
+Module Federation의 `shared` 설정으로 공통 모듈 단일 인스턴스를 강제할 수 있지만, 버전 불일치 시 fallback으로 중복 로딩이 발생한다.
+
+```js
+shared: {
+  react: { singleton: true, requiredVersion: '^18.0.0' },
+}
+// requiredVersion 범위 밖 MFE는 별도 React 인스턴스를 로드
+```
+
+### 디자인 일관성
+
+각 MFE 팀이 독립적으로 컴포넌트를 만들면 버튼·폼·모달이 팀마다 달라진다.
+
+```
+Shell 전체 UI                 사용자 체감
+┌─────────────────────────┐
+│ MFE A: 파란 버튼 16px   │  "같은 서비스인데
+│ MFE B: 초록 버튼 14px   │   왜 버튼이 다르죠?"
+│ MFE C: 회색 버튼 18px   │
+└─────────────────────────┘
+```
+
+공유 디자인 시스템 패키지로 해결할 수 있지만, 버전 관리와 업그레이드 조율이 새로운 조직 비용이 된다.
+
+### 런타임 통합 오류
+
+원격 MFE 로드 실패는 Shell 전체가 아니라 해당 영역만 깨져야 한다. 이를 위한 에러 경계와 폴백 UI가 필수다.
+
+```tsx
+function RemoteOrdersApp() {
+  return (
+    <ErrorBoundary fallback={<ServiceUnavailable name="Orders" />}>
+      <Suspense fallback={<Spinner />}>
+        <OrdersApp />
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+```
+
+네트워크 지연에 따른 MFE 로드 순서 불일치, 전역 상태(세션·테마·언어) 공유 방법도 별도 설계가 필요하다.
+
+### 공유 상태 전달 방법 비교
+
+| 방법 | 장점 | 단점 |
+|------|------|------|
+| URL/쿼리 파라미터 | 새로고침 유지, 단순 | 복잡한 객체 전달 어려움 |
+| Custom Events | 느슨한 결합 | 타입 안전성 없음 |
+| 공유 Store (Redux 등) | 강력한 상태 관리 | MFE 간 강한 결합 |
+| BroadcastChannel | 크로스 탭 가능 | 동기화 복잡 |
+
+## 도입 판단 기준
+
+```
+조직 조건                              권장 방향
+────────────────────────────────────────────────────
+팀 2~3개, 제품 초기                    모놀리식 유지
+팀 4개 이상, 배포 병목 심각            Micro Frontend 검토
+도메인 경계 명확, 독립 배포 가치 높음  Module Federation
+레거시 시스템 포함, 기술 이질성 큼     iframe 제한적 사용
+```
+
+도입 전 체크리스트:
+
+- 팀 간 배포 병목이 실제 측정된 문제인가?
+- 공유 디자인 시스템을 운영할 여력이 있는가?
+- 공통 라이브러리 버전 정책을 조율할 수 있는가?
+- 에러 격리와 모니터링 체계가 준비되어 있는가?
+
+Micro Frontend는 조직의 자율성과 기술적 복잡도를 맞바꾸는 패턴이다. 팀 규모와 제품 성숙도에 따라 이점이 비용을 초과하는 시점이 다르므로, 배포 병목이 실제 측정된 문제가 아니라면 모놀리식 프론트엔드를 먼저 단순하게 유지하는 것이 현명하다.
