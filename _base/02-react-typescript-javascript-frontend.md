@@ -56,7 +56,7 @@
 ~~341. error boundary는 모든 비동기 에러를 잊아줄까, 어떤 에러는 별도로 처리해야 할까?~~ `작성완료`
 ~~342. suspense는 loading spinner를 대체하는 기능일까, 렌더링과 데이터 준비를 조율하는 모델일까?~~ `작성완료`
 343. route-level code splitting과 component-level code splitting은 초기 로딩과 전환 지연에서 어떤 차이를 만들까?
-344. micro frontend는 독립 배포를 가능하게 하지만, 디자인 일관성, 번들 중복, 런타임 통합에서 어떤 비용이 생길까?
+~~344. micro frontend는 독립 배포를 가능하게 하지만, 디자인 일관성, 번들 중복, 런타임 통합에서 어떤 비용이 생길까?~~ `작성완료`
 ~~345. SSR, CSR, SSG, ISR은 SEO, TTFB, freshness, 운영 비용 측면에서 어떻게 선택이 갈릴까?~~ `작성완료`
 346. API error를 화면에 보여줄 때 transport error, validation error, domain error를 구분해야 하는 이유는 무엇일까?
 347. 접근성은 마지막에 추가하는 기능일까, 컴포넌트 설계 단계에서 어떤 제약으로 반영되어야 할까?
