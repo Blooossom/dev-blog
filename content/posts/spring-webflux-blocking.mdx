@@ -1,0 +1,164 @@
+---
+title: Spring WebFlux와 Blocking Dependency 함정
+date: '2026-05-26'
+category: Backend
+tags:
+  - Spring
+  - WebFlux
+  - Reactive
+  - 성능
+  - 비동기
+summary: >-
+  Spring WebFlux를 쓴다고 해서 자동으로 성능이 좋아지지는 않는다. blocking 호출이 단 하나라도 남아 있으면
+  event loop 스레드가 점유되어 전체 처리량이 급격히 떨어진다.
+thumbnail: /thumbnails/spring-webflux-blocking.svg
+---
+
+Spring WebFlux를 쓰면 자동으로 성능이 좋아지는가, blocking dependency가 남아 있으면 어떤 일이 생길까? 이 질문은 WebFlux 도입을 결정할 때 반드시 짚어야 할 핵심이다.
+
+## WebFlux 성능 이점의 전제 조건
+
+Spring MVC는 **thread-per-request** 모델이다. 요청 하나당 스레드 하나가 대기(blocking)하며 처리한다. 동시 요청이 많아지면 스레드 풀이 고갈된다.
+
+Spring WebFlux는 **event loop** 모델이다. Netty 기반으로 소수의 스레드가 수많은 요청을 non-blocking으로 처리한다. 스레드 수가 CPU 코어 수와 비슷하게 유지된다.
+
+```
+Spring MVC 구조
+─────────────────────────────────────
+ 요청 1 → Thread-1 (blocking 대기)
+ 요청 2 → Thread-2 (blocking 대기)
+ 요청 N → Thread-N (blocking 대기)
+ ...
+
+Spring WebFlux 구조
+─────────────────────────────────────
+ 요청 1 ─┐
+ 요청 2 ─┤→ EventLoop Thread (non-blocking)
+ 요청 N ─┘
+```
+
+WebFlux의 이점은 **I/O가 non-blocking일 때만** 성립한다. DB 호출, 외부 API 호출, 파일 읽기 등 모든 I/O가 reactive하게 처리되어야 한다.
+
+## blocking 호출이 남아 있으면 무슨 일이 생기나
+
+event loop 스레드에서 blocking 호출이 발생하면 해당 스레드가 응답을 기다리는 동안 멈춘다. WebFlux의 event loop 스레드는 보통 CPU 코어 수만큼(예: 8개)밖에 없기 때문에, 스레드 하나가 blocking되면 처리 능력이 즉각 줄어든다.
+
+```
+8개 EventLoop 스레드 환경에서
+─────────────────────────────────────────────
+Thread-1: JDBC blocking 호출 중 (2초)
+Thread-2: JDBC blocking 호출 중 (2초)
+...
+Thread-8: JDBC blocking 호출 중 (2초)
+
+→ 새로운 요청 처리 불가, 사실상 서버 멈춤
+```
+
+반면 Spring MVC였다면 스레드 풀이 200개라 100개 요청이 들어와도 100개 스레드가 각자 대기하며 처리했을 것이다. WebFlux + blocking이 MVC보다 **오히려 느린** 상황이 된다.
+
+## 흔한 blocking dependency 유형
+
+### 1. JDBC 드라이버
+
+가장 흔한 함정이다. JDBC는 기본적으로 동기/blocking이다. WebFlux 프로젝트에서 아무 생각 없이 JPA나 Spring Data JPA를 쓰면 JDBC가 event loop를 점유한다.
+
+```java
+// 이 코드는 WebFlux event loop 스레드를 blocking한다
+@GetMapping("/users/{id}")
+public Mono<User> getUser(@PathVariable Long id) {
+    // userRepository는 JPA 기반 → JDBC blocking 호출
+    return Mono.just(userRepository.findById(id).orElseThrow());
+}
+```
+
+해결책은 R2DBC를 사용하거나, blocking 호출을 별도 스레드 풀에서 실행하는 것이다.
+
+```java
+// blocking 작업을 별도 스케줄러로 격리
+@GetMapping("/users/{id}")
+public Mono<User> getUser(@PathVariable Long id) {
+    return Mono.fromCallable(() -> userRepository.findById(id).orElseThrow())
+               .subscribeOn(Schedulers.boundedElastic());
+}
+```
+
+### 2. 동기 HTTP 클라이언트
+
+RestTemplate은 blocking이다. WebFlux에서는 WebClient를 사용해야 한다.
+
+```java
+// 잘못된 예시: blocking HTTP 클라이언트
+RestTemplate restTemplate = new RestTemplate();
+String result = restTemplate.getForObject(url, String.class);
+
+// 올바른 예시: non-blocking WebClient
+WebClient webClient = WebClient.create();
+Mono<String> result = webClient.get().uri(url).retrieve().bodyToMono(String.class);
+```
+
+### 3. 동기 캐시 라이브러리
+
+Caffeine 캐시는 기본 사용법이 동기다. reactive 환경에서는 ReactiveCache API나 별도 래핑이 필요하다.
+
+### 4. 잘못된 `block()` 호출
+
+Mono/Flux 파이프라인 중간에 `.block()`을 호출하는 것은 명백한 antipattern이다.
+
+```java
+// 절대 하면 안 되는 패턴
+public Mono<String> process() {
+    String data = externalService.getData().block(); // blocking!
+    return Mono.just(transform(data));
+}
+```
+
+## blocking을 감지하는 방법
+
+### BlockHound
+
+개발/테스트 환경에서 event loop 스레드 내 blocking 호출을 탐지해주는 라이브러리다.
+
+```java
+// 애플리케이션 시작 시 등록
+BlockHound.install();
+```
+
+blocking 호출이 감지되면 예외를 던지므로 조기에 발견할 수 있다.
+
+### 스레드 이름 확인
+
+WebFlux의 event loop 스레드는 보통 `reactor-http-nio-*` 같은 이름을 갖는다. 로그에 이 이름이 나타나는 스레드에서 blocking 작업이 실행되고 있다면 문제다.
+
+## Schedulers 전략
+
+완전한 non-blocking 전환이 어려울 때, blocking 작업을 다음 스케줄러로 격리한다.
+
+| 스케줄러 | 용도 |
+|---------|------|
+| `Schedulers.boundedElastic()` | blocking I/O 격리, 스레드 수 제한 있음 |
+| `Schedulers.parallel()` | CPU 집약적 작업, 코어 수만큼 스레드 |
+| `Schedulers.single()` | 단일 재사용 스레드 |
+
+```java
+Mono.fromCallable(() -> blockingMethod())
+    .subscribeOn(Schedulers.boundedElastic())
+    .publishOn(Schedulers.parallel());
+```
+
+`boundedElastic`은 blocking I/O를 위한 스레드 풀로, 필요에 따라 스레드를 늘리지만 무한히 늘리지 않아 OOM을 방지한다.
+
+## WebFlux 도입 판단 기준
+
+WebFlux가 실질적으로 도움이 되는 경우와 그렇지 않은 경우를 정리하면 다음과 같다.
+
+| 상황 | WebFlux 효과 |
+|------|-------------|
+| 모든 I/O가 non-blocking | 높은 효과 |
+| JDBC + R2DBC 혼용 | 부분적 효과 |
+| JDBC만 사용 | 효과 없거나 역효과 |
+| CPU 집약적 작업 | 효과 미미 |
+| 높은 동시성, I/O 대기 많음 | 높은 효과 |
+
+## 정리
+
+Spring WebFlux의 성능 이점은 non-blocking I/O 스택 전체가 갖춰져 있을 때 발현된다. blocking 호출 하나가 event loop 스레드를 점유하면 오히려 thread-per-request 모델보다 처리량이 나빠질 수 있으므로, WebFlux 도입 전 의존 라이브러리 전체가 reactive를 지원하는지 반드시 확인해야 한다.
