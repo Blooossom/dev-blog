@@ -1,0 +1,156 @@
+---
+title: DB Row Lock과 Table Lock — 언제 확대되는가
+date: '2026-05-26'
+category: Backend
+tags:
+  - DB
+  - Lock
+  - MySQL
+  - Transaction
+  - 동시성
+summary: >-
+  row lock과 table lock은 어떤 상황에서 선택되거나 확대될 수 있을까. 인덱스 유무, 쿼리 패턴, 락 확대 조건을
+  이해해야 불필요한 테이블 전체 잠금을 피할 수 있다.
+thumbnail: /thumbnails/db-row-table-lock.svg
+---
+
+row lock과 table lock은 어떤 상황에서 선택되거나 확대될 수 있을까. DB에서 락은 동시 트랜잭션이 서로 충돌하지 않도록 데이터를 보호하는 핵심 메커니즘이다. 하지만 락의 범위가 예상보다 넓어지면 동시성이 급격히 떨어진다.
+
+## Row Lock vs Table Lock 기본 개념
+
+### Row Lock (행 수준 잠금)
+
+특정 행(row)에만 락을 건다. 같은 테이블의 다른 행은 동시에 접근 가능하다. InnoDB의 기본 락 단위다.
+
+```
+트랜잭션 A: users 테이블 id=1 행에 락
+트랜잭션 B: users 테이블 id=2 행에 접근 → 가능 (다른 행)
+트랜잭션 C: users 테이블 id=1 행에 접근 → 대기
+```
+
+### Table Lock (테이블 수준 잠금)
+
+테이블 전체에 락을 건다. 한 트랜잭션이 테이블 락을 보유하면 다른 트랜잭션은 그 테이블의 어떤 행도 수정할 수 없다.
+
+MyISAM은 테이블 락만 지원한다. InnoDB는 기본적으로 row lock을 사용하지만 특정 조건에서 테이블 락으로 확대될 수 있다.
+
+## Row Lock이 Table Lock으로 확대되는 경우
+
+### 1. 인덱스를 타지 못하는 UPDATE/DELETE
+
+InnoDB의 row lock은 인덱스 레코드에 걸린다. 쿼리가 인덱스를 사용하지 못하면 full table scan이 발생하고, 스캔하는 모든 행에 락이 걸린다. 결과적으로 테이블 전체가 잠긴 것과 다름없다.
+
+```sql
+-- 인덱스 없는 컬럼으로 조건 지정
+UPDATE users SET status = 'inactive' WHERE email = 'test@example.com';
+-- email 컬럼에 인덱스가 없으면 전체 행을 스캔하며 락
+```
+
+실행 계획을 확인해보면 차이가 명확하다.
+
+```sql
+EXPLAIN UPDATE users SET status = 'inactive' WHERE email = 'test@example.com';
+-- type: ALL → 인덱스 미사용, 전체 스캔
+-- type: ref → 인덱스 사용, 해당 행만 락
+```
+
+### 2. 명시적 테이블 락
+
+`LOCK TABLES` 구문을 직접 사용하면 테이블 락이 걸린다.
+
+```sql
+LOCK TABLES users WRITE;
+-- users 테이블 전체 쓰기 락
+UPDATE users SET ...;
+UNLOCK TABLES;
+```
+
+배치 작업이나 마이그레이션에서 가끔 사용하지만, 운영 중에는 다른 모든 트랜잭션을 막으므로 주의가 필요하다.
+
+### 3. DDL 작업
+
+`ALTER TABLE`, `CREATE INDEX` 등 DDL은 내부적으로 메타데이터 락(MDL)을 사용한다. 진행 중인 트랜잭션이 있으면 DDL이 대기하고, DDL이 대기 중이면 그 뒤에 들어오는 모든 DML도 대기한다.
+
+```
+트랜잭션 A (장기 트랜잭션): SELECT ... (커밋 안 함)
+     ↓
+DDL (ALTER TABLE): MDL 대기
+     ↓
+트랜잭션 B, C, D...: 모두 대기
+```
+
+이 현상은 `SHOW PROCESSLIST`에서 "Waiting for table metadata lock" 상태로 나타난다.
+
+### 4. 외래 키 참조 검사
+
+InnoDB는 외래 키 제약이 있을 때 참조 테이블의 부모 행에 공유 락을 건다. 대량 삽입 시 부모 테이블에 예상보다 많은 락이 걸릴 수 있다.
+
+## 락 확대(Lock Escalation)
+
+SQL Server는 row lock이 일정 개수(기본 5000개) 이상 쌓이면 자동으로 page lock, table lock으로 에스컬레이션한다. MySQL InnoDB는 이런 자동 에스컬레이션이 없지만, 앞서 설명한 이유로 실질적으로 테이블 전체가 잠기는 상황이 발생할 수 있다.
+
+## 락 충돌 유형
+
+InnoDB는 여러 종류의 락을 조합한다.
+
+| 락 종류 | 약어 | 설명 |
+|---------|------|------|
+| Shared Lock | S | 읽기 락. 다른 S락과 공존 가능 |
+| Exclusive Lock | X | 쓰기 락. 다른 락과 공존 불가 |
+| Intention Shared | IS | 행 S락 예고. 테이블 수준 |
+| Intention Exclusive | IX | 행 X락 예고. 테이블 수준 |
+
+Intention Lock(IS, IX)은 InnoDB가 행 락을 걸기 전에 테이블 수준에서 의도를 표시하는 락이다. 이를 통해 테이블 락과 행 락의 호환성을 빠르게 판단할 수 있다.
+
+```
+호환성 매트릭스
+        IS    IX    S     X
+IS      O     O     O     X
+IX      O     O     X     X
+S       O     X     O     X
+X       X     X     X     X
+```
+
+## 실무에서의 주의 사항
+
+### 인덱스 설계와 락 범위는 같이 본다
+
+UPDATE/DELETE의 WHERE 조건 컬럼에 인덱스가 있는지 확인한다. 인덱스가 없으면 해당 쿼리는 전체 행을 잠그는 것과 다름없다.
+
+```sql
+-- 락 범위 확인
+SELECT * FROM information_schema.INNODB_LOCKS;
+SELECT * FROM information_schema.INNODB_LOCK_WAITS;
+
+-- MySQL 8.0 이상
+SELECT * FROM performance_schema.data_locks;
+SELECT * FROM performance_schema.data_lock_waits;
+```
+
+### 트랜잭션을 짧게 유지한다
+
+락은 트랜잭션이 커밋 또는 롤백될 때까지 유지된다. 트랜잭션 안에서 외부 API 호출, 파일 I/O, 복잡한 계산을 수행하면 그만큼 락 보유 시간이 길어진다.
+
+```java
+// 나쁜 패턴: 트랜잭션 안에서 외부 I/O
+@Transactional
+public void processOrder(Order order) {
+    save(order);
+    externalApiService.notify(order); // 외부 호출이 2초 걸리면 2초 동안 락 유지
+    updateInventory(order);
+}
+
+// 개선 패턴: 외부 I/O를 트랜잭션 밖으로
+public void processOrder(Order order) {
+    saveAndUpdateInventory(order); // 트랜잭션 범위 최소화
+    externalApiService.notify(order);
+}
+```
+
+### DDL 배포 전 장기 트랜잭션 확인
+
+DDL 전 `SHOW PROCESSLIST`로 장기 실행 중인 트랜잭션이 없는지 확인한다. 있다면 DDL이 MDL을 대기하며 서비스 전체가 멈출 수 있다.
+
+## 정리
+
+row lock이 table lock으로 확대되는 가장 흔한 원인은 인덱스를 사용하지 못하는 UPDATE/DELETE이고, DDL 대기로 인한 MDL 연쇄 차단도 운영 환경에서 자주 발생한다. 락의 범위는 인덱스 설계와 트랜잭션 길이에 직접적으로 연결되어 있으므로, 쿼리를 작성할 때 실행 계획과 함께 락 범위도 고려해야 한다.
