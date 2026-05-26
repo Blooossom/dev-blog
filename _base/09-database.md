@@ -32,7 +32,7 @@
 ~~172. dirty read, non-repeatable read, phantom read는 각각 어떤 동시성 상황에서 발생할까?~~ `작성완료`
 173. repeatable read에서도 phantom read가 발생할 수 있는 DB와 그렇지 않은 DB가 갈리는 이유는 무엇일까?
 ~~174. MVCC는 읽기와 쓰기의 충돌을 어떻게 줄이고, 대신 어떤 저장 공간 비용을 만들까?~~ `작성완료`
-175. row lock과 table lock은 어떤 상황에서 선택되거나 확대될 수 있을까?
+~~175. row lock과 table lock은 어떤 상황에서 선택되거나 확대될 수 있을까?~~ `작성완료`
 ~~176. gap lock과 next-key lock은 어떤 문제를 막기 위해 존재할까?~~ `작성완료`
 177. deadlock은 DB가 자동으로 감지해도 애플리케이션에서 왜 재시도 전략이 필요할까?
 ~~178. 긴 트랜잭션은 락들 아니라 undo log, vacuum, replication lag에 어떤 영향을 줄 수 있을까?~~ `작성완료`
