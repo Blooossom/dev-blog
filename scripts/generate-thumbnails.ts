@@ -578,6 +578,9 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'compound-component-pattern':        { pattern: 'browser', colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'jpa-flush-mode':                    { pattern: 'spring',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'micro-frontend':                    { pattern: 'network', colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'spring-webflux-blocking':           { pattern: 'threads', colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'db-row-table-lock':                 { pattern: 'flow',    colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'ai-task-boundary':                  { pattern: 'neural',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
