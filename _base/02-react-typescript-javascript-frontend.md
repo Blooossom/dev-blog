@@ -52,7 +52,7 @@
 339. frontend에서 dependency inversion은 API client, storage, analytics 같은 외부 의존성을 어떻게 격리할 수 있을까?
 ## Frontend Pattern / Cross-Cutting Design
 
-340. optimistic UI는 단순히 먼저 화면을 바꽈는 것이 아니라 실패, 재시도, 롤백을 포함한 상태 머신이라고 볼 수 있을까?
+~~340. optimistic UI는 단순히 먼저 화면을 바꽈는 것이 아니라 실패, 재시도, 롤백을 포함한 상태 머신이라고 볼 수 있을까?~~ `작성완료`
 ~~341. error boundary는 모든 비동기 에러를 잊아줄까, 어떤 에러는 별도로 처리해야 할까?~~ `작성완료`
 ~~342. suspense는 loading spinner를 대체하는 기능일까, 렌더링과 데이터 준비를 조율하는 모델일까?~~ `작성완료`
 343. route-level code splitting과 component-level code splitting은 초기 로딩과 전환 지연에서 어떤 차이를 만들까?

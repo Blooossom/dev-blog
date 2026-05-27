@@ -53,7 +53,7 @@
 ~~189. primary-replica 구조에서 read replica로 읽으면 어떤 정합성 문제가 생길 수 있을까?~~ `작성완료`
 ~~190. replication lag는 사용자에게 어떤 형태의 버그로 드러날 수 있을까?~~ `작성완료`
 ~~191. failover가 자동으로 되더라도 애플리케이션 커넥션과 트랜잭션은 어떤 영향을 받을까?~~ `작성완료`
-192. sharding은 데이터 양 문제를 해결하지만, join, transaction, rebalancing에서는 어떤 비용을 만들까?
+~~192. sharding은 데이터 양 문제를 해결하지만, join, transaction, rebalancing에서는 어떤 비용을 만들까?~~ `작성완료`
 193. shard key를 잘못 고르면 hot shard 문제가 왜 발생할까?
 194. read/write splitting은 부하 분산에 도움이 되지만, 어떤 쿼리를 primary로 보내야 할까?
 ~~195. DB connection pool이 고갈되면 애플리케이션에서는 어떤 증상으로 나타날까?~~ `작성완료`
