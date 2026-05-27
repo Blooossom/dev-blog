@@ -581,6 +581,8 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'spring-webflux-blocking':           { pattern: 'threads', colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'db-row-table-lock':                 { pattern: 'flow',    colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'ai-task-boundary':                  { pattern: 'neural',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'db-sharding-tradeoffs':             { pattern: 'network', colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'optimistic-ui-state-machine':       { pattern: 'browser', colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
