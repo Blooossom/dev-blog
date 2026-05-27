@@ -1,0 +1,202 @@
+---
+title: DB 샤딩의 이점과 숨겨진 비용
+date: '2026-05-27'
+category: Backend
+tags:
+  - Sharding
+  - Database
+  - 분산 DB
+  - 성능 최적화
+  - 파티셔닝
+summary: >-
+  샤딩은 데이터 양 문제를 해결하지만, join, 트랜잭션, rebalancing에서 상당한 비용을 만들어 낸다. 샤딩의 동작 원리와 트레이드오프를 실제 서비스 설계 관점에서 살펴본다.
+thumbnail: /thumbnails/db-sharding-tradeoffs.svg
+---
+
+샤딩은 데이터 양 문제를 해결하지만, join·트랜잭션·rebalancing에서 각각 어떤 비용을 만들어 낼까? 단순히 "데이터를 여러 서버로 분산한다"는 설명만으로는 실제 설계에서 만나는 문제들을 예측하기 어렵다.
+
+## 샤딩이란
+
+샤딩(Sharding)은 하나의 테이블을 **수평 분할(Horizontal Partitioning)** 하여 여러 DB 서버에 나누어 저장하는 기법이다. 각 서버가 전체 데이터의 일부(shard)만 보유하므로 단일 서버의 스토리지·처리량 한계를 벗어날 수 있다.
+
+```
+단일 DB (한계 상황)
+┌─────────────────────────────┐
+│  users 테이블 (10억 rows)   │
+│  → 단일 서버 디스크 풀      │
+│  → 인덱스가 메모리 초과     │
+└─────────────────────────────┘
+
+샤딩 적용 후
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│ Shard 0  │  │ Shard 1  │  │ Shard 2  │
+│ user 0~3 │  │ user 3~6 │  │ user 6~9 │
+│ 억 rows  │  │ 억 rows  │  │ 억 rows  │
+└──────────┘  └──────────┘  └──────────┘
+```
+
+---
+
+## 샤드 키 선택 — 모든 문제의 출발점
+
+샤드 키(Shard Key)는 데이터를 어느 샤드에 넣을지 결정하는 컬럼이다. 잘못 고르면 특정 샤드에 요청이 몰리는 **hot shard** 문제가 발생한다.
+
+| 샤드 키 후보 | 장점 | 단점 |
+|---|---|---|
+| user_id | 균등 분산 가능 | 범위 쿼리 비효율 |
+| created_at | 범위 쿼리 유리 | 최신 샤드에 집중(hot) |
+| country | 지역별 격리 | 국가 크기 편차 |
+| hash(user_id) | 균등 분산 | 범위 쿼리 불가 |
+
+### Consistent Hashing
+
+노드 추가/제거 시 데이터 재배치를 최소화하기 위해 consistent hashing을 사용한다. 가상 노드(virtual node)를 여러 개 배치해 균등 분산을 보완한다.
+
+```
+해시 링 (0 ~ 2^32)
+
+     0
+     |
+  Shard A (vnode 3개)
+  -----  Shard B (vnode 3개)
+  |           |
+  Shard C (vnode 3개)
+  -----  -----
+     |
+   2^32
+```
+
+---
+
+## join 비용 — 가장 큰 제약
+
+단일 DB에서는 `JOIN`이 간단하다. 샤딩 환경에서는 서로 다른 샤드에 있는 행을 합쳐야 할 때 **scatter-gather** 패턴이 필요하다.
+
+```
+# 단일 DB
+SELECT o.*, u.name
+FROM orders o
+JOIN users u ON o.user_id = u.id
+WHERE o.status = 'pending';
+-- 한 번의 쿼리로 끝
+
+# 샤딩 환경
+1. 모든 샤드에 orders 조회 → 각 샤드에서 결과 수집
+2. 각 샤드에서 user 정보 조회
+3. 애플리케이션에서 병합(in-memory join)
+```
+
+### 해결 전략
+
+**동일 샤드 배치(co-location)**: 연관 테이블을 같은 샤드 키로 분산해 같은 샤드에 보관한다. `orders`와 `users`를 모두 `user_id` 기반으로 샤딩하면 특정 사용자의 주문은 항상 같은 샤드에 있다.
+
+```
+user_id = 1234 → hash → Shard 2
+  users(user_id=1234)    → Shard 2
+  orders(user_id=1234)   → Shard 2
+  payments(user_id=1234) → Shard 2
+```
+
+**비정규화**: 자주 조인하는 컬럼을 중복 저장해 조인 자체를 없앤다.
+
+```sql
+-- orders 테이블에 user_name 중복 저장
+CREATE TABLE orders (
+  id         BIGINT,
+  user_id    BIGINT,
+  user_name  VARCHAR(100),  -- 중복 컬럼
+  amount     DECIMAL
+);
+```
+
+---
+
+## 트랜잭션 비용 — 분산 트랜잭션의 복잡성
+
+단일 DB의 ACID 트랜잭션은 여러 샤드에 걸치면 **분산 트랜잭션**이 필요하다.
+
+```
+# 포인트 결제 시나리오
+Shard 0: users(user_id=100) → point 차감
+Shard 1: orders(user_id=200) → 주문 생성
+
+두 샤드 중 하나만 실패하면?
+```
+
+### 2PC (Two-Phase Commit)
+
+```
+Phase 1 - Prepare:
+  Coordinator → Shard 0: "커밋 준비해"
+  Coordinator → Shard 1: "커밋 준비해"
+  각 샤드: 잠금 보유, "OK" 응답
+
+Phase 2 - Commit:
+  모두 OK → Coordinator → 전체 커밋
+  하나라도 Fail → Coordinator → 전체 롤백
+```
+
+2PC는 네트워크 지연 동안 잠금을 유지하므로 처리량이 크게 낮아진다. 실제 서비스에서는 다음 방법을 선호한다.
+
+- **Saga 패턴**: 각 단계를 로컬 트랜잭션으로 처리하고, 실패 시 보상(compensating) 트랜잭션 실행
+- **Outbox 패턴**: DB 이벤트 발행을 같은 로컬 트랜잭션 내에서 처리
+
+---
+
+## Rebalancing 비용 — 노드 추가/제거의 고통
+
+샤드를 추가하거나 제거할 때 데이터를 재분배(rebalancing)해야 한다. 이 과정에서 다음 문제가 발생한다.
+
+```
+기존 3개 샤드 → 4개 샤드로 확장
+
+Before:
+  Shard 0: user 0~33%
+  Shard 1: user 33~66%
+  Shard 2: user 66~100%
+
+After:
+  Shard 0: user 0~25%
+  Shard 1: user 25~50%
+  Shard 2: user 50~75%
+  Shard 3: user 75~100%   (신규)
+
+→ 전체 데이터의 ~25%를 이동해야 함
+```
+
+### Rebalancing 전략
+
+| 전략 | 방법 | 단점 |
+|---|---|---|
+| 전체 중단 후 마이그레이션 | 서비스 중단, 일괄 이동 | 다운타임 발생 |
+| 온라인 마이그레이션 | 이중 쓰기 후 점진적 이동 | 구현 복잡성, 정합성 주의 |
+| Consistent Hashing | 가상 노드 추가 | 일부 데이터만 이동 필요 |
+
+온라인 마이그레이션은 이중 쓰기(dual-write) 기간 동안 두 샤드 모두에 쓰고, 마이그레이션이 끝난 뒤 새 샤드만 읽도록 전환하는 방식을 따른다.
+
+---
+
+## 샤딩이 필요한 시점
+
+샤딩은 복잡성 비용이 크다. 섣불리 도입하기 전에 다음을 먼저 검토해야 한다.
+
+```
+샤딩 전 체크리스트
+□ 읽기 부하 → Read Replica로 분산 가능한가?
+□ 쓰기 부하 → CQRS + 이벤트 소싱으로 분리 가능한가?
+□ 인덱스 크기 → 파티셔닝(같은 DB 내 분할)으로 충분한가?
+□ 데이터 증가율 → 실제로 단일 서버를 초과하는가?
+```
+
+| 방법 | 데이터 규모 | 복잡도 |
+|---|---|---|
+| 수직 확장 (Scale-up) | 수천만 rows | 낮음 |
+| Read Replica | 읽기 집중 | 낮음 |
+| 테이블 파티셔닝 | 수억 rows | 중간 |
+| 샤딩 | 수십억 rows 이상 | 높음 |
+
+---
+
+## 요약
+
+샤딩은 단순히 데이터를 분산하는 기술이 아니라 join·트랜잭션·rebalancing 등 기존에 DB가 대신 해주던 보장을 **애플리케이션 계층으로 끌어올리는 트레이드오프**다. 도입 전 반드시 단계적 확장 경로를 먼저 소진하고, 샤드 키 선택과 co-location 설계를 데이터 접근 패턴에 맞춰 충분히 검토해야 한다.
