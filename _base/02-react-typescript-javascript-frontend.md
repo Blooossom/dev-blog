@@ -68,7 +68,7 @@
 ~~411. React reconciliation은 key와 element type을 바탕으로 어떤 방식으로 tree diff 비용을 줄일까?~~ `작성완료`
 ~~412. React concurrent features는 render phase와 commit phase를 분리해 어떤 interruptible rendering을 가능하게 할까?~~ `작성완료`
 ~~413. server component는 client bundle 크기를 줄이지만, stateful interaction과 data fetching 경계는 어떻게 제한할까?~~ `작성완료`
-414. streaming SSR은 TTFB와 LCP를 개선할 수 있지만, hydration 순서와 fallback UI에서 어떤 복잡도를 만들까?
+~~414. streaming SSR은 TTFB와 LCP를 개선할 수 있지만, hydration 순서와 fallback UI에서 어떤 복잡도를 만들까?~~ `작성완료`
 415. browser main thread가 막히면 input delay, animation, rendering pipeline이 어떤 순서로 영향을 받을까?
 416. Web Worker는 CPU 작업을 분리할 수 있지만, DOM 접근과 데이터 복사 비용에서 어떤 제약이 있을까?
 417. service worker cache strategy에서 cache-first, network-first, stale-while-revalidate는 어떤 제품 요구에 맞을까?
