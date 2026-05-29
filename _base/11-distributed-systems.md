@@ -7,7 +7,7 @@
 381. consensus 알고리즘에서 leader election은 split-brain을 막기 위해 어떤 quorum 조건을 필요로 할까?
 382. Raft의 log replication은 follower lag와 leader failover 상황에서 어떤 일관성 보장을 제공할까?
 383. quorum read/write에서 `R + W > N` 조건은 어떤 정합성 기대를 만들고, clock skew에는 어떤 한계가 있을까?
-384. vector clock은 단순 timestamp와 달리 분산 시스템의 causality를 어떻게 표현할 수 있을까?
+~~384. vector clock은 단순 timestamp와 달리 분산 시스템의 causality를 어떻게 표현할 수 있을까?~~ `작성완료`
 385. logical clock과 physical clock은 이벤트 순서 판단에서 어떤 차이를 만들까?
 386. CRDT는 conflict-free merge를 제공하지만, 모든 도메인 규칙을 쉽게 표현할 수 있을까?
 391. distributed tracing에서 sampling rate를 낮추면 비용은 줄지만 어떤 장애 분석 능력을 잃을 수 있을까?
