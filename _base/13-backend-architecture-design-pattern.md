@@ -12,7 +12,7 @@
 ~~306. event sourcing은 상태를 저장하는 대신 이벤트를 저장하면서 어떤 장점과 디버깅 난제를 만들까?~~ `작성완료`
 ~~307. DDD의 aggregate는 단순 엔티티 묶음이 아니라 어떤 일관성 경계를 의미할까?~~ `작성완료`
 ~~308. bounded context를 잘못 나누면 마이크로서비스에서도 모놀리스보다 더 강한 결합이 생길 수 있는 이유는 무엇일까?~~ `작성완료`
-309. repository pattern은 ORM을 감싸기만 하는 계층일까, 도메인 관점의 컬렉션 추상화일까?
+~~309. repository pattern은 ORM을 감싸기만 하는 계층일까, 도메인 관점의 컬렉션 추상화일까?~~ `작성완료`
 ~~310. service class가 모든 비즈니스 로직을 떠안으면 anemic domain model이 되는 이유는 무엇일까?~~ `작성완료`
 311. transaction script와 domain model은 어떤 프로젝트 복잡도에서 선택이 갈릴까?
 312. application service와 domain service는 책임이 어떻게 달라야 할까?
