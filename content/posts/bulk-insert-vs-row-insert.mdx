@@ -1,0 +1,215 @@
+---
+title: Bulk Insert vs Row-by-Row Insert — DB 내부 처리 비용의 차이
+date: '2026-05-30'
+category: Backend
+tags:
+  - Database
+  - MySQL
+  - PostgreSQL
+  - 성능 최적화
+  - JPA
+summary: >-
+  Bulk Insert와 Row-by-Row Insert는 DB 내부 처리 비용에서 어떤 차이가 있을까? 네트워크 왕복, 트랜잭션 오버헤드, WAL 쓰기, 인덱스 갱신까지 DB가 데이터를 쓰는 과정을 분해해서 왜 대량 데이터 삽입에서 Bulk Insert가 압도적으로 유리한지 살펴본다.
+thumbnail: /thumbnails/bulk-insert-vs-row-insert.svg
+---
+
+Bulk Insert와 Row-by-Row Insert는 DB 내부 처리 비용에서 어떤 차이가 있을까? "한 번에 넣으면 빠르겠지"라고 직관적으로 알고 있지만, 실제로 어느 단계에서 어떤 비용 차이가 생기는지 알면 쿼리 설계와 JPA 설정에서 더 정확한 판단을 내릴 수 있다.
+
+## 네트워크 왕복 비용
+
+가장 직관적인 차이다. Row-by-Row 방식은 INSERT 문을 행마다 개별적으로 보낸다.
+
+```
+Row-by-Row:
+App ──→ DB: INSERT INTO orders (col1, col2) VALUES (val1, val2)
+App ←── DB: OK
+App ──→ DB: INSERT INTO orders (col1, col2) VALUES (val3, val4)
+App ←── DB: OK
+... N번 반복
+
+Bulk Insert:
+App ──→ DB: INSERT INTO orders (col1, col2) VALUES (v1,v2),(v3,v4),...,(vN)
+App ←── DB: OK (1번)
+```
+
+N개 행을 삽입할 때 Row-by-Row는 N번의 왕복, Bulk는 1번의 왕복이 발생한다. 로컬 환경에서도 1ms의 왕복 지연이 1000번이면 1초다. 클라우드 환경에서 DB가 다른 AZ에 있다면 왕복 지연이 5–20ms 수준으로 커진다.
+
+## 트랜잭션 오버헤드
+
+각 SQL 문이 개별 트랜잭션으로 실행되면(auto-commit 기본값), 트랜잭션 BEGIN/COMMIT 페어가 N번 발생한다.
+
+```
+Row-by-Row (auto-commit):
+BEGIN → INSERT row1 → COMMIT
+BEGIN → INSERT row2 → COMMIT
+...
+BEGIN → INSERT rowN → COMMIT
+N번의 트랜잭션 플러시 발생
+
+Bulk Insert (명시적 트랜잭션):
+BEGIN
+INSERT row1..rowN (단일 문장)
+COMMIT
+1번의 트랜잭션 플러시
+```
+
+트랜잭션 커밋은 단순한 상태 변경이 아니다. WAL(Write-Ahead Log)을 디스크에 flush하는 fsync를 포함하기 때문에 I/O 비용이 발생한다. N번 커밋은 N번의 디스크 동기화다.
+
+## WAL과 디스크 I/O
+
+DB는 데이터를 실제 데이터 파일에 쓰기 전에 WAL(Write-Ahead Log)에 먼저 기록한다. 장애 시 복구를 위해서다.
+
+```
+Row-by-Row 삽입 N개:
+WAL record 1: INSERT row1
+fsync (durability guarantee)
+WAL record 2: INSERT row2
+fsync
+...
+WAL record N: INSERT rowN
+fsync
+
+Bulk Insert:
+WAL record: INSERT rows 1..N
+fsync (1번)
+```
+
+PostgreSQL에서 `synchronous_commit = on`(기본값)인 경우, 커밋마다 WAL 파일이 디스크에 동기화된다. Bulk Insert는 WAL 레코드 크기는 비슷하지만 fsync 횟수가 1번이다.
+
+## 인덱스 갱신 비용
+
+인덱스가 있는 테이블에 행을 삽입하면 B-Tree 인덱스도 갱신된다.
+
+```
+인덱스가 1개 있는 테이블:
+
+Row-by-Row (1000행):
+- 데이터 페이지 갱신: 1000번
+- 인덱스 B-Tree 갱신: 1000번 (노드 분할, 리밸런싱 포함)
+
+Bulk Insert (1000행):
+- 데이터 페이지 갱신: 배치 처리
+- 인덱스 B-Tree 갱신: 최적화 가능
+  (일부 DB는 bulk 삽입 시 인덱스를 비활성화 후 재생성)
+```
+
+MySQL의 `ALTER TABLE ... DISABLE KEYS` 또는 PostgreSQL의 `COPY` 명령은 대량 삽입 시 인덱스를 나중에 한꺼번에 갱신하는 방식을 지원한다.
+
+## 실제 성능 비교
+
+10,000행 삽입 기준 비교 (MySQL InnoDB, 인덱스 1개, 로컬 환경):
+
+| 방식 | 소요 시간 |
+|------|-----------|
+| Row-by-Row (auto-commit) | 약 10–20초 |
+| Row-by-Row (단일 트랜잭션) | 약 2–3초 |
+| Bulk INSERT (500행 단위 배치) | 약 0.3–0.5초 |
+| LOAD DATA INFILE / COPY | 약 0.1–0.2초 |
+
+단일 트랜잭션으로 묶는 것만으로도 5–10배 개선이 가능하고, Bulk INSERT를 사용하면 추가로 5–10배 개선된다.
+
+## Spring/JPA에서 Bulk Insert 적용
+
+JPA는 기본적으로 Row-by-Row 방식으로 동작한다. Bulk Insert를 활성화하려면 몇 가지 설정이 필요하다.
+
+### IDENTITY 전략 문제
+
+```java
+@Entity
+public class Order {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id; // IDENTITY 전략은 배치 삽입 비활성화
+}
+```
+
+`IDENTITY` 전략은 각 INSERT 후 생성된 ID를 즉시 알아야 하기 때문에 JPA가 배치 삽입을 비활성화한다.
+
+해결책: `SEQUENCE` 전략으로 변경
+
+```java
+@Entity
+public class Order {
+    @Id
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "order_seq")
+    @SequenceGenerator(name = "order_seq", allocationSize = 50)
+    private Long id;
+}
+```
+
+`allocationSize = 50`으로 설정하면 DB 시퀀스 호출을 50개마다 1번으로 줄인다.
+
+### 배치 크기 설정
+
+```yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 500          # 배치 크기
+          order_inserts: true       # INSERT 순서 최적화
+          order_updates: true       # UPDATE 순서 최적화
+```
+
+### JDBC 직접 사용 — 대량 삽입의 현실적 선택
+
+JPA 배치보다 더 빠른 방법은 `JdbcTemplate`을 직접 사용하는 것이다.
+
+```java
+public void bulkInsert(List<Order> orders) {
+    String sql = "INSERT INTO orders (customer_id, status, created_at) VALUES (?, ?, ?)";
+    
+    jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
+        @Override
+        public void setValues(PreparedStatement ps, int i) throws SQLException {
+            Order order = orders.get(i);
+            ps.setLong(1, order.getCustomerId());
+            ps.setString(2, order.getStatus().name());
+            ps.setTimestamp(3, Timestamp.valueOf(order.getCreatedAt()));
+        }
+        
+        @Override
+        public int getBatchSize() {
+            return orders.size();
+        }
+    });
+}
+```
+
+또는 단일 INSERT 문에 VALUES를 여러 개 붙이는 방식:
+
+```java
+public void bulkInsertSql(List<Order> orders) {
+    StringBuilder sql = new StringBuilder(
+        "INSERT INTO orders (customer_id, status, created_at) VALUES "
+    );
+    
+    List<Object> params = new ArrayList<>();
+    for (int i = 0; i < orders.size(); i++) {
+        sql.append("(?, ?, ?)");
+        if (i < orders.size() - 1) sql.append(",");
+        Order order = orders.get(i);
+        params.add(order.getCustomerId());
+        params.add(order.getStatus().name());
+        params.add(order.getCreatedAt());
+    }
+    
+    jdbcTemplate.update(sql.toString(), params.toArray());
+}
+```
+
+## 배치 크기 선택
+
+한 번에 너무 많은 행을 넣으면 메모리 사용량과 트랜잭션 잠금 시간이 늘어난다.
+
+| 배치 크기 | 특성 |
+|-----------|------|
+| 100 미만 | 네트워크 왕복 이점이 작음 |
+| 100–1000 | 일반적인 최적 범위 |
+| 1000–5000 | 메모리 사용량 증가 시작 |
+| 5000 이상 | 트랜잭션 잠금 시간 주의 필요 |
+
+대량 삽입 시 단일 트랜잭션보다 배치를 나눠 커밋하는 방식이 장애 복구와 잠금 관리 측면에서 유리하다.
+
+Bulk Insert의 성능 이점은 단순히 SQL 문 하나로 줄인다는 것이 아니라, 네트워크 왕복, 트랜잭션 플러시, WAL fsync, 인덱스 갱신 비용을 N분의 1로 줄이는 데서 온다. 대량 데이터 처리가 필요한 시스템에서는 ORM 편의성보다 이 비용 구조를 이해하고 삽입 방식을 선택하는 것이 중요하다.
