@@ -587,6 +587,9 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'streaming-ssr-hydration':           { pattern: 'browser', colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'http2-head-of-line-blocking':       { pattern: 'flow',    colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'vector-clock-causality':            { pattern: 'network', colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'udp-vs-tcp':                        { pattern: 'flow',    colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
+  'repository-pattern':                { pattern: 'hexagons', colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'bulk-insert-vs-row-insert':         { pattern: 'layers',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
