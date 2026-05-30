@@ -1,0 +1,168 @@
+---
+title: Repository Pattern — ORM 래퍼인가, 도메인 컬렉션 추상화인가
+date: '2026-05-30'
+category: Architecture
+tags:
+  - DDD
+  - Repository Pattern
+  - 설계 패턴
+  - 도메인
+  - JPA
+summary: >-
+  Repository Pattern은 ORM을 감싸기만 하는 계층일까, 도메인 관점의 컬렉션 추상화일까? JPA의 JpaRepository와 진정한 Repository의 차이를 도메인 모델 관점에서 살펴보고, 설계 의도와 책임 분리 방법을 정리한다.
+thumbnail: /thumbnails/repository-pattern.svg
+---
+
+Repository Pattern은 ORM을 감싸기만 하는 계층일까, 도메인 관점의 컬렉션 추상화일까? 많은 Spring 프로젝트에서 `JpaRepository`를 상속한 인터페이스를 Repository라 부르지만, 이것이 Eric Evans가 DDD에서 정의한 Repository와 같은 개념인지는 다시 생각해볼 필요가 있다.
+
+## Repository의 원래 의미
+
+DDD에서 Repository는 **인메모리 컬렉션처럼 동작하는 도메인 객체 저장소**다. 데이터베이스 접근의 세부사항을 숨기고, 도메인 언어로만 통신한다.
+
+```
+도메인 계층의 관점:
+List<Order> orders = orderRepository.findByCustomerId(customerId);
+orders.add(new Order(...));
+// 저장? 이미 컬렉션이니 자동으로 반영된 것처럼 보임
+
+인프라 계층이 실제로:
+SELECT * FROM orders WHERE customer_id = ?
+INSERT INTO orders ...
+```
+
+핵심은 "도메인 계층이 저장 메커니즘을 모른다"는 점이다.
+
+## JpaRepository는 Repository가 아닌가
+
+`JpaRepository`를 그대로 도메인 계층에서 사용하면 어떤 문제가 생길까?
+
+```java
+// 인프라 기술이 도메인으로 침투한 경우
+public interface OrderRepository extends JpaRepository<Order, Long> {
+    List<Order> findByStatusAndCreatedAtBetween(
+        OrderStatus status, LocalDateTime from, LocalDateTime to
+    );
+    
+    @Query("SELECT o FROM Order o JOIN FETCH o.items WHERE o.id = :id")
+    Optional<Order> findWithItemsById(Long id); // JPQL 노출
+}
+```
+
+문제점:
+- `JpaRepository`가 제공하는 `saveAndFlush`, `deleteInBatch` 같은 메서드가 도메인 인터페이스에 노출된다
+- `@Query` 어노테이션에 JPQL이 직접 쓰이면서 인프라 기술이 인터페이스에 노출된다
+- 도메인 계층이 JPA에 의존하게 된다
+
+## 포트와 어댑터로 분리하는 방법
+
+```
+도메인 계층:
+┌─────────────────────────────────┐
+│  interface OrderRepository      │
+│    findById(OrderId): Order     │
+│    findByCustomer(CustomerId)   │
+│    save(Order): void            │
+│    remove(Order): void          │
+└──────────────────┬──────────────┘
+                   │ 구현
+인프라 계층:        ↓
+┌─────────────────────────────────┐
+│  JpaOrderRepository             │
+│    implements OrderRepository   │
+│    (JpaRepository 위임)         │
+└─────────────────────────────────┘
+```
+
+도메인 인터페이스는 인프라 기술을 몰라야 한다.
+
+```java
+// 도메인 계층 — 인프라 의존 없음
+public interface OrderRepository {
+    Optional<Order> findById(OrderId id);
+    List<Order> findByCustomer(CustomerId customerId);
+    void save(Order order);
+    void remove(Order order);
+}
+```
+
+```java
+// 인프라 계층 — JPA를 이용한 구현
+@Repository
+public class JpaOrderRepository implements OrderRepository {
+
+    private final SpringDataOrderJpaRepository jpaRepo;
+
+    @Override
+    public Optional<Order> findById(OrderId id) {
+        return jpaRepo.findById(id.value())
+            .map(OrderMapper::toDomain);
+    }
+
+    @Override
+    public void save(Order order) {
+        jpaRepo.save(OrderMapper::toEntity(order));
+    }
+}
+```
+
+```java
+// 스프링 데이터 JPA 인터페이스 — 인프라에만 존재
+interface SpringDataOrderJpaRepository extends JpaRepository<OrderEntity, Long> {
+    List<OrderEntity> findByCustomerId(Long customerId);
+}
+```
+
+## 도메인 언어로만 대화하는 Repository
+
+Repository의 메서드는 도메인 용어로만 구성되어야 한다. 기술적인 쿼리 파라미터가 드러나지 않아야 한다.
+
+```java
+// 나쁜 예 — 기술적 용어가 노출됨
+List<Order> findByStatusIn(List<String> statuses);
+List<Order> findTop10ByCreatedAtDesc();
+
+// 좋은 예 — 도메인 의도가 명확함
+List<Order> findPendingOrders();
+List<Order> findRecentOrders(int limit);
+```
+
+`findPendingOrders()`는 내부적으로 `WHERE status IN ('PENDING', 'PAYMENT_WAITING')`을 실행할 수 있지만, 도메인은 SQL을 알 필요가 없다.
+
+## Aggregate Root만 Repository를 가져야 한다
+
+DDD에서 Repository는 **Aggregate Root에만** 존재한다. OrderItem은 Order를 통해서만 접근해야 하기 때문에 `OrderItemRepository`를 만들면 Aggregate 경계가 무너진다.
+
+```
+올바른 구조:
+OrderRepository ← Order (Aggregate Root)
+                     └─ OrderItem (Aggregate 내부)
+
+잘못된 구조:
+OrderRepository    ← Order
+OrderItemRepository ← OrderItem (별도 접근 경로 생김)
+```
+
+`OrderItem`에 직접 접근할 수 있게 되면 `Order`가 보장해야 하는 불변식(예: 최대 주문 수량, 할인 적용 규칙)을 우회할 수 있다.
+
+## Repository가 가져야 할 책임과 가지지 말아야 할 책임
+
+| 책임 | Repository에 해당? |
+|------|-------------------|
+| 도메인 객체 저장, 조회, 삭제 | ✅ |
+| 도메인 조건으로 컬렉션 필터링 | ✅ |
+| 트랜잭션 경계 관리 | ❌ (Application Service 역할) |
+| 비즈니스 로직 수행 | ❌ (Domain 역할) |
+| 여러 Aggregate에 걸친 조회 | ❌ (Query Service로 분리) |
+| 페이징, 정렬 파라미터 노출 | 신중하게 (도메인 용어로 래핑 권장) |
+
+복잡한 보고서용 조회나 통계 쿼리는 Repository가 아닌 QueryService 혹은 ReadModel로 분리하는 것이 낫다. Repository는 도메인 조작을 위한 객체 접근에만 집중해야 한다.
+
+## 실무에서의 절충점
+
+완전한 분리는 매퍼 코드와 인터페이스 중복을 만든다. 도메인이 단순하거나 팀 규모가 작다면, `JpaRepository`를 직접 사용하면서도 다음 원칙만 지키는 방식이 현실적이다.
+
+- Aggregate Root 단위로만 Repository를 만든다
+- 메서드 이름을 도메인 언어로 짓는다
+- 나중에 분리가 필요해지면 인터페이스 추출 후 구현을 교체한다
+
+Repository는 데이터베이스 접근 레이어를 숨기는 것이 목적이 아니라, 도메인이 저장 기술을 몰라도 되게 만드는 것이 목적이다. ORM 래퍼인지 도메인 추상화인지는 Repository의 메서드가 도메인 언어로만 이루어져 있는지를 보면 알 수 있다.
