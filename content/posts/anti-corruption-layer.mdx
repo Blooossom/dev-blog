@@ -1,0 +1,158 @@
+---
+title: 'Anti-Corruption Layer: 레거시와 외부 시스템의 방어선'
+date: '2026-06-02'
+category: Architecture
+tags:
+  - DDD
+  - Anti-Corruption Layer
+  - 레거시
+  - 시스템 설계
+  - 헥사고날
+summary: >-
+  Anti-Corruption Layer는 레거시 시스템이나 외부 의존성의 개념이 내 도메인을 오염시키지 않도록 경계를 세우는 패턴이다.
+  번역과 격리 책임을 한 곳에 집중시켜 도메인 순수성을 지키고 외부 변화의 충격을 흡수한다.
+thumbnail: /thumbnails/anti-corruption-layer.svg
+---
+
+Anti-Corruption Layer(ACL)는 레거시 시스템이나 외부 시스템과 연동할 때, 상대방의 모델·용어·구조가 내 도메인을 잠식하지 않도록 막는 패턴이다.
+DDD에서 Eric Evans가 처음 소개했으며, Bounded Context 사이의 번역 계층으로도 쓰인다.
+
+## 왜 오염이 발생하는가
+
+외부 시스템과 직접 통합하면 그 시스템의 개념이 내 코드 안으로 스며든다.
+
+```
+외부 ERP 필드: CUST_NO, REG_DT, STAT_CD
+↓ 직접 사용 시
+내 서비스: if (customer.STAT_CD.equals("01")) { ... }
+```
+
+별도 변환 계층 없이 외부 개념을 서비스 전체에 퍼뜨리면 외부 시스템이 변경될 때 내 코드가 함께 흔들린다.
+더 심각한 문제는 외부의 용어와 규칙이 내 도메인 언어를 대체해 버린다는 점이다.
+
+## ACL의 구조와 역할
+
+```
+[ 내 도메인 ]  ←→  [ Anti-Corruption Layer ]  ←→  [ 외부/레거시 시스템 ]
+```
+
+ACL은 세 가지 책임을 담당한다.
+
+| 책임 | 설명 |
+|------|------|
+| 번역(Translation) | 외부 모델을 내 도메인 모델로 변환 |
+| 격리(Isolation) | 외부 변경이 도메인에 직접 전파되지 않도록 차단 |
+| 어댑터(Adaptation) | 프로토콜·형식 차이(REST, SOAP, CSV 등)를 흡수 |
+
+## 구현 예시
+
+### 외부 ERP 고객 응답을 도메인 Customer로 변환
+
+```java
+// 외부 ERP 응답 DTO
+public record ErpCustomerResponse(
+    String CUST_NO,
+    String CUST_NM,
+    String REG_DT,
+    String STAT_CD
+) {}
+
+// 내 도메인 모델
+public record Customer(
+    CustomerId id,
+    String name,
+    LocalDate registeredAt,
+    CustomerStatus status
+) {}
+
+// ACL - 번역 계층
+@Component
+public class ErpCustomerTranslator {
+
+    public Customer toDomain(ErpCustomerResponse erp) {
+        return new Customer(
+            new CustomerId(erp.CUST_NO()),
+            erp.CUST_NM(),
+            LocalDate.parse(erp.REG_DT(), DateTimeFormatter.BASIC_ISO_DATE),
+            translateStatus(erp.STAT_CD())
+        );
+    }
+
+    private CustomerStatus translateStatus(String statCd) {
+        return switch (statCd) {
+            case "01" -> CustomerStatus.ACTIVE;
+            case "02" -> CustomerStatus.SUSPENDED;
+            case "09" -> CustomerStatus.WITHDRAWN;
+            default   -> throw new UnknownErpStatusException(statCd);
+        };
+    }
+}
+```
+
+도메인 서비스는 ERP 응답을 직접 다루지 않는다. ACL을 통해 변환된 `Customer`만 받아 처리한다.
+
+### 포트-어댑터 패턴과 결합
+
+헥사고날 아키텍처에서는 ACL을 포트(Port)로 선언하고 어댑터(Adapter)로 구현한다.
+
+```java
+// 포트: 내 도메인이 정의, 외부를 모른다
+public interface CustomerRepository {
+    Optional<Customer> findById(CustomerId id);
+}
+
+// 어댑터: ACL 포함, ERP를 알고 번역한다
+@Repository
+public class ErpCustomerAdapter implements CustomerRepository {
+
+    private final ErpClient erpClient;
+    private final ErpCustomerTranslator translator;
+
+    @Override
+    public Optional<Customer> findById(CustomerId id) {
+        return erpClient.fetchCustomer(id.value())
+                        .map(translator::toDomain);
+    }
+}
+```
+
+도메인은 `CustomerRepository`라는 포트만 바라본다. ERP가 REST API에서 gRPC로 바뀌어도 어댑터만 수정하면 된다.
+
+## ACL이 필요한 신호
+
+아래 증상이 보이면 ACL 도입을 검토해야 한다.
+
+- 서비스 코드에 외부 코드 값(`'ORD_STAT_01'`)이 직접 등장한다
+- 외부 API 필드명과 내 도메인 필드명이 뒤섞여 있다
+- 외부 스키마 변경 때마다 도메인 서비스까지 함께 수정한다
+- 외부 개념을 이해하지 못하면 내 서비스 코드를 읽을 수 없다
+
+## Strangler Fig 패턴과의 결합
+
+레거시를 점진적으로 교체할 때 ACL은 Strangler Fig 패턴의 핵심 도구가 된다.
+
+```
+[클라이언트]
+      │
+[API Gateway / Facade]
+      │                  │
+[신규 서비스]    [ACL ── 레거시 시스템]
+```
+
+신규 기능은 새 서비스로 구현하고, 아직 이관하지 못한 기능은 ACL을 통해 레거시에 위임한다.
+레거시가 완전히 교체되면 ACL을 제거하고 어댑터를 새 구현으로 교체한다.
+
+## ACL의 비용과 한계
+
+ACL도 코드이므로 관리 비용이 발생한다.
+
+- 번역 로직이 복잡해질수록 ACL 자체의 단위 테스트가 중요해진다
+- 외부 API 계약이 바뀌면 번역 규칙을 업데이트해야 한다
+- 레이어가 하나 추가되어 디버깅 경로가 길어질 수 있다
+
+그럼에도 도메인 오염을 방치하는 비용이 훨씬 크다. 특히 외부 시스템 교체 가능성이 있거나 레거시와 장기 공존해야 하는 상황이라면 ACL의 가치는 더 명확해진다.
+
+## 정리
+
+ACL은 외부 세계의 개념이 내 도메인 언어를 잠식하지 않도록 번역 책임을 한 곳에 집중시키는 패턴이다.
+외부 변화의 충격을 경계에서 흡수하고, 도메인 모델을 외부 의존으로부터 독립적으로 유지하는 것이 핵심이다.
