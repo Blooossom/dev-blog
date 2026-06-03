@@ -25,7 +25,7 @@
 426. amortized analysis는 배열 resize나 union-find에서 최악의 단일 연산과 평균 비용을 어떻게 다르게 설명할까?
 427. cache-aware algorithm은 같은 Big-O라도 실제 성능을 왜 크게 바꿀 수 있을까?
 428. external sorting은 메모리에 다 못 올리는 데이터를 어떤 방식으로 정렬할까?
-429. consistent hashing은 노드 추가/삭제 시 rebalancing 범위를 어떻게 줄일까?
+~~429. consistent hashing은 노드 추가/삭제 시 rebalancing 범위를 어떻게 줄일까?~~ `작성완료`
 430. rendezvous hashing은 consistent hashing과 비교해 어떤 단순성과 재배치 특성을 가질까?
 431. top-k 문제에서 heap, quickselect, streaming sketch는 입력 크기와 정확도 요구에 따라 어떻게 선택될까?
 432. count-min sketch는 빈도 추정에서 어떤 오차를 허용하고, 어떤 서비스 문제에 적용될 수 있을까?
