@@ -1,0 +1,151 @@
+---
+title: Consistent Hashing — 노드 변경 시 rebalancing 범위를 어떻게 줄일까
+date: '2026-06-03'
+category: Architecture
+tags:
+  - Consistent Hashing
+  - Distributed Systems
+  - Load Balancing
+  - Cache
+summary: >-
+  일반 모듈러 해시는 노드 수가 바뀌면 거의 모든 키를 재배치해야 한다. Consistent Hashing은 해시 링 개념으로
+  노드 변경 시 영향받는 키를 최소화하며, 대규모 분산 캐시와 스토리지 시스템의 핵심 기반이 된다.
+thumbnail: /thumbnails/consistent-hashing.svg
+---
+
+consistent hashing은 노드 추가/삭제 시 rebalancing 범위를 어떻게 줄일까? 이 물음은 분산 캐시 클러스터에서 노드 한 대가 빠졌을 때 전체 데이터를 다시 배치해야 하는 상황을 마주하면 곧 실감하게 된다.
+
+## 일반 모듈러 해싱의 문제
+
+가장 단순한 키-노드 배치 방법은 나머지 연산이다.
+
+```
+노드 인덱스 = hash(key) % N
+```
+
+노드가 3개일 때는 잘 동작한다. 그런데 노드 한 대를 추가해 N이 4가 되는 순간 거의 모든 키의 `hash(key) % N` 값이 바뀐다. 캐시 히트율이 급락하고 DB 부하가 폭증하는 이유다.
+
+| 상황 | 재배치 키 비율 |
+|------|--------------|
+| 모듈러 해싱: N → N+1 | 약 (N-1)/N — 거의 모든 키 |
+| Consistent Hashing: N → N+1 | 약 1/N |
+
+## 해시 링의 개념
+
+Consistent Hashing은 0부터 2^32-1까지의 정수를 원형(링)으로 배치하고, 노드와 키 모두 같은 해시 함수로 이 링 위에 위치시킨다.
+
+```
+              0
+         ┌──────────┐
+    330  │          │  60
+  N3 ●   │   Ring   │  ● N1
+         │          │
+    220  │          │
+      N2 ●──────────┘
+```
+
+키는 자신의 해시 위치에서 시계 방향으로 돌아 처음 만나는 노드에 배치된다.
+
+```
+hash(key_A) → 위치 45  → N1(위치 60) 담당
+hash(key_B) → 위치 200 → N2(위치 220) 담당
+hash(key_C) → 위치 300 → N3(위치 330) 담당
+```
+
+### 노드 추가 시
+
+새 노드 N4가 위치 150에 추가되면, N2(220) 구간 중 150~220 사이에 있던 키들만 N4로 이동한다. 나머지 키는 변동 없다.
+
+```
+변경 전: hash(key_B) → 위치 180 → N2 담당
+변경 후: hash(key_B) → 위치 180 → N4 담당 (150~220 구간만 해당)
+```
+
+### 노드 제거 시
+
+N2가 제거되면 N2가 담당하던 키들이 시계 방향 다음 노드(N3)로 이동한다. 다른 노드의 키는 변동이 없다.
+
+## 가상 노드(Virtual Node)
+
+물리 노드 수가 적으면 링 위 배치가 불균형해질 수 있다. 노드 3개가 링의 한쪽에 몰리면 반대쪽 키가 한 노드에 집중된다.
+
+이를 해결하기 위해 각 물리 노드를 여러 가상 노드로 분산 배치한다.
+
+```
+물리 노드 N1  →  vN1_0, vN1_1, vN1_2 ... (100개 이상)
+물리 노드 N2  →  vN2_0, vN2_1, vN2_2 ...
+물리 노드 N3  →  vN3_0, vN3_1, vN3_2 ...
+```
+
+가상 노드 수가 많을수록 부하가 고르게 분산되고, 노드 추가/삭제 시 재배치 키도 여러 노드에 나뉘어 특정 노드에 부하가 몰리지 않는다.
+
+## Java 구현 스케치
+
+```java
+import java.util.SortedMap;
+import java.util.TreeMap;
+
+public class ConsistentHashRing {
+    private final SortedMap<Integer, String> ring = new TreeMap<>();
+    private final int virtualNodes;
+
+    public ConsistentHashRing(int virtualNodes) {
+        this.virtualNodes = virtualNodes;
+    }
+
+    public void addNode(String node) {
+        for (int i = 0; i < virtualNodes; i++) {
+            ring.put(hash(node + "#" + i), node);
+        }
+    }
+
+    public void removeNode(String node) {
+        for (int i = 0; i < virtualNodes; i++) {
+            ring.remove(hash(node + "#" + i));
+        }
+    }
+
+    public String getNode(String key) {
+        if (ring.isEmpty()) return null;
+        int hash = hash(key);
+        SortedMap<Integer, String> tail = ring.tailMap(hash);
+        // 시계 방향 첫 번째 노드, 없으면 링의 첫 노드(wrap-around)
+        int nodeHash = tail.isEmpty() ? ring.firstKey() : tail.firstKey();
+        return ring.get(nodeHash);
+    }
+
+    private int hash(String key) {
+        // 실제로는 MurmurHash3 등 균등 분포 해시 사용
+        return key.hashCode() & 0x7fffffff;
+    }
+}
+```
+
+## rebalancing 비용 정리
+
+N개 노드, K개 키 환경에서 노드 1개 추가 시:
+
+| 방식 | 이동 키 수 | 특징 |
+|------|-----------|------|
+| 모듈러 해싱 | K × (N-1)/N | 노드 수가 많을수록 재배치 폭증 |
+| Consistent Hashing | K/N | 추가된 노드가 흡수할 만큼만 이동 |
+| 가상 노드 적용 시 | K/N (균등 분산) | 특정 노드 부하 집중 방지 |
+
+## 실제 사용 사례
+
+| 시스템 | 적용 방식 |
+|--------|-----------|
+| Amazon DynamoDB | consistent hashing 기반 파티션 배치 |
+| Apache Cassandra | vnodes를 활용한 consistent hashing |
+| Redis Cluster | 16384개 해시 슬롯 배분(유사 원리) |
+| Memcached 클라이언트 | Ketama 알고리즘(consistent hashing 구현체) |
+| CDN 캐시 서버 | 요청 URL을 일관된 해시로 엣지 서버에 배분 |
+
+## 한계와 주의점
+
+- **핫스팟**: 가상 노드 수가 적으면 링 위 특정 구간에 키가 집중될 수 있다.
+- **메타데이터 동기화**: 링 상태를 클러스터 전체가 일관되게 유지해야 한다. Gossip 프로토콜이나 중앙 조정자(ZooKeeper 등)가 필요하다.
+- **범위 쿼리 불가**: 링 기반 배치는 인접 키가 같은 노드에 모이지 않으므로 범위 스캔이 필요한 경우엔 적합하지 않다.
+- **해시 편향**: 해시 함수 품질이 낮으면 특정 구간에 키가 몰려 불균형이 발생한다.
+
+Consistent Hashing의 핵심은 키-노드 매핑을 전역 재계산 없이 국소적으로만 변경한다는 점이며, 이것이 수백 대 노드로 이루어진 분산 시스템에서도 무중단 스케일링을 가능하게 하는 기반 원리다.
