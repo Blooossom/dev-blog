@@ -1,0 +1,182 @@
+---
+title: 트랜잭션 스크립트와 도메인 모델, 언제 선택이 갈릴까
+date: '2026-06-04'
+category: Architecture
+tags:
+  - DDD
+  - 도메인 모델
+  - 아키텍처
+  - 설계 패턴
+  - 트랜잭션 스크립트
+summary: >-
+  트랜잭션 스크립트와 도메인 모델은 비즈니스 로직을 구현하는 두 가지 대표적인 패턴이다. 프로젝트 복잡도에 따라 어떤 패턴이 더 적합한지, 전환 시점과 트레이드오프를 살펴본다.
+thumbnail: /thumbnails/transaction-script-vs-domain-model.svg
+---
+
+트랜잭션 스크립트와 도메인 모델은 어떤 프로젝트 복잡도에서 선택이 갈릴까? 많은 팀이 DDD를 따라야 한다는 막연한 생각으로 도메인 모델을 선택하지만, 프로젝트 성격을 고려하지 않으면 오히려 복잡도만 높아진다.
+
+## 트랜잭션 스크립트 패턴
+
+트랜잭션 스크립트는 **하나의 비즈니스 동작을 하나의 프로시저(함수)로 표현**하는 방식이다. 비즈니스 로직이 서비스 레이어에 모두 담기며, 도메인 객체는 단순한 데이터 홀더 역할만 한다.
+
+```java
+// 트랜잭션 스크립트: 주문 취소 로직이 서비스에 집중
+@Service
+@Transactional
+public class OrderService {
+
+    public void cancelOrder(Long orderId, String reason) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new OrderNotFoundException(orderId));
+
+        if (!order.getStatus().equals("CONFIRMED")) {
+            throw new IllegalStateException("취소 불가 상태: " + order.getStatus());
+        }
+        if (order.getCreatedAt().isBefore(LocalDateTime.now().minusHours(24))) {
+            throw new IllegalStateException("24시간 이후 취소 불가");
+        }
+
+        order.setStatus("CANCELLED");
+        order.setCancelReason(reason);
+        order.setCancelledAt(LocalDateTime.now());
+
+        paymentService.refund(order.getPaymentId(), order.getTotalAmount());
+        notificationService.sendCancelNotification(order.getUserId());
+
+        orderRepository.save(order);
+    }
+}
+```
+
+### 트랜잭션 스크립트의 특징
+
+| 장점 | 단점 |
+|------|------|
+| 읽기 쉽고 직관적 | 로직 중복이 발생하기 쉬움 |
+| 빠른 개발 속도 | 서비스 클래스 비대화 |
+| 단순 CRUD에 최적 | 복잡한 도메인 규칙 표현 어려움 |
+| 팀원 진입 장벽 낮음 | 동일 검증 로직이 여러 곳에 산재 |
+
+## 도메인 모델 패턴
+
+도메인 모델은 **비즈니스 규칙과 상태를 도메인 객체 안에 캡슐화**하는 방식이다. 서비스는 도메인 객체에게 작업을 위임하고, 도메인 객체 자체가 자신의 불변식을 지킨다.
+
+```java
+// 도메인 모델: 취소 가능 여부를 Order가 스스로 판단
+@Entity
+public class Order {
+
+    @Enumerated(EnumType.STRING)
+    private OrderStatus status;
+
+    private LocalDateTime createdAt;
+
+    public void cancel(String reason) {
+        if (!this.status.isCancellable()) {
+            throw new IllegalStateException("취소 불가 상태: " + this.status);
+        }
+        if (this.createdAt.isBefore(LocalDateTime.now().minusHours(24))) {
+            throw new IllegalStateException("24시간 이후 취소 불가");
+        }
+
+        this.status = OrderStatus.CANCELLED;
+        this.cancelReason = reason;
+        this.cancelledAt = LocalDateTime.now();
+
+        // 도메인 이벤트 발행
+        registerEvent(new OrderCancelledEvent(this.id, reason));
+    }
+
+    public boolean isCancellable() {
+        return this.status.isCancellable()
+            && this.createdAt.isAfter(LocalDateTime.now().minusHours(24));
+    }
+}
+
+// 서비스는 조율만 담당
+@Service
+@Transactional
+public class OrderService {
+
+    public void cancelOrder(Long orderId, String reason) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new OrderNotFoundException(orderId));
+
+        order.cancel(reason); // 도메인 로직은 Order가 담당
+    }
+}
+```
+
+## 복잡도에 따른 선택 기준
+
+```
+프로젝트 복잡도
+   높음 │                           도메인 모델
+        │                      ┌────────────────
+        │                 ┌────┘
+        │            ┌────┘  <- 전환 시점
+        │  ──────────┘
+   낮음 │ 트랜잭션 스크립트
+        └──────────────────────────────────────
+          초기    성장    성숙     대규모
+```
+
+### 트랜잭션 스크립트가 적합한 경우
+
+- **단순 CRUD 중심** 서비스 (관리자 도구, 내부 운영 시스템)
+- 비즈니스 규칙이 적고 변경이 드문 경우
+- 빠른 프로토타이핑이나 MVP 단계
+- 팀 규모가 작고 DDD 경험이 부족한 경우
+
+### 도메인 모델이 적합한 경우
+
+- **복잡한 비즈니스 규칙**이 많고 자주 변경되는 경우
+- 동일한 도메인 객체를 여러 유스케이스에서 재사용하는 경우
+- 도메인 전문가와 긴밀하게 협업해야 하는 경우
+- 장기 유지보수가 중요한 핵심 도메인
+
+## 실제 전환 시점 포착하기
+
+트랜잭션 스크립트로 시작한 프로젝트에서 도메인 모델로 전환할 때 나타나는 신호들이 있다.
+
+**전환 신호**
+
+1. **동일한 검증 로직이 여러 서비스에 복사**됨
+   ```java
+   // OrderService, ReturnService, ExchangeService에 동일 코드가 존재
+   if (!order.getStatus().equals("CONFIRMED")) { ... }
+   ```
+
+2. **서비스 메서드가 수십 줄을 넘기 시작**하고 단위 테스트 작성이 어려워짐
+
+3. **도메인 규칙 변경 시 수정 위치를 파악하기 어려움**
+
+4. **새 기능 추가 시 기존 로직 흐름 이해에 많은 시간이 소요**됨
+
+## 두 패턴의 혼용
+
+현실에서는 두 패턴을 혼용하는 경우가 많다. 핵심 도메인(Core Domain)에는 도메인 모델을, 지원 도메인(Supporting Domain)에는 트랜잭션 스크립트를 적용하는 방식이다.
+
+```
+전체 시스템
+├── 주문/결제 (Core Domain)        -> 도메인 모델
+│   ├── Order, Payment, Discount
+│   └── 복잡한 비즈니스 규칙 많음
+├── 알림 발송 (Supporting Domain)  -> 트랜잭션 스크립트
+│   └── 단순 이벤트 처리
+└── 통계/리포트 (Generic Domain)   -> 트랜잭션 스크립트
+    └── 단순 조회 및 집계
+```
+
+## Rich Domain Model과의 관계
+
+도메인 모델 패턴을 제대로 구현하려면 Anemic Domain Model(빈혈 도메인 모델)을 피해야 한다. Getter/Setter만 가진 도메인 객체는 사실상 트랜잭션 스크립트와 다르지 않다.
+
+| 구분 | Anemic Domain Model | Rich Domain Model |
+|------|--------------------|--------------------|
+| 상태 변경 | 서비스가 직접 setter 호출 | 도메인 메서드로 위임 |
+| 불변식 보장 | 서비스가 담당 | 객체 스스로 담당 |
+| 단위 테스트 | 서비스 테스트 복잡 | 도메인 단독 테스트 용이 |
+| 코드 가독성 | 비즈니스 의도 불명확 | 의도가 명확하게 드러남 |
+
+패턴 선택의 핵심은 복잡도에 대한 정직한 평가다. 과도한 추상화는 단순한 CRUD를 복잡하게 만들고, 지나친 단순화는 복잡한 도메인을 유지보수 지옥으로 이끈다.
