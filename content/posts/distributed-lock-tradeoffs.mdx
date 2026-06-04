@@ -1,0 +1,159 @@
+---
+title: 분산 락, 단일 DB 락보다 항상 나은 선택일까
+date: '2026-06-04'
+category: Backend
+tags:
+  - 분산 시스템
+  - Redis
+  - 동시성
+  - 분산 락
+  - Redlock
+summary: >-
+  분산 락은 단일 DB 락보다 항상 더 좋은 선택일까? 분산 환경에서 임계 구역을 보호하는 방법으로 Redis 기반 분산 락과 DB 락의 트레이드오프를 비교하고, 각 상황에 맞는 선택 기준을 살펴본다.
+thumbnail: /thumbnails/distributed-lock-tradeoffs.svg
+---
+
+분산 락은 단일 DB 락보다 항상 더 좋은 선택일까? 이 질문은 의외로 명확한 답이 없다. 분산 락은 특정 상황에서는 강력하지만, 잘못 적용하면 단일 DB 락보다 훨씬 복잡하고 위험한 문제를 만들어낸다.
+
+## 단일 DB 락과 분산 락의 차이
+
+단일 DB 환경에서는 `SELECT FOR UPDATE`나 Advisory Lock으로 충분히 임계 구역을 보호할 수 있다. 트랜잭션 커밋/롤백이 락 해제와 연동되기 때문에 원자성이 자동으로 보장된다.
+
+```
+단일 DB 환경:
+  ┌─────────────┐
+  │  App Server │──SELECT FOR UPDATE──┐
+  └─────────────┘                     │
+                                      ▼
+                             ┌────────────────┐
+                             │   PostgreSQL   │
+                             │  Row-level Lock │
+                             └────────────────┘
+```
+
+분산 환경에서는 여러 서버 인스턴스가 동시에 같은 자원에 접근한다. 각 인스턴스는 독립된 DB 커넥션 풀을 갖기 때문에 단일 DB 락만으로는 서버 간 경쟁 조건을 막을 수 없다.
+
+```
+분산 환경 (분산 락 없음):
+  ┌──────────┐  ┌──────────┐  ┌──────────┐
+  │  App #1  │  │  App #2  │  │  App #3  │
+  └────┬─────┘  └────┬─────┘  └────┬─────┘
+       │              │              │
+       └──────────────┴──────────────┘
+                      │
+               ┌──────▼──────┐
+               │  DB / 공유 자원  │  <- 동시 접근 가능
+               └─────────────┘
+```
+
+## Redis 기반 분산 락의 작동 원리
+
+Redis의 `SET NX PX` 명령으로 분산 락을 구현하는 것이 가장 일반적이다.
+
+```java
+// Spring Boot + Lettuce 예시
+public boolean tryLock(String lockKey, String lockValue, long ttlMs) {
+    SetArgs args = SetArgs.Builder.nx().px(ttlMs);
+    String result = redisTemplate.execute(
+        (RedisCallback<String>) conn ->
+            conn.set(lockKey.getBytes(), lockValue.getBytes(),
+                     Expiry.milliseconds(ttlMs), SetOption.ifAbsent())
+    );
+    return "OK".equals(result);
+}
+
+public void unlock(String lockKey, String lockValue) {
+    // Lua 스크립트로 원자적 비교-삭제
+    String script = """
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+            return redis.call('del', KEYS[1])
+        else
+            return 0
+        end
+    """;
+    redisTemplate.execute(new DefaultRedisScript<>(script, Long.class),
+        List.of(lockKey), lockValue);
+}
+```
+
+락을 획득한 서버만 해제할 수 있도록 **고유한 lockValue**(UUID 등)를 사용하고, Lua 스크립트로 비교-삭제를 원자적으로 수행하는 것이 핵심이다.
+
+## Redlock과 그 한계
+
+Redis가 단일 노드일 경우, 해당 노드 장애 시 락이 사라지거나 복구 불능 상태가 된다. 이를 해결하기 위해 Redis 개발자가 제안한 것이 **Redlock 알고리즘**이다.
+
+### Redlock 알고리즘
+
+1. 현재 시간(ms)을 기록한다.
+2. N개의 독립 Redis 노드에 순차적으로 락 획득을 시도한다.
+3. N/2 + 1개(과반수) 이상에서 성공하고, 소요 시간이 TTL 미만이면 락을 획득한 것으로 본다.
+4. 실패 시 모든 노드에서 락을 해제한다.
+
+```
+Redlock (Redis 5개 노드 예시):
+  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐
+  │ R1  │  │ R2  │  │ R3  │  │ R4  │  │ R5  │
+  └──┬──┘  └──┬──┘  └──┬──┘  └──┬──┘  └──┬──┘
+     │ 성공    │ 성공    │ 성공    │ 실패    │ 실패
+     └─────────┴─────────┴────────┘
+           3/5 과반수 -> 락 획득
+```
+
+하지만 Martin Kleppmann은 Redlock에도 근본적인 문제가 있다고 지적했다. 프로세스 일시 중지(GC Pause, OS 스케줄링)나 시스템 클록 드리프트가 발생하면 TTL이 만료된 후에도 락을 보유한 것처럼 동작할 수 있다.
+
+### Clock Drift 문제 시나리오
+
+```
+시간 흐름:
+  App #1: 락 획득 ──────────────[GC Pause: 30초]──── 작업 수행
+  TTL:    └──────── 10초 ────────┘ (만료)
+  App #2:                       <- 락 획득 (TTL 만료 후) ── 작업 수행
+                                              두 프로세스 동시 작업 진행
+```
+
+이 문제를 해결하려면 **Fencing Token**(단조 증가하는 토큰)을 함께 사용해야 한다.
+
+## DB 락 vs 분산 락 비교
+
+| 항목 | DB 락 (SELECT FOR UPDATE) | Redis 분산 락 |
+|------|--------------------------|---------------|
+| 구현 복잡도 | 낮음 | 중간~높음 |
+| 원자성 보장 | 트랜잭션으로 자동 | Lua 스크립트 필요 |
+| 성능 | DB 부하 집중 | Redis 처리량 높음 |
+| 장애 내성 | DB 가용성에 의존 | 단일 Redis 장애에 취약 |
+| TTL 만료 위험 | 트랜잭션 롤백으로 해소 | GC Pause 등에 취약 |
+| 적합한 규모 | 단일 DB, 소규모 | 다중 서버, 대규모 |
+
+## 언제 무엇을 선택할까
+
+**DB 락이 적합한 경우**
+- 단일 DB 인스턴스 환경
+- 락 범위가 DB 트랜잭션과 일치할 때 (예: 재고 차감)
+- 코드 복잡도를 낮추고 싶을 때
+
+**분산 락이 적합한 경우**
+- 여러 서버 인스턴스가 동시에 실행되는 환경
+- 외부 API 호출, 파일 처리 등 DB 트랜잭션 밖의 임계 구역 보호
+- DB 부하를 줄여야 할 때
+
+```java
+// Spring에서 분산 락 적용 예시 (AOP + Redisson)
+@DistributedLock(key = "'order:' + #orderId", waitTime = 3, leaseTime = 10)
+public void processOrder(Long orderId) {
+    // 임계 구역: 중복 주문 방지
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    order.process();
+    orderRepository.save(order);
+}
+```
+
+Redisson의 `RLock`은 Watchdog 메커니즘으로 작업이 완료될 때까지 TTL을 자동 연장해 GC Pause 문제를 완화한다.
+
+## 분산 락 도입 전 체크리스트
+
+- DB 트랜잭션으로 해결 가능한가? 가능하면 DB 락을 우선한다.
+- 락 TTL이 충분히 긴가? 너무 짧으면 GC Pause에 취약하다.
+- 락 해제 실패 시 시스템이 복구 가능한가?
+- 락 경쟁이 빈번하다면 큐(Queue) 기반 직렬화가 더 적합하지 않은가?
+
+분산 락은 도구일 뿐이다. 단순한 상황에서 복잡한 도구를 꺼내는 것보다, 문제의 본질이 DB 트랜잭션으로 해결 가능한지를 먼저 확인하는 것이 최선이다.
