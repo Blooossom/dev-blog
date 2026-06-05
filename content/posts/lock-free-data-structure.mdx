@@ -1,0 +1,172 @@
+---
+title: 'Lock-free 자료구조는 항상 빠를까'
+date: '2026-06-05'
+category: General
+tags:
+  - 동시성
+  - CAS
+  - Lock-free
+  - Java
+summary: >-
+  Lock-free 자료구조는 lock을 쓰지 않아 항상 더 빠르다고 여기기 쉽지만, CAS 재시도 비용과 ABA 문제 등
+  잘 알려지지 않은 함정이 존재한다. lock과 lock-free의 트레이드오프를 이해해야 올바른 선택이 가능하다.
+thumbnail: /thumbnails/lock-free-data-structure.svg
+---
+
+lock-free 자료구조는 lock을 쓰지 않으니 항상 더 빠르다고 말할 수 있을까? 직관적으로는 그렇게 보이지만, 실제로는 경합 수준과 사용 패턴에 따라 오히려 느려지는 경우가 존재한다.
+
+## Lock-free의 정의
+
+Lock-free는 **"어느 한 스레드가 무한 루프에 빠지더라도, 시스템 전체는 진전(progress)한다"** 는 보장을 의미한다. lock 기반 방식에서 스레드가 lock을 잡은 채 멈추면 다른 스레드도 모두 대기하지만, lock-free는 이런 상황이 없다.
+
+### 진전 보장 수준 비교
+
+| 수준 | 정의 | 예시 |
+|------|------|------|
+| Wait-free | 모든 스레드가 유한 시간 내 완료 | 드물게 구현됨 |
+| Lock-free | 일부 스레드가 항상 진전 | CAS 기반 자료구조 |
+| Obstruction-free | 방해받지 않으면 진전 | STM 일부 구현 |
+| Lock 기반 | 스레드 스케줄링에 의존 | synchronized, ReentrantLock |
+
+## CAS: Lock-free의 핵심 연산
+
+Lock-free 자료구조는 대부분 **CAS(Compare-And-Swap)** 에 의존한다. CAS는 하드웨어 원자적 명령어로, 다음 의미를 갖는다.
+
+```
+if (현재값 == 기대값) {
+    현재값 = 새값
+    return true
+} else {
+    return false  // 다른 스레드가 먼저 바꿨음
+}
+```
+
+Java에서는 `AtomicInteger`, `AtomicReference` 등이 이를 활용한다.
+
+```java
+AtomicInteger counter = new AtomicInteger(0);
+
+// CAS 기반 증가 (내부 구현 개념)
+int expected, updated;
+do {
+    expected = counter.get();
+    updated  = expected + 1;
+} while (!counter.compareAndSet(expected, updated));
+// 실제로는 counter.incrementAndGet() 한 줄로 처리
+```
+
+## Lock-free Stack 구현 예시
+
+```java
+public class LockFreeStack<T> {
+    private final AtomicReference<Node<T>> top = new AtomicReference<>();
+
+    private static class Node<T> {
+        final T value;
+        final Node<T> next;
+        Node(T value, Node<T> next) {
+            this.value = value;
+            this.next  = next;
+        }
+    }
+
+    public void push(T value) {
+        Node<T> newNode;
+        Node<T> currentTop;
+        do {
+            currentTop = top.get();
+            newNode    = new Node<>(value, currentTop);
+        } while (!top.compareAndSet(currentTop, newNode));
+    }
+
+    public T pop() {
+        Node<T> currentTop;
+        do {
+            currentTop = top.get();
+            if (currentTop == null) return null;
+        } while (!top.compareAndSet(currentTop, currentTop.next));
+        return currentTop.value;
+    }
+}
+```
+
+## Lock-free가 느려지는 상황
+
+### 높은 경합 상황에서의 CAS 재시도 폭발
+
+스레드가 많아 경합이 심해지면 CAS 실패가 연속으로 발생하고, 모든 스레드가 루프를 돌며 CPU를 낭비한다.
+
+```
+스레드 수  Lock 방식 처리량  Lock-free 처리량
+4개        ████████           █████████
+16개       ██████             ███
+64개       █████              ██  (CAS 재시도 폭발)
+```
+
+낮은 경합에서는 lock-free가 유리하지만, 경합이 극단적으로 심해지면 lock 방식이 오히려 나을 수 있다.
+
+### ABA 문제
+
+CAS는 값이 같으면 변경이 없다고 판단하지만, A → B → A로 바뀐 경우 CAS는 변화를 감지하지 못한다.
+
+```
+시간축:
+T1: top = A (읽음)
+T2: pop A, push B, pop B, push A (스택 상태는 바뀌었음)
+T1: CAS(A, new_node) → 성공  ← 잘못된 상태 기록
+```
+
+이를 막으려면 **AtomicStampedReference**로 버전 번호를 함께 관리한다.
+
+```java
+AtomicStampedReference<Node<T>> top = new AtomicStampedReference<>(null, 0);
+
+// pop 시
+int[] stampHolder = new int[1];
+Node<T> current = top.get(stampHolder);
+top.compareAndSet(current, current.next, stampHolder[0], stampHolder[0] + 1);
+```
+
+### 메모리 재사용의 어려움(Hazard Pointer)
+
+GC가 없는 환경에서 lock-free로 pop한 노드를 즉시 해제하면, 다른 스레드가 참조 중일 때 use-after-free가 발생한다. Java는 GC가 있어 이 문제가 완화되지만, 메모리 압박이 증가한다.
+
+## Java의 대표적 Lock-free 자료구조
+
+| 클래스 | 내부 구현 | 특징 |
+|--------|----------|------|
+| `ConcurrentLinkedQueue` | CAS 기반 | lock 없는 큐 |
+| `AtomicInteger` | CAS | 원자적 정수 연산 |
+| `LongAdder` | Striped CAS | 고경합 카운터에 유리 |
+| `ConcurrentSkipListMap` | CAS | 정렬된 ConcurrentMap |
+
+### LongAdder vs AtomicLong
+
+```java
+// AtomicLong: 단일 셀, 경합 시 CAS 재시도 다수
+AtomicLong counter = new AtomicLong();
+counter.incrementAndGet();
+
+// LongAdder: 여러 셀에 분산, 경합 줄임
+LongAdder counter = new LongAdder();
+counter.increment();
+long total = counter.sum(); // 모든 셀 합산
+```
+
+카운터 증가가 빈번한 고경합 상황에서는 `LongAdder`가 `AtomicLong`보다 훨씬 빠르다.
+
+## 선택 기준 정리
+
+```
+Lock-free 선택 시
+  ├── 경합이 낮고 스레드 수가 적을 때
+  ├── 락 보유 중 스레드 종료 위험이 있을 때 (데드락 방지)
+  └── 짧은 임계 구역(읽기·쓰기 1~2줄)
+
+Lock 선택 시
+  ├── 경합이 높고 스레드 수가 많을 때
+  ├── 임계 구역이 복잡한 다중 연산일 때
+  └── ABA 문제 회피 로직이 복잡해질 때
+```
+
+Lock-free는 "lock이 없다"가 아니라 "특정 스레드가 진전을 막지 않는다"는 보장이다. 경합 수준과 임계 구역의 복잡도를 먼저 측정하고, 그 결과를 바탕으로 lock과 lock-free 중 하나를 선택해야 한다.
