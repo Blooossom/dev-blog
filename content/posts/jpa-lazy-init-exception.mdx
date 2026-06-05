@@ -1,0 +1,153 @@
+---
+title: 'JPA LazyInitializationException이 발생하는 이유'
+date: '2026-06-05'
+category: Backend
+tags:
+  - JPA
+  - Hibernate
+  - Spring
+  - 지연 로딩
+summary: >-
+  트랜잭션 경계 밖에서 lazy association에 접근하면 Hibernate는 세션이 닫혀 있어 프록시를
+  초기화하지 못하고 LazyInitializationException을 던진다. 이 문제의 원인과 올바른 해결 방법을 정리한다.
+thumbnail: /thumbnails/jpa-lazy-init-exception.svg
+---
+
+트랜잭션 경계 밖에서 lazy association에 접근하면 왜 `LazyInitializationException`이 발생할까? 이 예외는 JPA와 Hibernate를 쓰다 보면 누구나 한 번은 마주치지만, 단순히 `FetchType.EAGER`로 바꿔 해결하면 다른 성능 문제를 만들 수 있다.
+
+## Hibernate 프록시와 세션의 관계
+
+JPA에서 연관 관계에 `FetchType.LAZY`를 지정하면 Hibernate는 실제 엔티티 대신 **프록시 객체**를 반환한다. 프록시는 빈 껍데기로, 실제 데이터가 필요한 순간 DB 조회를 수행하는 구조다.
+
+```
+Order (실제 엔티티)
+ └── items: List<OrderItem>  →  [Hibernate Proxy: 아직 미조회]
+```
+
+이 조회를 수행하려면 **Hibernate Session(영속성 컨텍스트)** 이 살아 있어야 한다. Session은 트랜잭션과 수명을 같이하므로, 트랜잭션이 종료되면 Session도 닫힌다.
+
+## 예외 발생 시나리오
+
+```java
+@Service
+public class OrderService {
+
+    @Transactional
+    public Order findOrder(Long id) {
+        return orderRepository.findById(id).orElseThrow();
+        // 메서드 종료 → 트랜잭션 커밋 → Session 닫힘
+    }
+}
+
+@RestController
+public class OrderController {
+
+    public ResponseEntity<Dto> getOrder(Long id) {
+        Order order = orderService.findOrder(id);
+        // 여기서 order.getItems()를 호출하면 Session이 없음
+        order.getItems().size(); // LazyInitializationException!
+        return ResponseEntity.ok(toDto(order));
+    }
+}
+```
+
+프록시 초기화 시점에 Session이 없으므로 Hibernate는 예외를 던진다.
+
+```
+org.hibernate.LazyInitializationException:
+  failed to lazily initialize a collection of role: Order.items,
+  could not initialize proxy - no Session
+```
+
+## 잘못된 해결 방법들
+
+### EAGER로 바꾸기
+
+```java
+@OneToMany(fetch = FetchType.EAGER)
+private List<OrderItem> items;
+```
+
+단순해 보이지만, `Order`를 조회하는 모든 쿼리에서 `items`를 무조건 JOIN한다. 사용하지 않을 때도 항상 가져오므로 N+1보다 더 심각한 쿼리 낭비가 생길 수 있다.
+
+### Open Session In View(OSIV)
+
+OSIV는 HTTP 요청 전체 생명주기 동안 Session을 열어두는 방식이다. Spring Boot의 기본값은 `true`다.
+
+```properties
+spring.jpa.open-in-view=true
+```
+
+Controller에서 lazy 접근이 가능해지지만, **View 렌더링 시점까지 DB 연결을 점유**하므로 커넥션 풀 고갈 위험이 있다. 트래픽이 많은 서비스에서는 끄는 것이 권장된다.
+
+## 올바른 해결 방법
+
+### 1. 트랜잭션 경계 안에서 초기화
+
+서비스 계층에서 필요한 연관 관계를 미리 초기화하고 반환한다.
+
+```java
+@Transactional(readOnly = true)
+public OrderDto findOrder(Long id) {
+    Order order = orderRepository.findById(id).orElseThrow();
+    order.getItems().size(); // 트랜잭션 내에서 강제 초기화
+    return OrderDto.from(order);
+}
+```
+
+엔티티 대신 DTO를 반환하면 Controller는 엔티티에 접근하지 않아 문제 자체가 사라진다.
+
+### 2. Fetch Join으로 한 번에 조회
+
+```java
+@Query("SELECT o FROM Order o JOIN FETCH o.items WHERE o.id = :id")
+Optional<Order> findWithItems(@Param("id") Long id);
+```
+
+단일 쿼리로 Order와 items를 같이 가져온다. 컬렉션 Fetch Join 시 페이지네이션과 함께 쓰면 Hibernate가 in-memory에서 처리하므로 주의가 필요하다.
+
+### 3. EntityGraph 활용
+
+```java
+@EntityGraph(attributePaths = {"items", "items.product"})
+Optional<Order> findById(Long id);
+```
+
+특정 쿼리에서만 선택적으로 EAGER 로딩을 적용할 수 있어 유연하다.
+
+### 4. Hibernate.initialize()
+
+```java
+@Transactional
+public Order findOrder(Long id) {
+    Order order = orderRepository.findById(id).orElseThrow();
+    Hibernate.initialize(order.getItems()); // 명시적 초기화
+    return order;
+}
+```
+
+### 방법별 비교
+
+| 방법 | 쿼리 수 | 적용 범위 | 주의사항 |
+|------|---------|----------|---------|
+| DTO 반환 | 필요한 것만 | 유연 | 변환 코드 필요 |
+| Fetch Join | 1개 | 특정 쿼리 | 컬렉션+페이징 주의 |
+| EntityGraph | 1개 | 특정 메서드 | 복잡 관계 시 주의 |
+| OSIV | 증가 가능 | 전역 | 커넥션 고갈 위험 |
+| EAGER 변경 | 항상 증가 | 전역 | 성능 저하 |
+
+## 예외가 발생하는 조건 정리
+
+```
+Session 닫힘 조건
+  ├── @Transactional 메서드 종료
+  ├── OSIV=false 상태에서 트랜잭션 범위 벗어남
+  └── 명시적 Session.close() 호출
+
+Proxy 초기화 시도 조건
+  ├── 컬렉션 크기 조회 (.size(), .isEmpty())
+  ├── 요소 순회 (for-each, stream)
+  └── 필드 접근 (단일 연관 엔티티)
+```
+
+LazyInitializationException은 "트랜잭션 안에서 필요한 데이터를 모두 준비하고, 바깥에는 DTO만 넘긴다"는 원칙을 지키면 근본적으로 예방할 수 있다. OSIV 켜기나 EAGER 변경은 문제를 숨길 뿐이며 더 큰 성능 문제의 씨앗이 된다.
