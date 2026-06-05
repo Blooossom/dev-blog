@@ -1,0 +1,214 @@
+---
+title: 'Chain of Responsibility 패턴 실전 활용'
+date: '2026-06-05'
+category: Architecture
+tags:
+  - 디자인 패턴
+  - Chain of Responsibility
+  - Java
+  - Spring
+summary: >-
+  Chain of Responsibility는 인증 필터, 검증 파이프라인, 결제 승인 단계처럼 요청을 여러 핸들러가 순서대로
+  처리해야 할 때 각 단계를 독립적으로 구성하고 교체할 수 있게 만드는 패턴이다.
+thumbnail: /thumbnails/chain-of-responsibility.svg
+---
+
+Chain of Responsibility는 인증 필터, 검증 파이프라인, 결제 승인 단계에서 어떻게 적용될 수 있을까? 이 패턴은 단순히 if-else 연쇄를 줄이는 문법적 트릭이 아니라, 각 처리 단계를 독립적인 객체로 분리해 추가·제거·재조합을 가능하게 하는 구조적 설계다.
+
+## 패턴의 핵심 구조
+
+요청이 들어오면 **핸들러 체인**을 따라 흐른다. 각 핸들러는 요청을 처리하거나 다음 핸들러에게 위임하는 두 가지 선택지를 갖는다.
+
+```
+Request
+  → Handler A (처리 or 전달)
+    → Handler B (처리 or 전달)
+      → Handler C (처리 or 종단)
+```
+
+### 기본 인터페이스
+
+```java
+public abstract class Handler<T> {
+    private Handler<T> next;
+
+    public Handler<T> setNext(Handler<T> next) {
+        this.next = next;
+        return next;
+    }
+
+    public abstract void handle(T request);
+
+    protected void passToNext(T request) {
+        if (next != null) {
+            next.handle(request);
+        }
+    }
+}
+```
+
+## 실전 사례 1: 인증 필터 파이프라인
+
+Spring Security의 Filter Chain이 대표적인 예다. 직접 구현하면 다음과 같다.
+
+```java
+public class AuthTokenHandler extends Handler<HttpRequest> {
+    @Override
+    public void handle(HttpRequest request) {
+        String token = request.getHeader("Authorization");
+        if (token == null || !token.startsWith("Bearer ")) {
+            throw new UnauthorizedException("토큰 없음");
+        }
+        request.setAttribute("userId", jwtService.parse(token));
+        passToNext(request);
+    }
+}
+
+public class RateLimitHandler extends Handler<HttpRequest> {
+    @Override
+    public void handle(HttpRequest request) {
+        String userId = (String) request.getAttribute("userId");
+        if (rateLimiter.isExceeded(userId)) {
+            throw new TooManyRequestsException("요청 한도 초과");
+        }
+        passToNext(request);
+    }
+}
+
+public class IpBlockHandler extends Handler<HttpRequest> {
+    @Override
+    public void handle(HttpRequest request) {
+        if (blocklist.contains(request.getRemoteAddr())) {
+            throw new ForbiddenException("차단된 IP");
+        }
+        passToNext(request);
+    }
+}
+```
+
+체인 조립:
+
+```java
+Handler<HttpRequest> chain = new IpBlockHandler();
+chain.setNext(new AuthTokenHandler())
+     .setNext(new RateLimitHandler());
+
+chain.handle(httpRequest);
+```
+
+## 실전 사례 2: 주문 검증 파이프라인
+
+주문 생성 시 재고 확인, 금액 검증, 사기 탐지를 순서대로 통과해야 할 때 유용하다.
+
+```java
+public class StockValidator extends Handler<OrderRequest> {
+    @Override
+    public void handle(OrderRequest order) {
+        order.getItems().forEach(item -> {
+            if (!inventoryService.isAvailable(item.getProductId(), item.getQuantity())) {
+                throw new OutOfStockException(item.getProductId());
+            }
+        });
+        passToNext(order);
+    }
+}
+
+public class AmountValidator extends Handler<OrderRequest> {
+    private static final long MAX_AMOUNT = 10_000_000L;
+
+    @Override
+    public void handle(OrderRequest order) {
+        if (order.getTotalAmount() > MAX_AMOUNT) {
+            throw new ValidationException("단건 주문 한도 초과");
+        }
+        passToNext(order);
+    }
+}
+
+public class FraudDetector extends Handler<OrderRequest> {
+    @Override
+    public void handle(OrderRequest order) {
+        if (fraudService.isSuspicious(order)) {
+            throw new FraudException("의심 주문 감지");
+        }
+        passToNext(order);
+    }
+}
+```
+
+### 조건에 따른 동적 체인 구성
+
+프로모션 기간에만 추가 검증을 끼우고 싶을 때:
+
+```java
+Handler<OrderRequest> chain = new StockValidator();
+Handler<OrderRequest> tail = chain.setNext(new AmountValidator());
+if (promotionService.isActive()) {
+    tail = tail.setNext(new CouponValidator());
+}
+tail.setNext(new FraudDetector());
+```
+
+## 실전 사례 3: 결제 승인 단계
+
+결제는 잔액 확인 → 한도 확인 → PG사 전달 순으로 처리되며, 각 단계 실패 시 명확한 오류 메시지가 필요하다.
+
+```java
+public class BalanceCheckHandler extends Handler<PaymentRequest> {
+    @Override
+    public void handle(PaymentRequest payment) {
+        Account account = accountService.find(payment.getAccountId());
+        if (account.getBalance().compareTo(payment.getAmount()) < 0) {
+            throw new InsufficientBalanceException();
+        }
+        passToNext(payment);
+    }
+}
+
+public class DailyLimitHandler extends Handler<PaymentRequest> {
+    @Override
+    public void handle(PaymentRequest payment) {
+        long todayUsed = paymentHistoryService.todayTotal(payment.getUserId());
+        if (todayUsed + payment.getAmount().longValue() > DAILY_LIMIT) {
+            throw new DailyLimitExceededException();
+        }
+        passToNext(payment);
+    }
+}
+
+public class PgGatewayHandler extends Handler<PaymentRequest> {
+    @Override
+    public void handle(PaymentRequest payment) {
+        PgResponse response = pgClient.request(payment);
+        if (!response.isSuccess()) {
+            throw new PgException(response.getErrorCode());
+        }
+        payment.setTransactionId(response.getTransactionId());
+        passToNext(payment);
+    }
+}
+```
+
+## if-else 방식과의 비교
+
+| 관점 | if-else | Chain of Responsibility |
+|------|---------|------------------------|
+| 단계 추가 | 기존 코드 수정 | 새 핸들러 클래스 추가 |
+| 단계 순서 변경 | 전체 조건문 재검토 | 체인 조립 코드만 수정 |
+| 단계별 테스트 | 조건 조합 필요 | 핸들러 단독 테스트 가능 |
+| 동적 구성 | 분기 중첩 증가 | 런타임 조립 |
+
+## 패턴 적용 판단 기준
+
+```
+적합한 경우
+  ├── 요청 처리 단계가 3개 이상이고 순서가 중요할 때
+  ├── 단계가 런타임에 추가·제거·교체될 필요가 있을 때
+  └── 각 단계를 독립적으로 테스트해야 할 때
+
+피해야 할 경우
+  ├── 단계가 2개 이하로 고정일 때
+  └── 모든 핸들러가 반드시 실행되어야 할 때 (Decorator 패턴이 더 적합)
+```
+
+Chain of Responsibility의 진가는 단계를 추가해도 기존 코드를 건드리지 않는다는 데 있다. 각 핸들러가 단일 책임을 지고, 체인 조립과 실행 로직이 분리되어 있어야 패턴이 빛을 발한다.
