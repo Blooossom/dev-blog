@@ -1,0 +1,127 @@
+---
+title: Prepared Statement는 SQL Injection 방어 도구일 뿐일까?
+date: '2026-06-07'
+category: Backend
+tags:
+  - PreparedStatement
+  - JDBC
+  - SQL
+  - 성능 최적화
+  - 데이터베이스
+summary: >-
+  Prepared Statement는 SQL Injection을 막는 방어 수단으로만 알려져 있지만, 쿼리 파싱과 실행 계획을 재사용해
+  반복 실행 비용을 줄이는 성능 도구이기도 하다. 동작 원리와 캐싱 구조를 통해 그 이점과 함정을 함께 살펴본다.
+thumbnail: /thumbnails/prepared-statement-performance.svg
+---
+
+prepared statement는 SQL injection 방어 외에 성능 측면에서 어떤 이점을 가질 수 있을까? 대부분의 개발자는 "파라미터 바인딩으로 입력값과 SQL 구조를 분리해 인젝션을 막는다"는 설명에서 학습을 멈춘다. 하지만 같은 쿼리를 반복 실행하는 백엔드 서버 입장에서 prepared statement는 보안 장치인 동시에, 파싱과 실행 계획 수립 비용을 줄여주는 성능 최적화 장치이기도 하다.
+
+## Statement와 Prepared Statement의 실행 흐름 차이
+
+DB는 SQL 문자열을 받으면 곧바로 실행하지 않는다. 파싱(parsing) → 검증 → 최적화(execution plan 수립) → 실행의 단계를 거친다. 이 비용이 매번 반복되느냐, 한 번만 드느냐가 두 방식의 핵심 차이다.
+
+```
+[일반 Statement - 매 실행마다 전체 단계 반복]
+"SELECT * FROM orders WHERE user_id = 1"
+   └─ 파싱 → 검증 → 최적화 → 실행
+
+"SELECT * FROM orders WHERE user_id = 2"
+   └─ 파싱 → 검증 → 최적화 → 실행   (SQL 문자열이 다르므로 처음부터 다시)
+
+[Prepared Statement - 파싱·최적화 결과 재사용]
+"SELECT * FROM orders WHERE user_id = ?"
+   └─ 파싱 → 검증 → 최적화            (최초 1회, plan 캐시에 저장)
+        ├─ execute(1)  → 캐시된 plan으로 바로 실행
+        └─ execute(2)  → 캐시된 plan으로 바로 실행
+```
+
+리터럴 값을 그대로 SQL 문자열에 합쳐 보내면, `user_id = 1`과 `user_id = 2`는 DB 입장에서 완전히 다른 SQL 텍스트다. 파싱 단계부터 다시 거쳐야 하고, 일부 DB는 이를 캐시에 쌓아 캐시 오염(cache pollution)까지 일으킨다. 반면 `?` 플레이스홀더로 구조를 고정하면, 같은 SQL 템플릿은 한 번 분석한 결과를 계속 재사용할 수 있다.
+
+## SQL Injection 방어는 이 구조의 부산물이다
+
+방어 효과는 별도의 필터링 로직이 아니라, 위에서 설명한 "구조와 데이터의 분리" 자체에서 나온다.
+
+```sql
+-- 문자열 결합: 입력값이 SQL 구조의 일부가 될 수 있다
+SELECT * FROM users WHERE name = 'admin' OR '1'='1'
+
+-- Prepared Statement: 입력값은 끝까지 '데이터'로만 취급된다
+SELECT * FROM users WHERE name = ?
+-- 바인딩: ["admin' OR '1'='1"]  → name 컬럼과 통째로 비교될 뿐, 조건절로 해석되지 않는다
+```
+
+DB 드라이버는 파라미터를 SQL 파서에 넘기기 전에 분리해 전달하므로, 입력값에 따옴표나 세미콜론이 섞여 있어도 SQL 문법 요소로 해석되지 않는다. 즉 보안과 성능 이점은 같은 메커니즘에서 비롯된 두 얼굴이다.
+
+## 실행 계획 캐싱이 만드는 성능 이점
+
+### DB 서버 측 plan cache
+
+대부분의 RDBMS는 prepared statement의 실행 계획을 서버 측 캐시에 저장한다. 동일한 SQL 템플릿에 대해 파싱·최적화를 반복하지 않으므로 CPU 비용이 줄고, 트래픽이 몰리는 구간에서 옵티마이저 부하 자체가 감소한다.
+
+| 항목 | 일반 Statement | Prepared Statement |
+|------|----------------|--------------------|
+| SQL 파싱 | 매 실행마다 수행 | 최초 1회 후 재사용 |
+| 실행 계획 수립 | 매 실행마다 수행 | 캐시된 plan 재사용 |
+| plan cache 적중률 | 리터럴마다 별도 엔트리 → 낮음 | 템플릿 단위로 공유 → 높음 |
+| 네트워크 전송 | SQL 문자열 전체 | 바인딩 변수만 (드라이버 batch 가능) |
+
+### 드라이버·애플리케이션 측 statement 재사용
+
+JDBC 드라이버나 ORM은 prepared statement 객체 자체를 캐시해 재사용한다. Spring Data JPA / Hibernate는 `hibernate.jdbc.batch_size`와 함께 statement caching을 구성하면, 같은 SQL 템플릿으로 묶이는 batch insert/update에서 라운드트립을 크게 줄일 수 있다.
+
+```java
+// JDBC: 같은 SQL 템플릿을 재사용하며 파라미터만 바꿔 반복 실행
+String sql = "INSERT INTO order_item (order_id, product_id, quantity) VALUES (?, ?, ?)";
+
+try (PreparedStatement ps = connection.prepareStatement(sql)) {
+    for (OrderItem item : items) {
+        ps.setLong(1, item.getOrderId());
+        ps.setLong(2, item.getProductId());
+        ps.setInt(3, item.getQuantity());
+        ps.addBatch();          // 같은 plan을 재사용하며 배치에 적재
+    }
+    ps.executeBatch();          // 한 번에 전송 → 네트워크 라운드트립 감소
+}
+```
+
+```java
+// Spring Data JPA: 파라미터 바인딩 자체가 prepared statement로 변환된다
+@Query("SELECT o FROM Order o WHERE o.userId = :userId AND o.status = :status")
+List<Order> findByUserIdAndStatus(@Param("userId") Long userId,
+                                  @Param("status") OrderStatus status);
+```
+
+JPQL이나 `@Query`의 파라미터 바인딩은 결국 JDBC `PreparedStatement`로 변환된다. 반대로 `@Query(value = "... WHERE name = '" + name + "'", nativeQuery = true)`처럼 문자열을 직접 결합하면, 인젝션 위험뿐 아니라 plan cache 적중률까지 함께 잃는다.
+
+## 무조건 빠른 것은 아니다 — 알아야 할 함정
+
+### 캐시는 메모리를 소비한다
+
+plan cache와 statement cache 모두 메모리를 점유한다. 동적으로 생성되는 SQL이 매번 조금씩 다른 텍스트로 만들어지면(예: `IN` 절의 값 개수가 요청마다 달라지는 경우), 캐시 엔트리가 무한히 늘어나며 오히려 캐시 오염과 메모리 압박을 유발할 수 있다.
+
+```java
+// 안 좋은 예: IN 절 크기가 요청마다 달라 매번 새로운 SQL 템플릿이 생성된다
+String sql = "SELECT * FROM orders WHERE id IN (" + placeholders(ids.size()) + ")";
+
+// 대안: 페이지네이션이나 고정 크기 청크로 템플릿 종류를 제한한다
+List<List<Long>> chunks = partition(ids, 100);
+```
+
+### 파라미터 스니핑(parameter sniffing) 문제
+
+일부 DB는 최초 실행 시 전달된 파라미터 값을 기준으로 실행 계획을 수립하고 캐시한다. 데이터 분포가 컬럼마다 크게 다른 경우, 첫 실행에 최적화된 plan이 이후 다른 값에는 비효율적인 plan으로 남을 수 있다. 이 경우 통계 정보 갱신이나 plan 강제 재컴파일 옵션을 함께 검토해야 한다.
+
+### 짧고 단발성인 쿼리에서는 이점이 작다
+
+커넥션을 매번 새로 맺고 한 번만 실행하고 끝나는 배치 스크립트라면, prepare 단계의 이점을 누릴 기회 자체가 적다. prepared statement의 성능 이점은 "같은 SQL 템플릿을 커넥션 풀 위에서 반복 실행하는" 서버 애플리케이션 환경에서 극대화된다.
+
+## 정리
+
+| 관점 | 일반 Statement | Prepared Statement |
+|------|----------------|--------------------|
+| 보안 | 문자열 결합 시 인젝션 위험 | 구조와 데이터 분리로 원천 차단 |
+| 파싱·최적화 비용 | 매 실행마다 발생 | 템플릿 단위로 1회 후 재사용 |
+| 캐시 효율 | 리터럴마다 분산 | 템플릿 단위로 집중 |
+| 트레이드오프 | 없음 | 캐시 메모리, 동적 SQL 템플릿 폭증, 파라미터 스니핑 주의 |
+
+Prepared statement를 "SQL injection을 막아주는 문법"으로만 기억하면 절반만 이해한 것이다. 핵심은 SQL의 구조를 고정하고 데이터를 분리함으로써, 보안과 실행 계획 재사용이라는 두 가지 이점을 같은 메커니즘에서 동시에 얻는다는 점이다.
