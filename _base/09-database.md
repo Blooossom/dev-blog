@@ -13,7 +13,7 @@
 157. pagination에서 `OFFSET`이 커질수록 느려지는 이유는 무엇이고, keyset pagination은 이를 어떻게 피할까?
 ~~158. count query는 단순해 보여도 대용량 테이블에서 왜 병목이 될 수 있을까?~~ `작성완료`
 ~~159. bulk insert와 row-by-row insert는 DB 내부 처리 비용에서 어떤 차이가 있을까?~~ `작성완료`
-160. prepared statement는 SQL injection 방어 외에 성능 측면에서 어떤 이점을 가질 수 있을까?
+~~160. prepared statement는 SQL injection 방어 외에 성능 측면에서 어떤 이점을 가질 수 있을까?~~ `작성완료`
 ## Index
 
 ~~161. B-Tree 인덱스는 왜 범위 검색과 정렬에 유리할까?~~ `작성완료`
