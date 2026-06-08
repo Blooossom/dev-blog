@@ -1,0 +1,112 @@
+---
+title: CDN 엣지 캐시의 stale-while-revalidate와 stale-if-error
+date: '2026-06-08'
+category: DevOps
+tags:
+  - CDN
+  - 캐싱
+  - HTTP
+  - 엣지
+  - 가용성
+summary: >-
+  CDN edge cache에서 stale-while-revalidate와 stale-if-error는 availability와 freshness를 어떻게 교환할까?
+  두 지시자는 모두 "오래된 응답을 일단 내보낸다"는 점에서 닮았지만, 트리거하는 상황과 지키려는 가치가 다르다.
+  Cache-Control 지시자의 동작 원리와 운영 관점의 적용 기준을 정리한다.
+thumbnail: /thumbnails/cdn-stale-cache-strategies.svg
+---
+
+CDN edge cache에서 stale-while-revalidate와 stale-if-error는 availability와 freshness를 어떻게 교환할까? 두 지시자 모두 "캐시가 만료됐어도 일단 가진 것을 내보낸다"는 동작을 하지만, 그 결정을 내리는 **상황**이 다르다. 하나는 "정상적인 만료"에 대응하고, 다른 하나는 "origin 장애"에 대응한다. 이 차이를 모르면 캐시 설정 한 줄이 신선도를 해치거나, 반대로 장애 상황에서 사용자에게 에러 화면만 보여주는 결과로 이어진다.
+
+## HTTP 캐시의 기본 흐름과 "만료 이후"의 문제
+
+`Cache-Control: max-age=60`처럼 신선도 기간(freshness lifetime)을 설정하면, CDN 엣지는 그 시간이 지난 캐시를 **stale(오래됨)** 로 표시한다. 기본 동작은 단순하다.
+
+```
+요청 도착
+  │
+  ├─ 캐시가 fresh → 캐시에서 바로 응답 (origin 요청 없음)
+  │
+  └─ 캐시가 stale → origin에 재검증(revalidate) 요청
+                     │
+                     ├─ origin 정상 응답 → 캐시 갱신 후 응답
+                     └─ origin 응답 지연/장애 → 사용자는 그 시간만큼 대기하거나 에러를 받음
+```
+
+문제는 "재검증하는 동안"과 "재검증이 실패했을 때" 사용자가 무엇을 보느냐다. `stale-while-revalidate`와 `stale-if-error`는 바로 이 두 순간을 다루는 지시자다.
+
+## stale-while-revalidate — 신선도와 응답 속도의 교환
+
+```
+Cache-Control: max-age=60, stale-while-revalidate=30
+```
+
+캐시가 만료된 직후(이 예시에서는 60초~90초 구간) 요청이 들어오면, CDN은 **오래된 캐시를 즉시 응답으로 내보내면서 동시에 백그라운드로 origin에 재검증 요청을 보낸다.** 사용자는 origin 응답을 기다리지 않는다.
+
+```
+시간 흐름 (max-age=60, stale-while-revalidate=30)
+
+0s ─────── 60s ─────────── 90s ─────────────▶
+   │ fresh  │   stale-while-revalidate 구간   │ 완전히 stale
+   │        │ (오래된 캐시 즉시 응답          │ (재검증 필요,
+   │        │  + 백그라운드 재검증)           │  사용자가 대기)
+```
+
+| 항목 | 내용 |
+|------|------|
+| 트리거 상황 | 캐시 만료(정상적인 TTL 경과) |
+| 사용자 체감 | 거의 항상 "빠른 응답" — 재검증 지연이 노출되지 않는다 |
+| 교환하는 것 | **최신성(freshness)을 일정 기간 양보하고, 응답 속도(latency)를 지킨다** |
+| 적합한 데이터 | 자주 바뀌지만 1~2분 정도 오래돼도 치명적이지 않은 콘텐츠 (뉴스 목록, 상품 리스트, 대시보드 위젯) |
+
+핵심은 "사용자가 직접 origin 응답을 기다리는 경로를 캐시 갱신 경로에서 분리한다"는 점이다. 재검증이 끝나면 다음 요청부터는 새 데이터가 나가므로, 결과적으로 **만료 시점마다 한 번씩 발생하던 thundering herd(동시 재검증 폭주)도 줄어든다.**
+
+## stale-if-error — 가용성을 위한 마지막 방어선
+
+```
+Cache-Control: max-age=60, stale-if-error=86400
+```
+
+`stale-if-error`는 평소에는 관여하지 않는다. **origin이 5xx를 응답하거나, 타임아웃·연결 실패가 발생했을 때만** 동작한다. 이때 CDN은 비록 만료된 캐시라도 (지정된 기간 이내라면) 에러 대신 그 응답을 내보낸다.
+
+```
+정상 상황                         origin 장애 상황
+─────────                         ─────────────
+stale 캐시 → origin 재검증        stale 캐시 → origin 요청 실패(5xx/timeout)
+           → 정상 응답 수신                   → stale-if-error 윈도 안이면
+           → 캐시 갱신                          "오래된 캐시"를 그대로 응답
+                                              → 윈도 밖이면 에러를 그대로 전달
+```
+
+| 항목 | 내용 |
+|------|------|
+| 트리거 상황 | origin 장애(5xx, 타임아웃, 연결 실패) |
+| 사용자 체감 | "약간 오래된 화면"을 보거나, 최악의 경우에만 에러 화면을 본다 |
+| 교환하는 것 | **최신성을 포기하더라도 가용성(availability)을 지킨다** |
+| 적합한 데이터 | 장애 시에도 서비스가 "보이기는 해야" 하는 화면 (상품 상세, 메인 페이지, 약관·정책 페이지) |
+
+이 지시자는 본질적으로 **circuit breaker의 fallback과 같은 철학**을 캐시 레이어에 적용한 것이다. "정상 경로가 막히면 완전히 끊지 말고, 가진 것 중 가장 쓸 만한 것을 내보낸다."
+
+## 두 지시자를 함께 쓸 때의 그림
+
+```
+Cache-Control: max-age=60,
+               stale-while-revalidate=30,
+               stale-if-error=86400
+
+0~60s    : fresh           → 캐시 응답
+60~90s   : stale (만료)     → 캐시 즉시 응답 + 백그라운드 재검증 (SWR)
+90s~     : stale (재검증 필요)
+   ├─ origin 정상           → 재검증 후 최신 응답
+   └─ origin 장애           → 최대 24시간까지 stale 캐시로 버팀 (SIE)
+```
+
+`stale-while-revalidate`는 "평상시 응답 속도"를, `stale-if-error`는 "장애 시 생존"을 담당한다. 둘은 겹치지 않는 시나리오를 커버하므로 함께 설정해도 충돌하지 않는다.
+
+## 운영에서 고려할 것
+
+- **모든 콘텐츠에 일괄 적용하지 않는다.** 결제 금액, 재고 수량처럼 최신성이 정합성과 직결되는 데이터는 stale 응답이 곧 버그가 된다. `no-store` 또는 매우 짧은 `max-age`로 분리해야 한다.
+- **캐시 무효화(purge) 경로와 함께 설계한다.** stale 응답을 허용한다는 것은 "능동적으로 갱신해야 할 때 캐시를 강제로 비울 수단"이 더 중요해진다는 뜻이다.
+- **모니터링 지표를 분리한다.** 캐시 히트율뿐 아니라 "stale 응답 비율"과 "origin 5xx 발생 시 stale-if-error가 실제로 동작한 비율"을 따로 추적해야, 장애 시 이 설정이 의도대로 작동했는지 검증할 수 있다.
+- 일부 CDN(Cloudflare, Fastly 등)은 두 지시자를 그대로 지원하지만, 일부는 자체 설정 인터페이스로만 제공한다. `Cache-Control` 헤더에 명시했다고 해서 모든 CDN에서 동일하게 동작한다고 가정하면 안 된다.
+
+`stale-while-revalidate`는 "사용자를 기다리게 하지 않기 위한" 선택이고, `stale-if-error`는 "장애 상황에서도 화면을 비워두지 않기 위한" 선택이다. 둘 다 신선도를 일부 양보하지만, 그 대가로 얻는 것이 응답 속도인지 생존 가능성인지를 구분해서 설계해야 캐시 정책이 사고 시나리오에서도 의도대로 동작한다.
