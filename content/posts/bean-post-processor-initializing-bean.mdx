@@ -1,0 +1,151 @@
+---
+title: BeanPostProcessor와 InitializingBean — 프레임워크가 빈에 개입하는 두 가지 방법
+date: '2026-06-08'
+category: Backend
+tags:
+  - Spring
+  - Java
+  - Bean Lifecycle
+  - BeanPostProcessor
+  - IoC
+summary: >-
+  Bean lifecycle에서 BeanPostProcessor와 InitializingBean은 프레임워크 확장 지점으로 어떻게 쓰일 수 있을까?
+  하나는 컨테이너가 관리하는 모든 빈에 개입하는 전역 후크이고, 다른 하나는 빈 자신이 초기화 시점을 통지받는 로컬 콜백이다.
+  두 확장 지점의 차이와 실전 활용법을 정리한다.
+thumbnail: /thumbnails/bean-post-processor-initializing-bean.svg
+---
+
+Bean lifecycle에서 `BeanPostProcessor`와 `InitializingBean`은 프레임워크 확장 지점으로 어떻게 쓰일 수 있을까? 둘 다 "빈이 만들어지는 과정에 끼어든다"는 점은 같지만, 개입하는 **범위**와 **시점**이 전혀 다르다. `InitializingBean`은 빈 자신이 "내 초기화는 내가 책임진다"고 선언하는 로컬 콜백이고, `BeanPostProcessor`는 컨테이너에 등록된 모든 빈을 가로채 동작을 바꿀 수 있는 전역 후크다. `@Transactional`, `@Async`, `@Autowired` 같은 핵심 기능들이 바로 이 후크 위에서 동작한다.
+
+## 빈 생성 과정에서 둘의 위치
+
+```
+빈 생성 흐름 (단순화)
+
+1. 생성자 호출           → 인스턴스 생성
+2. 의존성 주입           → @Autowired, setter 등
+3. BeanPostProcessor.postProcessBeforeInitialization()
+4. @PostConstruct
+5. InitializingBean.afterPropertiesSet()
+6. 사용자 정의 init-method
+7. BeanPostProcessor.postProcessAfterInitialization()  ← AOP 프록시 생성 지점
+8. ─────────── 빈 사용 가능 상태 ───────────
+9. (소멸 시점) DisposableBean.destroy() / @PreDestroy
+```
+
+`InitializingBean`은 4~6번 구간, 즉 **자기 자신의 초기화 콜백**으로 호출된다. 반면 `BeanPostProcessor`는 컨테이너가 관리하는 **모든 빈**의 초기화 전후(3번, 7번)에 끼어든다. 이 차이가 두 인터페이스의 용도를 가른다.
+
+## InitializingBean — 빈이 스스로 선언하는 초기화
+
+`InitializingBean`은 의존성 주입이 끝난 직후 한 번 호출되는 `afterPropertiesSet()`을 제공한다. "모든 프로퍼티가 채워졌으니 마지막 검증이나 준비 작업을 하라"는 신호다.
+
+```java
+@Component
+public class CacheWarmer implements InitializingBean {
+
+    private final ProductRepository productRepository;
+    private Map<Long, Product> hotCache;
+
+    public CacheWarmer(ProductRepository productRepository) {
+        this.productRepository = productRepository;
+    }
+
+    @Override
+    public void afterPropertiesSet() {
+        // 의존성 주입이 끝난 뒤, 빈이 사용되기 전에 1회 실행된다
+        this.hotCache = productRepository.findTopSelling(100).stream()
+                .collect(Collectors.toMap(Product::getId, p -> p));
+    }
+}
+```
+
+실무에서는 `@PostConstruct`를 더 많이 쓴다. 둘은 호출 시점이 거의 같지만 성격이 다르다.
+
+| 구분 | `@PostConstruct` | `InitializingBean` |
+|------|------------------|--------------------|
+| 표준 | JSR-250 (Java 표준 애너테이션) | Spring 전용 인터페이스 |
+| 결합도 | 메서드 하나에만 표시, 프레임워크 비의존적 | 클래스가 Spring 인터페이스를 직접 구현 |
+| 호출 순서 | `BeanPostProcessor` 처리 중 (먼저) | 그 다음 |
+| 적합한 위치 | 일반 애플리케이션 코드 | Spring을 직접 확장하는 라이브러리·프레임워크 코드 |
+
+라이브러리를 만드는 입장이라면 `InitializingBean`이 유리하다. 애너테이션 스캔에 의존하지 않고 **타입 자체로 계약을 강제**할 수 있기 때문이다. 반대로 일반 애플리케이션 코드에서는 Spring에 대한 결합을 줄이는 `@PostConstruct`가 권장된다.
+
+## BeanPostProcessor — 컨테이너 전체에 개입하는 후크
+
+`BeanPostProcessor`는 한 빈이 아니라 **컨테이너가 생성하는 모든 빈**의 초기화 전후를 가로챈다. 반환값으로 원래 빈을 그대로 돌려줄 수도 있고, 다른 객체(대표적으로 프록시)로 바꿔치기할 수도 있다.
+
+```java
+public interface BeanPostProcessor {
+
+    default Object postProcessBeforeInitialization(Object bean, String beanName) {
+        return bean;
+    }
+
+    default Object postProcessAfterInitialization(Object bean, String beanName) {
+        return bean;
+    }
+}
+```
+
+### Spring 핵심 기능들이 기대고 있는 자리
+
+| 기능 | 사용하는 BeanPostProcessor | 무엇을 하는가 |
+|------|---------------------------|---------------|
+| `@Autowired`, `@Value` | `AutowiredAnnotationBeanPostProcessor` | 필드·세터에 의존성 주입 |
+| `@PostConstruct`, `@PreDestroy` | `CommonAnnotationBeanPostProcessor` | 라이프사이클 콜백 호출 |
+| `@Transactional`, `@Async`, AOP | `AbstractAutoProxyCreator` 계열 | 원본 빈을 **프록시 객체로 교체** |
+| `@ConfigurationProperties` | `ConfigurationPropertiesBindingPostProcessor` | 외부 설정 값을 객체에 바인딩 |
+
+특히 AOP 프록시 생성은 `postProcessAfterInitialization()`에서 일어난다. 즉, 컨테이너에 등록된 빈과 실제로 주입받는 빈이 **다른 객체**일 수 있다는 뜻이다. `@Transactional`이 붙은 메서드를 같은 클래스 내부에서 호출하면 트랜잭션이 걸리지 않는 현상도 결국 "프록시를 거치지 않고 원본 메서드를 직접 호출했기 때문"이다.
+
+### 직접 만들어보기 — 커스텀 검증 후크
+
+```java
+@Component
+public class RequiredFieldCheckProcessor implements BeanPostProcessor {
+
+    @Override
+    public Object postProcessBeforeInitialization(Object bean, String beanName) {
+        for (Field field : bean.getClass().getDeclaredFields()) {
+            if (field.isAnnotationPresent(MustBeSet.class)) {
+                field.setAccessible(true);
+                Object value = ReflectionUtils.getField(field, bean);
+                if (value == null) {
+                    throw new IllegalStateException(
+                        beanName + "." + field.getName() + " 은(는) 반드시 설정되어야 합니다");
+                }
+            }
+        }
+        return bean;
+    }
+}
+```
+
+이렇게 하면 애플리케이션 코드를 건드리지 않고도 "특정 애너테이션이 붙은 필드는 null이면 기동을 막는다"는 규칙을 컨테이너 전체에 일괄 적용할 수 있다. 이것이 `BeanPostProcessor`가 "프레임워크 확장 지점"으로 불리는 이유다 — **애플리케이션 코드 밖에서 빈의 동작 자체를 바꿀 수 있는 자리**이기 때문이다.
+
+## 두 확장 지점을 함께 쓸 때 주의할 것
+
+```
+함정: BeanPostProcessor 안에서 다른 빈을 주입받으면?
+
+@Component
+public class MyProcessor implements BeanPostProcessor {
+    @Autowired
+    private SomeService someService;   // 위험!
+    ...
+}
+
+→ MyProcessor 자신도 빈이므로 컨테이너가 먼저 생성해야 한다.
+→ 그런데 MyProcessor가 의존하는 SomeService를 만드는 과정에서
+   다른 BeanPostProcessor(예: 프록시 생성기)가 아직 등록되지 않았다면
+   "BeanPostProcessor가 모든 빈에 일관되게 적용된다"는 보장이 깨진다.
+→ Spring은 이런 상황에서 경고 로그를 남긴다:
+   "Bean ... is not eligible for getting processed by all
+    BeanPostProcessors (for example: not eligible for auto-proxying)"
+```
+
+`BeanPostProcessor`와 `BeanFactoryPostProcessor`를 구현하는 빈은 가능한 한 다른 빈에 의존하지 않도록 가볍게 유지해야 한다. 의존성이 필요하다면 `ApplicationContextAware`나 생성자 주입 대신 지연 조회(lazy lookup) 방식을 검토하는 편이 안전하다.
+
+## 정리
+
+`InitializingBean`(과 `@PostConstruct`)은 "내 초기화는 내가 끝낸다"는 빈 자신의 선언이고, `BeanPostProcessor`는 "컨테이너의 모든 빈을 가로채 동작을 재정의한다"는 프레임워크 수준의 개입이다. 전자는 개별 빈의 준비 작업에, 후자는 횡단 관심사(AOP, 검증, 바인딩)를 애플리케이션 코드 밖에서 일괄 적용하는 데 적합하며, Spring의 핵심 기능 대부분이 후자의 메커니즘 위에 세워져 있다는 사실을 알면 프레임워크 동작을 훨씬 깊이 이해할 수 있다.
