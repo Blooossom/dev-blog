@@ -1,0 +1,134 @@
+---
+title: 라우트 단위와 컴포넌트 단위 코드 스플리팅, 무엇이 달라질까
+date: '2026-06-08'
+category: Frontend
+subcategory: React
+tags:
+  - Code Splitting
+  - React
+  - 번들 최적화
+  - 성능
+  - Lazy Loading
+summary: >-
+  route-level code splitting과 component-level code splitting은 초기 로딩과 전환 지연에서 어떤 차이를 만들까?
+  같은 lazy() 한 줄이지만 어디에 경계를 긋느냐에 따라 첫 화면 속도와 화면 전환 체감이 정반대로 움직인다.
+  두 전략의 동작 차이와 함께 쓰는 기준을 정리한다.
+thumbnail: /thumbnails/code-splitting-strategies.svg
+---
+
+route-level code splitting과 component-level code splitting은 초기 로딩과 전환 지연에서 어떤 차이를 만들까? 둘 다 `React.lazy`와 동적 `import()`라는 같은 도구를 쓰지만, 번들을 "어디서" 자르느냐에 따라 사용자가 체감하는 지점이 완전히 달라진다. 라우트 단위는 첫 진입 속도를 끌어올리는 대신 화면 전환 시 깜빡임을 만들 수 있고, 컴포넌트 단위는 전환은 매끄럽게 하되 번들 분리 효과가 작거나 의존성 중복을 만들 수 있다.
+
+## 코드 스플리팅의 기본 원리
+
+번들러는 정적 `import`로 연결된 모듈을 하나의 청크(chunk)로 묶는다. 동적 `import()`를 쓰면 그 지점이 **분기점(split point)**이 되어 별도 청크로 분리되고, 실행 시점에 네트워크로 로드된다.
+
+```
+정적 import만 있을 때:
+  [ App + Home + Dashboard + Settings + Chart 라이브러리 ] ─ 하나의 거대한 번들
+
+동적 import()로 분리했을 때:
+  [ App ]  +  [ Home ]  +  [ Dashboard + Chart ]  +  [ Settings ]
+  최초 진입 시 App만 받고, 나머지는 필요한 시점에 요청
+```
+
+질문은 "이 분기점을 어디에 둘 것인가"다.
+
+## Route-level Code Splitting
+
+페이지(라우트) 단위로 청크를 나누는 가장 보편적인 전략이다.
+
+```tsx
+import { lazy, Suspense } from 'react'
+import { Routes, Route } from 'react-router-dom'
+
+const HomePage      = lazy(() => import('./pages/HomePage'))
+const DashboardPage = lazy(() => import('./pages/DashboardPage'))
+const SettingsPage  = lazy(() => import('./pages/SettingsPage'))
+
+function App() {
+  return (
+    <Suspense fallback={<PageSkeleton />}>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+      </Routes>
+    </Suspense>
+  )
+}
+```
+
+### 효과와 트레이드오프
+
+| 항목 | 내용 |
+|------|------|
+| 초기 로딩 | 방문하지 않는 페이지의 코드를 아예 받지 않으므로 **첫 진입(LCP, TTI)이 빨라진다** |
+| 전환 비용 | 다른 라우트로 이동하는 순간 새 청크를 네트워크로 가져와야 하므로 **전환 지연(깜빡임, 로딩 스피너)** 이 생긴다 |
+| 분리 단위 | 페이지 전체이므로 분리 효과가 크고 예측하기 쉽다 |
+| 적합한 경우 | 페이지 수가 많고, 한 세션에서 모든 페이지를 다 보지 않는 멀티 페이지 앱 |
+
+라우트 전환 시 깜빡임은 `Suspense` fallback으로 가릴 수 있지만, 근본적으로는 "사용자가 다음 화면을 누르는 순간 코드를 내려받기 시작한다"는 구조적 한계가 남는다. 이를 줄이기 위해 **마우스 hover 시 prefetch**하거나, 라우터의 `preload` API를 활용하는 방식이 함께 쓰인다.
+
+## Component-level Code Splitting
+
+라우트는 그대로 두고, 페이지 내부의 무거운 컴포넌트만 분리하는 전략이다.
+
+```tsx
+import { lazy, Suspense, useState } from 'react'
+
+const HeavyChartModal = lazy(() => import('./components/HeavyChartModal'))
+
+function ProductDetailPage() {
+  const [showChart, setShowChart] = useState(false)
+
+  return (
+    <div>
+      <ProductInfo />
+      <button onClick={() => setShowChart(true)}>판매 추이 보기</button>
+
+      {showChart && (
+        <Suspense fallback={<ModalSkeleton />}>
+          <HeavyChartModal />
+        </Suspense>
+      )}
+    </div>
+  )
+}
+```
+
+### 효과와 트레이드오프
+
+| 항목 | 내용 |
+|------|------|
+| 초기 로딩 | 같은 페이지 안에서도 무거운 라이브러리(차트, 에디터, 지도 등)만 빼낼 수 있어 **페이지 자체의 첫 렌더가 가벼워진다** |
+| 전환 비용 | 페이지 이동 자체에는 영향이 없고, **사용자가 실제로 그 기능을 쓸 때만** 로딩 비용이 발생한다 |
+| 분리 단위 | 작고 세밀해서 효과 측정이 어렵고, 잘게 나눌수록 청크 수와 네트워크 요청 수가 늘어난다 |
+| 적합한 경우 | 모달, 차트, 리치 텍스트 에디터처럼 "항상 쓰이지는 않는" 무거운 위젯 |
+
+다만 너무 잘게 쪼개면 작은 청크가 늘어나 **요청 오버헤드**(HTTP/1.1에서는 특히)와 **캐시 히트율 저하**로 이어질 수 있다. 번들러의 `splitChunks`/`manualChunks` 설정으로 공통 의존성을 별도 청크로 묶어 중복 다운로드를 막는 작업이 함께 필요하다.
+
+## 두 전략을 함께 쓸 때의 그림
+
+```
+Layer 1 — Route-level
+  /            → [Home 청크]
+  /dashboard   → [Dashboard 청크]
+  /settings    → [Settings 청크]
+
+Layer 2 — Component-level (각 라우트 내부)
+  Dashboard 청크
+    ├─ DashboardShell (즉시 로드)
+    └─ RevenueChart   (lazy, 사용자가 탭을 열 때 로드)
+
+Layer 3 — Vendor 분리
+  [react, react-dom 등 공통 런타임]   ← 거의 변하지 않으므로 장기 캐시
+  [chart 라이브러리]                  ← 차트를 쓰는 청크에서만 참조
+```
+
+실무에서는 이 둘을 배타적으로 선택하지 않는다. **라우트 단위로 큰 골격을 나누고, 그 안에서 무거운 위젯을 컴포넌트 단위로 다시 나누는** 이중 구조가 일반적이다. 여기에 React 18의 `startTransition`이나 `Suspense`의 중첩 fallback을 활용하면, "로딩 중" 상태를 더 세밀하게 제어해 전환 시 깜빡임도 줄일 수 있다.
+
+## 측정 없이 자르지 않는다
+
+코드 스플리팅은 "무조건 잘게 나누면 좋다"는 식으로 접근하면 오히려 역효과가 난다. 번들 분석 도구(`source-map-explorer`, `rollup-plugin-visualizer` 등)로 실제로 큰 덩어리가 무엇인지 먼저 확인하고, Lighthouse나 Web Vitals(LCP, TTI, INP)로 분리 전후를 비교하는 과정이 선행되어야 한다.
+
+라우트 단위 분리는 "처음 들어오는 사용자"를 위한 투자이고, 컴포넌트 단위 분리는 "이미 들어온 사용자가 특정 기능을 쓸 때"를 위한 투자다. 어느 쪽이 더 가치 있는지는 실제 사용 패턴과 측정 데이터가 결정해야 한다.
