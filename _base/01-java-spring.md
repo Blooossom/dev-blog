@@ -55,7 +55,7 @@
 ~~357. Spring WebFlux를 쓰면 자동으로 성능이 좋아지는가, blocking dependency가 남아 있으면 어떤 일이 생길까?~~ `작성완료`
 358. servlet thread-per-request 모델과 reactive 모델은 backpressure를 다루는 방식이 어떻게 다를까?
 359. Spring proxy 기반 AOP와 AspectJ weaving은 적용 시점과 제약이 어떻게 다를까?
-360. Bean lifecycle에서 `BeanPostProcessor`와 `InitializingBean`은 프레임워크 확장 지점으로 어떻게 쓸일 수 있을까?
+~~360. Bean lifecycle에서 `BeanPostProcessor`와 `InitializingBean`은 프레임워크 확장 지점으로 어떻게 쓸일 수 있을까?~~ `작성완료`
 ~~361. Hibernate 1차 캐시와 2차 캐시는 정합성, eviction, transaction boundary에서 어떻게 다를까?~~ `작성완료`
 ~~362. JPA flush mode를 바꾸면 SQL 실행 시점과 읽기 쿼리 결과에 어떤 영향이 생길까?~~ `작성완료`
 ~~363. Hibernate proxy와 bytecode enhancement는 lazy loading을 어떻게 구현하고, 직렬화에서 어떤 문제를 만들까?~~ `작성완료`

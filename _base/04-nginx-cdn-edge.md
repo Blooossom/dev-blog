@@ -15,4 +15,4 @@
 ## Network / Infrastructure
 
 409. Nginx와 application server의 timeout 값이 서로 맞지 않으면 어떤 499, 502, 504 계열 문제가 생길 수 있을까?
-410. CDN edge cache에서 stale-while-revalidate와 stale-if-error는 availability와 freshness를 어떻게 교환할까?
+~~410. CDN edge cache에서 stale-while-revalidate와 stale-if-error는 availability와 freshness를 어떻게 교환할까?~~ `작성완료`
