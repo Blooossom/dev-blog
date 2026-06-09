@@ -603,6 +603,8 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'bean-post-processor-initializing-bean': { pattern: 'spring', colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'code-splitting-strategies':         { pattern: 'layers',   colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'cdn-stale-cache-strategies':        { pattern: 'network',  colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
+  'servlet-reactive-backpressure':     { pattern: 'threads',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'application-service-vs-domain-service': { pattern: 'layers', colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
