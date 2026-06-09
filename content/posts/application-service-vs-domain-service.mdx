@@ -1,0 +1,229 @@
+---
+title: Application Service와 Domain Service의 책임 구분
+date: '2026-06-09'
+category: Architecture
+tags:
+  - DDD
+  - Application Service
+  - Domain Service
+  - 설계
+  - 도메인 주도 설계
+summary: >-
+  application service와 domain service는 이름이 비슷해 보이지만 책임의 소속과 무게가 다르다.
+  올바른 구분 없이는 도메인 로직이 서비스 계층에 흩어지고 도메인 모델이 빈 껍데기로 전락한다.
+thumbnail: /thumbnails/application-service-vs-domain-service.svg
+---
+
+application service와 domain service는 책임이 어떻게 달라야 할까? 이 질문이 중요한 이유는 두 계층을 혼동하면 도메인 모델이 유명무실해지고, 결국 service class에 모든 비즈니스 로직이 집중되는 anemic domain model로 퇴화하기 때문이다.
+
+## 계층별 위치
+
+DDD 레이어드 아키텍처에서 두 서비스의 위치는 다음과 같다.
+
+```
+┌──────────────────────────────────────┐
+│          Presentation Layer          │
+│          (Controller, API)           │
+└──────────────┬───────────────────────┘
+               │
+┌──────────────▼───────────────────────┐
+│         Application Layer            │
+│      [Application Service]           │
+│  - 유스케이스 오케스트레이션          │
+│  - 트랜잭션 경계 설정                 │
+│  - 외부 서비스 호출 조율             │
+└──────────────┬───────────────────────┘
+               │
+┌──────────────▼───────────────────────┐
+│           Domain Layer               │
+│  [Domain Service] + Entity + VO      │
+│  - 순수 비즈니스 규칙                 │
+│  - 여러 Aggregate 간 로직            │
+└──────────────┬───────────────────────┘
+               │
+┌──────────────▼───────────────────────┐
+│        Infrastructure Layer          │
+│  (Repository, External API, DB)      │
+└──────────────────────────────────────┘
+```
+
+## Application Service
+
+### 책임
+
+Application Service는 **유스케이스 하나를 오케스트레이션하는** 계층이다. 비즈니스 규칙 자체를 알지 못하며, 도메인 객체들이 올바르게 협력하도록 조율하는 역할을 한다.
+
+- 트랜잭션 경계 설정
+- Repository를 통해 도메인 객체 로드
+- 도메인 객체나 Domain Service에 위임
+- 외부 시스템(이메일, 알림) 호출
+- 결과를 DTO로 변환해 반환
+
+```java
+@Service
+@Transactional
+public class OrderApplicationService {
+
+    private final OrderRepository orderRepository;
+    private final CustomerRepository customerRepository;
+    private final PaymentGateway paymentGateway;
+    private final DiscountDomainService discountService;
+
+    public OrderResult placeOrder(PlaceOrderCommand cmd) {
+        // 1. 도메인 객체 로드
+        Customer customer = customerRepository.findById(cmd.customerId())
+            .orElseThrow(CustomerNotFoundException::new);
+        Cart cart = cartRepository.findById(cmd.cartId())
+            .orElseThrow(CartNotFoundException::new);
+
+        // 2. 도메인 로직은 도메인에 위임
+        Money discounted = discountService.calculate(customer, cart);
+
+        // 3. Aggregate 생성
+        Order order = Order.create(customer, cart.items(), discounted);
+        orderRepository.save(order);
+
+        // 4. 외부 서비스 호출 (기술적 관심사)
+        paymentGateway.reserve(order.id(), discounted);
+
+        return OrderResult.from(order);
+    }
+}
+```
+
+### 하지 말아야 할 것
+
+Application Service에 비즈니스 규칙을 넣으면 안 된다. 아래는 잘못된 예다.
+
+```java
+// 잘못된 예: 비즈니스 규칙이 Application Service에 있다
+public OrderResult placeOrder(PlaceOrderCommand cmd) {
+    Money total = cart.total();
+    // "VIP 고객이 10만 원 이상 주문하면 10% 할인" → 도메인 규칙인데 여기 있다
+    if (customer.grade() == Grade.VIP && total.amount() > 100_000) {
+        total = total.multiply(0.9);
+    }
+    // ...
+}
+```
+
+`VIP 고객이 10만 원 이상 주문하면 10% 할인`은 비즈니스 규칙이다. 이 규칙은 Domain Service나 도메인 객체 안에 있어야 한다.
+
+## Domain Service
+
+### 책임
+
+Domain Service는 **단일 Aggregate에 속하기 어려운 도메인 로직**을 담는다. 핵심은 "도메인 언어로 표현할 수 있는가"다. 도메인 전문가가 말할 법한 개념이라면 Domain Service에 속한다.
+
+- 여러 Aggregate에 걸친 비즈니스 규칙
+- 상태를 갖지 않는 순수 계산 로직
+- 도메인 규칙을 명시적으로 이름 붙인 연산
+
+```java
+// 도메인 서비스: 할인 정책 계산
+@Component
+public class DiscountDomainService {
+
+    public Money calculate(Customer customer, Cart cart) {
+        Money base = cart.total();
+
+        if (customer.isVip() && base.isGreaterThan(Money.of(100_000))) {
+            return base.multiply(0.9);  // VIP 10% 할인
+        }
+        if (customer.hasCoupon()) {
+            return base.minus(customer.couponAmount());
+        }
+        return base;
+    }
+}
+```
+
+### Entity나 VO와의 경계
+
+| 로직 위치 | 조건 |
+|----------|------|
+| Entity 메서드 | 해당 Aggregate 내부 데이터만 사용 |
+| Domain Service | 여러 Aggregate 데이터가 필요하거나 명시적 도메인 개념 |
+| Application Service | 유스케이스 흐름 조율, 기술적 관심사 |
+
+```java
+// Entity 메서드: 자신의 상태만 사용 → Entity에 적합
+public class Order {
+    public boolean isCancelable() {
+        return status == OrderStatus.PENDING &&
+               createdAt.isAfter(LocalDateTime.now().minusHours(24));
+    }
+}
+
+// Domain Service: 여러 Aggregate 간 규칙 → Domain Service에 적합
+public class TransferDomainService {
+    public void transfer(Account from, Account to, Money amount) {
+        from.withdraw(amount);  // Account의 출금 규칙
+        to.deposit(amount);     // Account의 입금 규칙
+        // 두 Aggregate의 협력을 도메인 언어로 표현
+    }
+}
+```
+
+## 흔한 실수 유형
+
+### Application Service가 도메인 로직을 삼키는 경우
+
+```java
+// 잘못된 Application Service
+public void cancelOrder(Long orderId) {
+    Order order = orderRepository.findById(orderId);
+
+    // 이 조건은 도메인 규칙 → Order.cancel() 내부에 있어야 한다
+    if (order.status() == PENDING &&
+        order.createdAt().isAfter(now().minusHours(24))) {
+        order.cancel();
+    }
+}
+
+// 올바른 Application Service
+public void cancelOrder(Long orderId) {
+    Order order = orderRepository.findById(orderId);
+    order.cancel(); // 취소 가능 여부 판단은 Order 내부
+}
+```
+
+### Domain Service가 Infrastructure에 의존하는 경우
+
+```java
+// 잘못된 Domain Service: Repository에 직접 의존
+public class PricingDomainService {
+    private final ExchangeRateRepository repo; // 인프라 의존 금지
+
+    public Money convert(Money krw, Currency target) {
+        ExchangeRate rate = repo.findByCurrency(target); // DB 조회
+        return krw.convertWith(rate);
+    }
+}
+
+// 올바른 Domain Service: 필요한 값을 파라미터로 받는다
+public class PricingDomainService {
+    public Money convert(Money krw, ExchangeRate rate) {
+        return krw.convertWith(rate); // 순수 도메인 로직
+    }
+}
+
+// Application Service가 데이터를 조회해서 넘긴다
+public Money convertCurrency(Money krw, Currency target) {
+    ExchangeRate rate = exchangeRateRepository.findByCurrency(target);
+    return pricingDomainService.convert(krw, rate);
+}
+```
+
+## 요약 비교
+
+| 항목 | Application Service | Domain Service |
+|------|---------------------|----------------|
+| 소속 계층 | Application Layer | Domain Layer |
+| 도메인 지식 | 없음 | 있음 |
+| 상태 | 없음 | 없음 |
+| 트랜잭션 | 직접 관리 | 인지 못함 |
+| Infrastructure 의존 | 허용 | 금지 |
+| 역할 | 유스케이스 조율 | 도메인 규칙 표현 |
+
+Application Service는 "무엇을 할 것인가"를 지휘하고, Domain Service는 "어떻게 판단할 것인가"를 담당한다. 이 경계를 지켜야 도메인 모델이 비즈니스 규칙의 실제 집이 될 수 있으며, 서비스 계층이 절차적 스크립트로 전락하는 것을 막을 수 있다.
