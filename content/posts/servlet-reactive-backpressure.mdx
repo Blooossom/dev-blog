@@ -1,0 +1,145 @@
+---
+title: Servlet과 Reactive의 Backpressure 처리 방식 비교
+date: '2026-06-09'
+category: Backend
+tags:
+  - Reactive
+  - Backpressure
+  - Spring WebFlux
+  - Servlet
+  - 동시성
+summary: >-
+  servlet thread-per-request 모델과 reactive 모델은 backpressure를 다루는 방식이 근본적으로 다르다.
+  스레드 고갈로 암묵적으로 흐름을 제어하는 방식과, demand 신호로 명시적으로 생산자를 제어하는 방식의
+  차이를 이해하면 올바른 기술 선택과 성능 설계가 달라진다.
+thumbnail: /thumbnails/servlet-reactive-backpressure.svg
+---
+
+servlet thread-per-request 모델과 reactive 모델은 backpressure를 다루는 방식이 근본적으로 다르다. 빠른 생산자와 느린 소비자가 공존하는 시스템에서 이 차이는 장애의 원인이 되기도 하고, 안정성의 근간이 되기도 한다.
+
+## Backpressure란 무엇인가
+
+Backpressure는 데이터를 소비하는 쪽이 생산하는 쪽의 속도를 제어하는 메커니즘이다. 파이프 수도 비유로 설명하자면, 수도꼭지(생산자)가 물을 너무 빠르게 틀면 배수구(소비자)가 넘쳐버린다. 이를 방지하기 위해 소비자가 자신이 받을 수 있는 양을 신호로 알려주는 것이 backpressure다.
+
+```
+생산자 (Producer)  ──→  [중간 버퍼]  ──→  소비자 (Consumer)
+     ↑                                        |
+     └────── backpressure 신호 ───────────────┘
+```
+
+## Servlet Thread-per-Request 모델의 암묵적 Backpressure
+
+### 스레드가 자연스러운 흐름 제어 역할을 한다
+
+Servlet 기반 서버(Tomcat, Jetty 등)는 요청당 하나의 스레드를 할당한다. 스레드 풀이 고갈되면 새 요청을 큐에 대기시키고, 큐도 꽉 차면 연결 자체를 거부한다. 이것이 Servlet 모델에서 backpressure가 동작하는 방식이다.
+
+```
+클라이언트 요청 → Acceptor → 스레드 풀 (200 threads)
+                              ├─ 처리 중 (180)
+                              └─ 대기 큐 (20개 한도)
+                                        ↓
+                              한도 초과 시 TCP 연결 거부
+```
+
+이 구조에서 backpressure는 **명시적 설계가 아니라 스레드 고갈이라는 물리적 한계**에 의해 자동으로 발생한다.
+
+### 장단점
+
+| 장점 | 단점 |
+|------|------|
+| 구현이 단순하다 | 스레드 컨텍스트 스위칭 비용이 높다 |
+| 디버깅과 추적이 용이하다 | I/O 대기 중에도 스레드가 점유된다 |
+| 기존 동기 라이브러리와 호환된다 | 커넥션 수가 스레드 수를 초과하면 장애가 난다 |
+
+## Reactive 모델의 명시적 Backpressure
+
+### Publisher-Subscriber와 demand 신호
+
+Reactive Streams 명세(Project Reactor, RxJava 등)는 backpressure를 프로토콜 수준에서 정의한다. `Subscriber`가 `request(n)` 메서드로 자신이 처리할 수 있는 개수를 Publisher에게 알리고, Publisher는 그 수만큼만 데이터를 발행한다.
+
+```java
+Flux.range(1, 1000)
+    .log()
+    .subscribe(new BaseSubscriber<Integer>() {
+        @Override
+        protected void hookOnSubscribe(Subscription subscription) {
+            request(10); // 처음에 10개만 요청
+        }
+
+        @Override
+        protected void hookOnNext(Integer value) {
+            process(value);
+            request(1); // 처리 완료 후 1개 추가 요청
+        }
+    });
+```
+
+### Backpressure 전략 선택
+
+Reactor는 소비자 속도를 초과할 때 여러 전략을 제공한다.
+
+| 전략 | 동작 | 적합한 상황 |
+|------|------|------------|
+| `BUFFER` | 초과분을 버퍼에 저장 | 일시적 폭발 트래픽 허용 |
+| `DROP` | 처리 못한 데이터 폐기 | 최신 데이터만 중요한 센서 |
+| `LATEST` | 최신 값 하나만 유지 | 실시간 UI 업데이트 |
+| `ERROR` | 예외를 발생시켜 중단 | 데이터 손실 절대 불허 |
+
+```java
+Flux.interval(Duration.ofMillis(1))
+    .onBackpressureDrop(dropped -> log.warn("dropped: {}", dropped))
+    .publishOn(Schedulers.boundedElastic())
+    .subscribe(v -> {
+        try { Thread.sleep(100); } catch (InterruptedException e) {}
+    });
+```
+
+## 두 모델의 비교
+
+```
+Servlet Thread-per-Request
+─────────────────────────────────────────────────────
+요청 → 스레드 할당 → [I/O 대기 중 스레드 블록] → 응답
+       스레드 부족 → 큐 대기 → 큐 초과 → 연결 거부
+
+Reactive (Non-blocking)
+─────────────────────────────────────────────────────
+요청 → 이벤트 루프 → 등록(callback) → I/O 완료 이벤트 → 처리
+       request(n) <── 소비자가 가능한 수를 demand 신호로 선언
+```
+
+### 핵심 차이
+
+| 항목 | Servlet | Reactive |
+|------|---------|---------|
+| Backpressure 방식 | 스레드 풀 고갈(암묵적) | demand 신호(명시적) |
+| I/O 대기 시 스레드 | 점유 | 해제 |
+| 코드 복잡도 | 낮음 | 높음 |
+| 동시 커넥션 처리량 | 스레드 수에 비례 | 매우 많이 가능 |
+| 디버깅 난이도 | 쉬움 | 어려움(스택 추적 어려움) |
+
+## Spring WebFlux에서의 주의점
+
+Spring WebFlux가 Reactive를 사용한다고 해서 자동으로 backpressure가 보장되지는 않는다. 체인 어디서든 blocking 호출이 섞이면 이벤트 루프 스레드가 막혀 reactive의 이점을 잃는다.
+
+```java
+// 잘못된 예: WebFlux에서 blocking 호출
+@GetMapping("/wrong")
+public Mono<String> wrong() {
+    String result = blockingJdbcCall(); // 이벤트 루프 블록!
+    return Mono.just(result);
+}
+
+// 올바른 예: boundedElastic 스케줄러로 격리
+@GetMapping("/right")
+public Mono<String> right() {
+    return Mono.fromCallable(this::blockingJdbcCall)
+               .subscribeOn(Schedulers.boundedElastic());
+}
+```
+
+## 선택 기준
+
+커넥션이 매우 많고 I/O 대기가 지배적인 서비스(스트리밍, 채팅, IoT)라면 Reactive가 유리하다. 동기 라이브러리 의존성이 많거나 팀이 비동기 디버깅 경험이 부족한 경우라면 Servlet 모델로도 충분하다.
+
+backpressure는 기술이 아니라 **소비자가 생산자를 제어하는 설계 원칙**이다. Servlet은 이를 스레드라는 자원으로 암묵적으로 표현하고, Reactive는 demand 신호로 명시적으로 표현한다. 어느 방식을 선택하든 이 흐름 제어가 존재한다는 사실을 인식하고 설계해야 한다.
