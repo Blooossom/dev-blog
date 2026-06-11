@@ -1,0 +1,116 @@
+---
+title: 분산 시스템의 Leader Election과 Quorum
+date: '2026-06-11'
+category: Architecture
+tags:
+  - Distributed Systems
+  - Consensus
+  - Raft
+  - Leader Election
+  - Split-Brain
+summary: >-
+  분산 시스템에서 split-brain을 방지하려면 leader election이 quorum 조건을 반드시 충족해야 한다.
+  Raft 같은 consensus 알고리즘이 과반수 합의로 일관성을 보장하는 원리를 살펴본다.
+thumbnail: /thumbnails/distributed-leader-election.svg
+---
+
+consensus 알고리즘에서 leader election은 split-brain을 막기 위해 어떤 quorum 조건을 필요로 할까? 분산 노드 가운데 두 개 이상이 동시에 "내가 리더다"라고 판단하면 각자 쓰기 요청을 받아들이면서 데이터 불일치가 발생한다. quorum은 단 하나의 리더만 선출될 수 있도록 수학적으로 보장하는 장치다.
+
+## Split-Brain 문제
+
+네트워크 파티션이 발생하면 클러스터가 두 개의 독립된 그룹으로 나뉜다. 각 그룹이 독자적으로 리더를 선출하면 클러스터 전체에 리더가 두 명이 되는 split-brain 상태가 된다.
+
+```
+정상 상태:
+  [Leader]──[Follower A]──[Follower B]
+
+네트워크 파티션 발생:
+  파티션 1: [Leader?]──[Follower A]
+  파티션 2: [Leader?]──[Follower B]──[Follower C]
+
+→ 각 파티션이 리더를 선출하면 쓰기 로그가 분기됨
+```
+
+두 리더가 동시에 클라이언트 쓰기를 수락하면 충돌하는 변경 이력이 쌓이고, 파티션이 복구된 뒤에도 어느 쪽 데이터가 정답인지 자동으로 알 수 없다.
+
+## Quorum: 과반수 합의
+
+quorum은 클러스터의 과반수 이상이 동의해야만 리더 선출이나 쓰기 작업이 성공한다는 원칙이다.
+
+```
+노드 수 N일 때 quorum Q = N / 2 + 1 (정수 나눔)
+
+N = 3 → Q = 2
+N = 5 → Q = 3
+N = 7 → Q = 4
+```
+
+핵심은 **두 quorum이 반드시 겹친다**는 점이다. N = 5인 클러스터에서 quorum이 3이라면, 어떤 두 그룹이 3개씩 뽑으려 해도 5개에서 두 번 3개를 고르면 반드시 1개 이상 겹친다. 이 겹치는 노드가 "두 리더 중 하나에게만 투표한다"는 성질 때문에 동시에 두 리더가 과반수를 얻는 일이 불가능해진다.
+
+```
+5개 노드 (A, B, C, D, E):
+
+파티션 1 (A, B, C)이 리더 선출 시도 → quorum 3 충족 가능
+파티션 2 (D, E)가 리더 선출 시도   → quorum 3 미충족 → 실패
+
+파티션 1만 리더 선출 성공 → split-brain 없음
+```
+
+짝수 노드는 두 파티션이 동시에 quorum(N/2)을 충족할 수 있으므로 홀수 노드 구성이 권장된다.
+
+## Raft에서의 Leader Election
+
+Raft는 시간을 term이라는 논리적 시대로 나눠 관리한다. 각 term에는 최대 하나의 리더만 존재한다.
+
+### 상태 전이
+
+```
+Follower
+  │  election timeout 만료
+  ▼
+Candidate ─── 과반수 투표 획득 ──▶ Leader
+  │
+  └── 다른 리더 발견 → Follower로 복귀
+```
+
+1. **Follower**: 리더로부터 heartbeat를 주기적으로 받는다.
+2. **Candidate**: election timeout 내에 heartbeat가 없으면 term을 1 올리고 선거를 시작한다. 자신에게 먼저 투표하고, 다른 노드에 `RequestVote` RPC를 보낸다.
+3. **Leader**: 과반수 투표를 얻으면 리더가 되고, 즉시 heartbeat를 보내 남은 노드들을 follower 상태로 유지한다.
+
+### 투표 규칙
+
+각 노드는 한 term에서 오직 한 번만 투표한다. candidate의 로그가 자신보다 오래됐거나(term이 낮거나, 로그 길이가 짧으면) 투표를 거부한다. 이 규칙이 "최신 로그를 가진 노드만 리더가 된다"는 safety를 보장한다.
+
+```
+투표 거부 조건:
+  candidate.lastLogTerm < voter.lastLogTerm
+  또는
+  candidate.lastLogTerm == voter.lastLogTerm
+  && candidate.lastLogIndex < voter.lastLogIndex
+```
+
+## Fencing Token으로 구버전 리더 차단
+
+네트워크 지연으로 구버전 리더가 잠시 살아돌아오면 두 리더가 공존하는 순간이 생길 수 있다. Raft는 term을 단조 증가하는 번호로 관리해 이 문제를 해결한다. 스토리지나 외부 시스템에 요청을 보낼 때 term 번호를 함께 전달하면, 수신자가 더 높은 term의 요청을 이미 처리했다면 구버전 리더의 요청을 거부한다.
+
+```
+구버전 Leader (term=5): write(key, value, fencing_token=5)
+신버전 Leader (term=6): write(key, value, fencing_token=6)
+
+Storage: term 6을 이미 처리했으므로 term 5 요청 거부
+```
+
+## 실제 시스템에서의 적용
+
+| 시스템 | Consensus | 기본 구성 |
+|--------|-----------|-----------|
+| etcd | Raft | 3 또는 5 노드 |
+| ZooKeeper | ZAB (Raft 유사) | 3 또는 5 노드 |
+| Redis Sentinel | 간단한 과반수 투표 | Sentinel 3개 이상 |
+| Kubernetes | etcd 의존 | etcd 3 또는 5 노드 |
+
+단일 노드 구성은 리더 선출 과정 자체가 없으므로 split-brain 문제는 없지만 HA(고가용성)가 없다. 2 노드는 quorum이 2로, 노드 하나가 죽으면 quorum을 만족할 수 없어 사실상 HA가 불가능하다.
+
+## 핵심 정리
+
+quorum은 과반수가 동시에 두 후보에게 투표할 수 없다는 수학적 성질로 split-brain을 차단한다. Raft에서 leader election은 term 단위 단일 투표와 로그 최신성 검사를 결합해, 과반수 동의를 받은 가장 최신 상태의 노드만 리더가 되도록 보장한다.
