@@ -608,6 +608,9 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'dynamic-programming':                   { pattern: 'code',    colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
   'facade-pattern':                        { pattern: 'layers',  colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
   'prompt-hierarchy':                      { pattern: 'neural',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'sql-groupby-orderby-cost':              { pattern: 'chart',   colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'distributed-leader-election':           { pattern: 'network', colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'design-system-beyond-components':       { pattern: 'layers',  colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
