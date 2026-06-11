@@ -1,0 +1,138 @@
+---
+title: GROUP BY와 ORDER BY의 숨겨진 정렬 비용
+date: '2026-06-11'
+category: Backend
+tags:
+  - SQL
+  - Query Optimization
+  - Database
+  - Performance
+summary: >-
+  GROUP BY와 ORDER BY를 함께 사용할 때 DB 옵티마이저는 내부적으로 두 번의 정렬 연산을 수행할 수 있다.
+  인덱스 설계와 실행 계획 이해 없이는 예상치 못한 성능 저하를 마주치게 된다.
+thumbnail: /thumbnails/sql-groupby-orderby-cost.svg
+---
+
+`GROUP BY`와 `ORDER BY`가 함께 있을 때 정렬 비용은 어떻게 커질 수 있을까? 두 절이 각각 다른 컬럼에 걸려 있으면 DB는 집계와 정렬을 위해 독립적인 두 번의 정렬 연산을 수행해야 한다. 테이블이 작을 때는 체감하기 어렵지만, 수백만 건 이상의 데이터에서는 임시 테이블과 디스크 I/O로 이어지는 병목 지점이 된다.
+
+## GROUP BY의 내부 동작
+
+DB 엔진이 `GROUP BY`를 처리하는 방식은 크게 두 가지다.
+
+| 방식 | 설명 | 장점 |
+|------|------|------|
+| Sort-based aggregation | 데이터를 정렬한 뒤 인접한 행을 묶어 집계 | 인덱스가 있을 때 효율적 |
+| Hash aggregation | 해시 테이블에 그룹 키를 담아 집계 | 정렬 없이 처리 가능 |
+
+MySQL InnoDB는 `GROUP BY` 컬럼에 인덱스가 없으면 Sort-based aggregation으로 처리하는 경우가 많다. 실행 계획의 `Extra` 항목에 `Using temporary; Using filesort`가 함께 보이면 임시 테이블 생성과 정렬이 모두 발생하고 있다는 신호다.
+
+```sql
+EXPLAIN
+SELECT department_id, COUNT(*) AS cnt
+FROM employees
+GROUP BY department_id
+ORDER BY cnt DESC;
+```
+
+```
++----+-------------+-----------+------+---------------+------+
+| id | select_type | table     | type | key           | Extra                          |
++----+-------------+-----------+------+---------------+------+
+|  1 | SIMPLE      | employees | ALL  | NULL          | Using temporary; Using filesort|
++----+-------------+-----------+------+---------------+------+
+```
+
+## ORDER BY가 추가되면 비용이 어떻게 달라질까
+
+`ORDER BY`가 `GROUP BY`와 동일한 컬럼을 대상으로 한다면 한 번의 정렬로 두 요구를 동시에 충족할 수 있다. 하지만 아래처럼 집계 결과값(`COUNT(*)`, `SUM(...)`)이나 다른 컬럼으로 정렬할 경우 문제가 달라진다.
+
+```
+[1] 전체 rows 풀 스캔
+      ↓
+[2] GROUP BY 처리 → 임시 테이블 생성 + 그룹별 집계
+      ↓
+[3] ORDER BY 처리 → 집계 결과 기준으로 다시 정렬 (filesort)
+```
+
+세 단계를 거치면서 두 번의 정렬이 발생한다. 메모리 버퍼(`sort_buffer_size`)를 초과하면 디스크 정렬로 내려가고, I/O 비용이 급격히 올라간다.
+
+### 정렬이 한 번만 발생하는 경우
+
+```sql
+-- GROUP BY와 ORDER BY가 같은 컬럼이면 단일 정렬
+SELECT department_id, COUNT(*) AS cnt
+FROM employees
+GROUP BY department_id
+ORDER BY department_id;  -- GROUP BY 컬럼 재사용
+```
+
+이 경우 `Using filesort` 없이 `Using index`만 보이면 인덱스 순서로 그룹이 자연스럽게 만들어진 것이다.
+
+## 인덱스로 정렬 비용 줄이기
+
+### GROUP BY 단독 커버
+
+`GROUP BY department_id` 쿼리에서 `department_id` 컬럼에 인덱스가 있으면 Sort-based aggregation이 인덱스 순서를 그대로 사용해 임시 테이블 없이 처리한다.
+
+```sql
+CREATE INDEX idx_dept ON employees(department_id);
+```
+
+```
+Extra: Using index
+```
+
+### 복합 인덱스로 GROUP BY + ORDER BY 동시 해결
+
+집계 결과가 아닌 테이블 컬럼 기준으로 정렬해야 한다면 복합 인덱스가 도움이 된다.
+
+```sql
+-- department_id로 그룹, hire_date로 정렬하는 쿼리
+SELECT department_id, MAX(salary) AS max_sal
+FROM employees
+GROUP BY department_id
+ORDER BY hire_date;
+-- hire_date는 집계 결과가 아니므로 실질적으로 의미 없는 정렬이 됨
+-- 이런 패턴은 쿼리 의도 자체를 재검토해야 한다
+```
+
+집계 결과(`COUNT`, `SUM`, `MAX` 등) 기준 정렬은 인덱스로 해결할 수 없다. 인덱스는 저장된 원본 값에만 적용되기 때문이다. 이 경우 애플리케이션에서 정렬하거나, 서브쿼리를 분리해 각 단계의 비용을 분산시키는 방법을 고려한다.
+
+## 실행 계획으로 비용 직접 확인하기
+
+`EXPLAIN ANALYZE`(MySQL 8.0 이상)는 실제 실행 통계까지 보여주므로 정렬 비용을 정확히 파악할 수 있다.
+
+```sql
+EXPLAIN ANALYZE
+SELECT department_id, COUNT(*) AS cnt
+FROM employees
+GROUP BY department_id
+ORDER BY cnt DESC\G
+```
+
+출력에서 `Sort: cnt DESC (actual time=...)` 항목과 `Aggregate (actual rows=...)` 항목의 비용을 함께 보면 어느 단계에서 시간이 소비되는지 알 수 있다.
+
+### 주의해야 할 패턴
+
+```sql
+-- 서브쿼리 내부에서 ORDER BY는 대부분 무의미
+SELECT * FROM (
+  SELECT department_id, COUNT(*) AS cnt
+  FROM employees
+  GROUP BY department_id
+  ORDER BY cnt DESC  -- 외부 쿼리가 순서를 보장하지 않음
+) AS sub;
+
+-- 의도한 순서가 필요하다면 외부 쿼리에서 정렬
+SELECT department_id, cnt
+FROM (
+  SELECT department_id, COUNT(*) AS cnt
+  FROM employees
+  GROUP BY department_id
+) AS sub
+ORDER BY cnt DESC;
+```
+
+## 핵심 정리
+
+`GROUP BY`와 `ORDER BY`가 서로 다른 컬럼에 걸리면 임시 테이블과 두 번의 정렬이 발생해 비용이 선형 이상으로 증가할 수 있다. `EXPLAIN`으로 `Using temporary; Using filesort`를 먼저 확인하고, 인덱스 설계와 쿼리 구조 개선을 통해 정렬 횟수를 줄이는 것이 핵심이다.
