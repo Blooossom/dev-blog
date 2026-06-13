@@ -1,0 +1,145 @@
+---
+title: DB Foreign Key 제약을 DB에 둘지 애플리케이션에서 관리할지 판단하기
+date: '2026-06-13'
+category: Backend
+tags:
+  - Database
+  - Foreign Key
+  - 데이터 정합성
+  - 설계 패턴
+summary: >-
+  foreign key 제약을 DB에 둘지 애플리케이션에서만 관리할지는 어떤 기준으로 결정해야 할까?
+  두 접근의 보장 수준, 성능 트레이드오프, 운영 맥락을 비교하고 어떤 상황에서 무엇을 선택해야 하는지 살펴본다.
+thumbnail: /thumbnails/db-foreign-key-constraint.svg
+---
+
+foreign key 제약을 DB에 둘지 애플리케이션에서만 관리할지는 어떤 기준으로 결정해야 할까? 이 질문은 단순히 "성능 vs 정합성" 문제가 아니라 시스템 설계 철학, 운영 맥락, 팀 규모와 맞닿아 있다.
+
+## Foreign Key 제약이란
+
+RDBMS에서 foreign key(FK) 제약은 자식 테이블의 컬럼 값이 반드시 부모 테이블의 특정 컬럼에 존재해야 한다는 **참조 무결성(referential integrity)** 규칙이다.
+
+```sql
+CREATE TABLE orders (
+    id BIGINT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    CONSTRAINT fk_orders_user FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE
+);
+```
+
+DB는 `INSERT`, `UPDATE`, `DELETE` 시점에 이 제약을 자동으로 검사한다.
+
+## DB FK 제약의 보장 수준
+
+DB FK를 두면 다음 보장이 생긴다.
+
+| 보장 항목 | 내용 |
+|----------|------|
+| 참조 무결성 | 존재하지 않는 부모를 가리키는 행 삽입 불가 |
+| 고아 레코드 방지 | 부모 삭제 시 CASCADE/RESTRICT로 일관성 유지 |
+| 다중 경로 쓰기 보호 | 애플리케이션 외부(스크립트, DBA 직접 조작)에서도 제약 적용 |
+| 암묵적 문서화 | 스키마 자체가 테이블 관계를 표현 |
+
+가장 중요한 포인트는 **"모든 쓰기 경로"에서 적용된다**는 점이다. 애플리케이션 코드를 우회해서 데이터를 넣더라도 DB FK는 막는다.
+
+## 애플리케이션 FK 관리의 실제
+
+많은 팀이 DB FK 없이 애플리케이션 레이어에서만 관계를 관리한다.
+
+```java
+// 애플리케이션에서 직접 검사
+@Transactional
+public Order createOrder(Long userId, OrderRequest request) {
+    if (!userRepository.existsById(userId)) {
+        throw new IllegalArgumentException("존재하지 않는 사용자입니다.");
+    }
+    return orderRepository.save(Order.of(userId, request));
+}
+```
+
+이 방식은 유연하지만 경쟁 조건(race condition)에 취약하다. `existsById` 확인과 `save` 사이에 해당 사용자가 삭제되면 고아 레코드가 생길 수 있다.
+
+```
+시간 →
+T1: SELECT FROM users WHERE id=5  → 존재함
+T2: DELETE FROM users WHERE id=5  → 삭제됨
+T1: INSERT INTO orders (user_id=5) → 고아 레코드 생성 ❌
+```
+
+## DB FK를 피하는 주요 이유
+
+실제 운영 환경에서 FK를 제거하거나 처음부터 두지 않는 이유는 여러 가지다.
+
+### 1. 성능 오버헤드
+
+FK 제약은 `INSERT`/`UPDATE`/`DELETE` 마다 부모 테이블 조회를 발생시킨다. 고트래픽 쓰기 경로에서는 이 오버헤드가 누적된다.
+
+```
+orders INSERT → SELECT FROM users WHERE id=? (락 경합 가능)
+```
+
+특히 대량 데이터 마이그레이션이나 배치 INSERT 시 FK는 심각한 병목이 될 수 있다.
+
+### 2. 마이크로서비스 아키텍처
+
+MSA에서는 서비스 간에 **데이터베이스를 분리**하므로 DB 수준의 FK를 걸 수 없다.
+
+```
+User Service DB ←→ Order Service DB
+(다른 인스턴스, 다른 스키마)
+```
+
+이 경우 정합성은 이벤트 기반 일관성(eventual consistency)이나 saga 패턴으로 관리한다.
+
+### 3. 스키마 마이그레이션 난이도
+
+대규모 테이블에 FK를 추가하거나 수정할 때 락이 오래 걸린다. 무중단 배포 관점에서 FK 변경은 위험 작업이다.
+
+### 4. 데이터 파이프라인, 이벤트 소싱
+
+Kafka 기반 이벤트 로그, ELT 파이프라인처럼 쓰기 순서를 보장하기 어려운 환경에서는 FK가 걸림돌이 된다.
+
+## FK를 DB에 두어야 할 때
+
+다음 조건이 해당된다면 DB FK를 두는 편이 안전하다.
+
+- 단일 DB 인스턴스에 여러 서비스 또는 도구가 접근한다
+- 데이터 정확성이 최우선인 도메인이다(금융, 의료, 법적 기록)
+- 팀 규모가 작고 모든 쓰기 경로를 코드 리뷰로 통제하기 어렵다
+- DBA나 운영팀이 직접 데이터를 수정하는 일이 잦다
+
+이 경우 DB FK는 "코드 버그로 발생하는 고아 레코드"를 자동으로 막아주는 안전망이 된다.
+
+## 결정 기준 정리
+
+```
+┌─────────────────────────────────────────┐
+│ DB FK를 쓸 것인가?                       │
+├─────────────────────────────────────────┤
+│ 단일 DB + 다중 접근 경로?   → FK 권장    │
+│ 데이터 정확성 최우선 도메인? → FK 권장    │
+│ MSA (DB 분리)?             → FK 불가     │
+│ 쓰기 처리량 최우선?         → 앱 레이어   │
+│ 이벤트/파이프라인 쓰기?     → FK 회피     │
+└─────────────────────────────────────────┘
+```
+
+## 절충안: Deferred FK / 소프트 FK
+
+일부 DB는 **DEFERRED** FK를 지원해 트랜잭션 커밋 시점에만 검사한다. 이는 복잡한 배치 작업에서 유용하다(PostgreSQL에서 지원).
+
+```sql
+ALTER TABLE orders
+  ADD CONSTRAINT fk_orders_user
+  FOREIGN KEY (user_id) REFERENCES users(id)
+  DEFERRABLE INITIALLY DEFERRED;
+```
+
+또는 FK 컬럼은 만들되 DB 레벨 제약은 걸지 않는 **"소프트 FK"** 방식도 있다. 스키마로 관계를 표현하면서 성능 검사는 비활성화하는 타협점이다.
+
+## 핵심 원칙
+
+FK를 DB에 두면 코드 외부의 쓰기 경로까지 참조 무결성을 보장하지만, 마이크로서비스나 고쓰기 처리량 환경에서는 애플리케이션 레이어와 이벤트 일관성으로 책임을 이동시킬 수밖에 없다. 어느 쪽을 택하든 "어떤 경로로 데이터가 들어오는가"를 먼저 파악하는 것이 결정의 출발점이다.
