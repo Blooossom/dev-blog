@@ -612,6 +612,9 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'distributed-leader-election':           { pattern: 'network', colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
   'design-system-beyond-components':       { pattern: 'layers',  colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'command-query-handler-separation':      { pattern: 'layers',  colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'db-foreign-key-constraint':             { pattern: 'code',    colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'unit-of-work-pattern':                  { pattern: 'layers',  colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'web-worker':                            { pattern: 'threads', colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
