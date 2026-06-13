@@ -1,0 +1,155 @@
+---
+title: Unit of Work 패턴 — 트랜잭션 경계와 변경 추적을 함께 다루는 방법
+date: '2026-06-13'
+category: Architecture
+tags:
+  - Unit of Work
+  - 디자인 패턴
+  - 트랜잭션
+  - JPA
+  - DDD
+summary: >-
+  Unit of Work 패턴은 트랜잭션 경계와 변경 추적을 어떻게 함께 다룰까?
+  패턴의 핵심 책임과 구현 방식, JPA와의 관계, 그리고 실제 적용 시 주의사항을 살펴본다.
+thumbnail: /thumbnails/unit-of-work-pattern.svg
+---
+
+unit of work pattern은 트랜잭션 경계와 변경 추적을 어떻게 함께 다룰까? 이 패턴은 Martin Fowler의 *Patterns of Enterprise Application Architecture*에서 소개된 이후 ORM 설계의 기반이 되었고, JPA의 영속성 컨텍스트가 바로 이 패턴을 구현한 대표적인 예다.
+
+## 패턴의 핵심 책임
+
+Unit of Work(UoW)는 하나의 비즈니스 작업 단위 동안 일어나는 모든 변경 사항을 추적하고, 작업이 끝날 때 한 번에 DB에 반영하는 역할을 한다.
+
+```
+┌─────────────────────────────────────────┐
+│             Unit of Work                │
+│                                         │
+│  NEW 목록     DIRTY 목록   REMOVED 목록  │
+│  [Order]     [User]       [OldItem]     │
+│                                         │
+│  commit() 호출 시 → INSERT/UPDATE/DELETE │
+└─────────────────────────────────────────┘
+```
+
+세 가지 내부 레지스트리를 유지한다.
+
+| 레지스트리 | 내용 |
+|-----------|------|
+| NEW | 새로 생성되어 DB에 아직 없는 객체 |
+| DIRTY | DB에서 읽은 뒤 변경된 객체 |
+| REMOVED | 삭제 예정 객체 |
+
+`commit()`을 호출하면 이 세 목록을 보고 SQL을 생성해 트랜잭션으로 묶어 한 번에 실행한다.
+
+## 왜 필요한가
+
+UoW가 없으면 개발자가 직접 어떤 객체가 변경되었는지 추적하고 save/update 메서드를 명시적으로 호출해야 한다.
+
+```java
+// UoW 없는 방식: 모든 저장을 직접 호출
+User user = userRepository.findById(userId);
+user.changeEmail(newEmail);
+userRepository.update(user);  // 직접 호출 필요
+
+Order order = Order.create(userId);
+orderRepository.insert(order);  // 직접 호출 필요
+```
+
+이 방식은 두 가지 문제를 만든다.
+- 실수로 `update()`를 빠뜨리면 변경이 사라진다
+- 여러 객체를 수정할 때 트랜잭션 경계를 관리하기 복잡해진다
+
+## JPA 영속성 컨텍스트 = Unit of Work
+
+JPA의 `EntityManager`가 바로 UoW 구현체다.
+
+```java
+@Transactional
+public void processOrder(Long orderId) {
+    Order order = entityManager.find(Order.class, orderId);
+    // DIRTY 레지스트리에 등록됨 (스냅샷 기록)
+
+    order.confirm(); // 내부 상태 변경
+
+    // 메서드 끝에서 트랜잭션 커밋 → flush 자동 실행
+    // → UPDATE orders SET status='CONFIRMED' WHERE id=?
+}
+```
+
+JPA는 `find()` 시점에 객체의 스냅샷을 찍어두고, `flush()` 또는 커밋 시점에 현재 상태와 비교(**dirty checking**)해서 변경된 경우에만 `UPDATE` SQL을 생성한다.
+
+### Flush 모드와 쓰기 시점
+
+```
+트랜잭션 시작
+    │
+    ├─ find(Order) → 스냅샷 저장
+    ├─ order.confirm()
+    ├─ persist(newItem)  ← NEW 레지스트리
+    ├─ remove(oldItem)   ← REMOVED 레지스트리
+    │
+commit() 호출
+    ├─ dirty checking → UPDATE 생성
+    ├─ NEW 처리 → INSERT 생성
+    ├─ REMOVED 처리 → DELETE 생성
+    └─ SQL 일괄 실행 → DB 반영
+```
+
+## 수동 Unit of Work 구현
+
+JPA를 쓰지 않는 상황(예: JDBC, 커스텀 ORM)에서 UoW를 직접 구현하면 다음처럼 된다.
+
+```java
+public class UnitOfWork {
+    private final List<DomainObject> newObjects = new ArrayList<>();
+    private final List<DomainObject> dirtyObjects = new ArrayList<>();
+    private final List<DomainObject> deletedObjects = new ArrayList<>();
+
+    public void registerNew(DomainObject obj) { newObjects.add(obj); }
+    public void registerDirty(DomainObject obj) { dirtyObjects.add(obj); }
+    public void registerDeleted(DomainObject obj) { deletedObjects.add(obj); }
+
+    @Transactional
+    public void commit() {
+        newObjects.forEach(this::insert);
+        dirtyObjects.forEach(this::update);
+        deletedObjects.forEach(this::delete);
+    }
+}
+```
+
+실제로는 객체 등록을 자동화하는 것이 핵심이다. JPA는 `find()` 시점에 자동으로 등록하고, dirty checking으로 명시적 `registerDirty()` 호출을 없앴다.
+
+## UoW와 Repository 패턴의 협력
+
+UoW는 보통 Repository 패턴과 함께 사용된다.
+
+```
+Application Service
+    │
+    ├─ UnitOfWork.begin()
+    ├─ OrderRepository.findById()   ← UoW 내부 Identity Map 조회
+    ├─ UserRepository.findById()    ← 같은 UoW 공유
+    ├─ order.addItem(item)
+    └─ UnitOfWork.commit()          ← 모든 변경 일괄 반영
+```
+
+Repository는 객체를 조회하고 등록하는 인터페이스를 제공하고, UoW는 실제 DB 반영 시점과 트랜잭션 경계를 결정한다.
+
+## 주의사항
+
+### 1. 큰 UoW는 장기 트랜잭션이 된다
+
+UoW 범위가 너무 크면 트랜잭션이 길어져 락 경합이 발생한다. 하나의 요청 안에서 여러 UoW를 쓰거나, UoW 범위를 도메인 작업 단위로 명확히 자르는 설계가 필요하다.
+
+### 2. 스레드 안전성
+
+UoW 인스턴스는 요청마다 새로 생성해야 한다. JPA `EntityManager`가 요청 범위(request scope) 또는 트랜잭션 범위로 관리되는 이유가 여기에 있다.
+
+### 3. 지연 로딩과 LAZY 예외
+
+JPA에서 `EntityManager`(UoW)가 닫힌 후 LAZY 연관을 접근하면 `LazyInitializationException`이 발생한다. UoW 생명주기 밖에서는 이미 추적이 끊겼기 때문이다.
+
+## 핵심 원칙
+
+Unit of Work 패턴은 "변경 추적"과 "트랜잭션 경계"를 한 곳에서 관리하게 해 개발자가 저장 시점을 일일이 신경 쓰지 않아도 되게 만든다. JPA 영속성 컨텍스트가 이 패턴의 완성도 높은 구현체이며, UoW의 생명주기를 도메인 작업 단위와 정확히 맞추는 것이 올바른 사용의 핵심이다.
