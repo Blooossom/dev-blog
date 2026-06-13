@@ -1,0 +1,164 @@
+---
+title: Web Worker — CPU 작업 분리의 이점과 DOM 접근·데이터 복사 비용의 제약
+date: '2026-06-13'
+category: Frontend
+tags:
+  - Web Worker
+  - JavaScript
+  - 성능 최적화
+  - 브라우저
+summary: >-
+  Web Worker는 CPU 작업을 분리할 수 있지만, DOM 접근과 데이터 복사 비용에서 어떤 제약이 있을까?
+  메인 스레드 블로킹 문제를 Worker로 해결하는 방법과 실제 한계를 함께 살펴본다.
+thumbnail: /thumbnails/web-worker.svg
+---
+
+Web Worker는 CPU 작업을 분리할 수 있지만, DOM 접근과 데이터 복사 비용에서 어떤 제약이 있을까? 브라우저의 싱글 스레드 한계를 돌파하는 핵심 도구처럼 보이지만, 실제로 잘 쓰려면 그 비용과 제약을 정확히 이해해야 한다.
+
+## 왜 Web Worker가 필요한가
+
+브라우저 메인 스레드는 JavaScript 실행, 레이아웃 계산, 페인트, 이벤트 처리를 모두 혼자 담당한다. CPU 집약적인 작업이 메인 스레드에서 실행되면 프레임 드롭, 입력 지연, 렌더링 중단이 발생한다.
+
+```
+메인 스레드 (UI 스레드)
+┌─────────────────────────────────────────┐
+│ JS 실행 │ 레이아웃 │ 페인트 │ 이벤트 처리 │
+└─────────────────────────────────────────┘
+     ↑ 이 중 하나라도 오래 걸리면 전부 블로킹
+
+예: 대용량 JSON 파싱, 이미지 처리, 암호화 연산
+→ 스크롤, 클릭, 애니메이션 모두 멈춤
+```
+
+Web Worker는 별도 스레드에서 JavaScript를 실행해 메인 스레드를 보호한다.
+
+## Web Worker 기본 사용
+
+```javascript
+// main.js
+const worker = new Worker('worker.js');
+
+worker.postMessage({ data: largeArray });
+
+worker.onmessage = (event) => {
+  console.log('결과:', event.data.result);
+};
+
+// worker.js
+self.onmessage = (event) => {
+  const result = heavyComputation(event.data.data);
+  self.postMessage({ result });
+};
+```
+
+메인 스레드와 Worker는 `postMessage`로만 통신하며, 공유 메모리가 아닌 **메시지 패싱** 방식을 사용한다.
+
+## 핵심 제약 1: DOM 접근 불가
+
+Web Worker는 `document`, `window`, DOM API에 전혀 접근할 수 없다. Worker 컨텍스트에서는 `DedicatedWorkerGlobalScope`만 존재한다.
+
+```javascript
+// worker.js 내부에서 DOM 접근 시도
+document.getElementById('result').textContent = 'done'; // TypeError 발생
+
+// 접근 가능한 API만 사용해야 함
+console.log(self.navigator.userAgent);  // OK
+fetch('https://api.example.com/data'); // OK
+importScripts('utils.js');              // OK
+```
+
+**결과적으로 Worker는 순수 계산 작업에만 적합하다.** UI 업데이트는 항상 결과를 메인 스레드로 돌려보낸 뒤 거기서 처리해야 한다.
+
+```
+Worker → 계산 완료 → postMessage(result) → 메인 스레드 → DOM 업데이트
+```
+
+## 핵심 제약 2: 데이터 복사 비용 (Structured Clone)
+
+`postMessage`로 데이터를 전달할 때 브라우저는 **Structured Clone Algorithm**을 사용해 데이터를 직렬화/역직렬화한다. 즉, 데이터가 복사된다.
+
+```javascript
+const largeArray = new Array(1_000_000).fill(0);
+
+// 이 전송은 largeArray를 복사해서 Worker에 보냄
+worker.postMessage(largeArray);
+// 메인 스레드의 largeArray + Worker의 복사본 = 메모리 두 배 사용
+```
+
+데이터 크기가 클수록 복사 비용이 커진다.
+
+```
+데이터 크기별 복사 시간 (대략적 기준)
+ 1MB  → 약 1ms
+10MB  → 약 10ms
+100MB → 약 100ms (메인 스레드 블로킹 포함)
+```
+
+## 복사 비용 해결: Transferable Objects
+
+`ArrayBuffer`처럼 전송 가능한 객체는 복사 대신 **소유권 이전(transfer)**으로 처리할 수 있다. 전송 후 원본 스레드에서는 해당 버퍼에 접근할 수 없다.
+
+```javascript
+const buffer = new ArrayBuffer(1024 * 1024 * 50); // 50MB
+
+// 복사 없이 소유권 이전
+worker.postMessage({ buffer }, [buffer]);
+
+// 전송 후 메인 스레드에서 buffer는 비어있음 (byteLength === 0)
+console.log(buffer.byteLength); // 0
+```
+
+대용량 이미지 처리나 오디오 처리에서 `ImageBitmap`, `OffscreenCanvas`, `ArrayBuffer`를 Transferable로 활용하면 복사 비용을 없앨 수 있다.
+
+## SharedArrayBuffer: 진짜 공유 메모리
+
+Chrome 92+에서는 `SharedArrayBuffer`로 진짜 메모리 공유가 가능하다. 단, COOP/COEP 보안 헤더 설정이 필요하다.
+
+```javascript
+// SharedArrayBuffer는 복사 없이 메인-Worker 간 공유
+const sharedBuffer = new SharedArrayBuffer(4);
+const view = new Int32Array(sharedBuffer);
+
+worker.postMessage({ sharedBuffer });
+
+// Worker에서 직접 읽고 쓰기 가능
+// 단, 동시 접근은 Atomics API로 동기화 필요
+Atomics.add(view, 0, 1);
+```
+
+## Worker 종류와 용도
+
+| 종류 | 특징 | 주요 용도 |
+|------|------|----------|
+| Dedicated Worker | 단일 스크립트 전용 | 무거운 계산, 파일 파싱 |
+| Shared Worker | 여러 탭이 공유 | 크로스 탭 상태 동기화 |
+| Service Worker | 네트워크 프록시 | 오프라인 캐시, 백그라운드 동기화 |
+
+일반적으로 Web Worker라고 하면 Dedicated Worker를 의미한다.
+
+## 언제 Worker를 쓸 것인가
+
+```
+메인 스레드 작업 시간이 16ms(60fps) 초과?
+    → Worker 후보
+
+데이터가 크고 DOM을 건드리지 않아도 되는가?
+    → Worker로 이동
+
+결과를 받아서 DOM에 반영하는 패턴인가?
+    → Worker 적합
+
+DOM API나 브라우저 UI API가 필요한가?
+    → Worker 불가, 분할 처리(chunking) 고려
+```
+
+Web Worker가 적합한 실제 케이스:
+- 대용량 CSV/JSON 파싱
+- 이미지 필터, 비디오 프레임 처리
+- 암호화/해싱 연산
+- 코드 에디터의 문법 강조, 자동완성 인덱싱
+- Wasm 기반 계산
+
+## 핵심 원칙
+
+Web Worker는 메인 스레드를 CPU 작업으로부터 보호하는 강력한 도구지만, DOM 접근 불가와 데이터 복사 비용이라는 두 가지 제약이 설계를 결정한다. 대용량 데이터는 Transferable 또는 SharedArrayBuffer로 복사 비용을 줄이고, UI 업데이트는 반드시 메인 스레드로 결과를 돌려보낸 뒤 처리해야 한다.
