@@ -1,0 +1,142 @@
+---
+title: Repeatable Read에서도 Phantom Read가 발생하는 이유
+date: '2026-06-14'
+category: Backend
+tags:
+  - Database
+  - Transaction
+  - InnoDB
+  - MVCC
+  - MySQL
+summary: >-
+  Repeatable Read 격리 수준에서도 Phantom Read가 발생할 수 있는 DB와 그렇지 않은 DB가 갈리는 이유는 MVCC 구현 방식과 잠금 전략의 차이에 있다.
+  MySQL InnoDB는 Gap Lock과 MVCC를 결합해 Phantom Read를 대부분 막지만, PostgreSQL은 순수 MVCC만으로 이를 처리한다.
+thumbnail: /thumbnails/repeatable-read-phantom-read.svg
+---
+
+Repeatable Read에서도 Phantom Read가 발생할 수 있는 DB와 그렇지 않은 DB가 갈리는 이유는 무엇일까? 이 질문의 답은 각 DB가 MVCC를 어떻게 구현했는지에 달려 있다.
+
+## 격리 수준과 Phantom Read 개념 정리
+
+SQL 표준(ISO/IEC 9075)은 4가지 격리 수준을 정의한다.
+
+| 격리 수준 | Dirty Read | Non-Repeatable Read | Phantom Read |
+|-----------|-----------|---------------------|--------------|
+| Read Uncommitted | 발생 | 발생 | 발생 |
+| Read Committed | 방지 | 발생 | 발생 |
+| Repeatable Read | 방지 | 방지 | 발생 가능 |
+| Serializable | 방지 | 방지 | 방지 |
+
+**Phantom Read**는 한 트랜잭션 안에서 같은 조건으로 조회했을 때 처음엔 없던 행이 두 번째 조회에 나타나거나, 반대로 사라지는 현상이다.
+
+```sql
+-- T1: 트랜잭션 시작
+BEGIN;
+SELECT * FROM orders WHERE amount > 10000;
+-- 결과: 3건
+
+-- T2: 다른 트랜잭션이 새 행 삽입 후 커밋
+INSERT INTO orders (amount) VALUES (15000);
+COMMIT;
+
+-- T1: 같은 조건으로 재조회
+SELECT * FROM orders WHERE amount > 10000;
+-- SQL 표준 Repeatable Read에서는 4건이 보일 수 있음 → Phantom Read
+```
+
+---
+
+## MVCC 구현 방식이 가르는 결과
+
+### MySQL InnoDB: 스냅샷 + Gap Lock 조합
+
+MySQL InnoDB는 Repeatable Read에서 두 가지 메커니즘을 함께 사용한다.
+
+**1. 스냅샷 읽기 (Consistent Read)**
+
+트랜잭션 시작 시점에 Read View를 생성하고, 이후 모든 `SELECT`는 이 스냅샷 기준으로 데이터를 읽는다. Undo Log에서 해당 시점의 버전을 찾아 반환하기 때문에 다른 트랜잭션이 삽입한 행이 보이지 않는다.
+
+```
+T1 시작 → Read View 생성 (txn_id=100)
+                            ↓
+T2가 rows 삽입 (txn_id=101)
+                            ↓
+T1의 SELECT → Undo Log에서 txn_id 100 이전 버전만 읽음
+              → 새 행은 보이지 않음 (스냅샷 읽기)
+```
+
+**2. Current Read와 Gap Lock**
+
+`SELECT ... FOR UPDATE`, `SELECT ... LOCK IN SHARE MODE`, `UPDATE`, `DELETE`는 스냅샷이 아닌 **현재 최신 데이터(Current Read)**를 읽는다. 이때 Phantom Read를 막기 위해 **Next-Key Lock**을 사용한다.
+
+```sql
+-- T1
+SELECT * FROM orders WHERE amount > 10000 FOR UPDATE;
+-- InnoDB: 조건 범위에 Gap Lock 설정
+-- (10000, +∞) 범위에 삽입 차단
+
+-- T2
+INSERT INTO orders (amount) VALUES (15000);
+-- → T1의 Gap Lock에 막혀 대기
+```
+
+Next-Key Lock = Record Lock + Gap Lock 조합으로, 조건 범위 사이의 빈 공간에 대한 삽입을 차단한다.
+
+### PostgreSQL: 순수 MVCC, Predicate Lock
+
+PostgreSQL은 Repeatable Read에서 **트랜잭션 시작 시 스냅샷을 고정**한다. InnoDB와 달리 Gap Lock 없이 MVCC만으로 처리하지만, 결과적으로 Phantom Read가 발생하지 않는다.
+
+```
+PostgreSQL Repeatable Read:
+트랜잭션 시작 → 스냅샷 고정
+이후 모든 읽기(일반 SELECT 포함) → 동일 스냅샷 기준
+→ 다른 트랜잭션의 삽입/삭제가 보이지 않음
+```
+
+그러나 PostgreSQL에서 Serializable이 필요한 경우에는 **Serializable Snapshot Isolation(SSI)**과 **Predicate Lock**을 사용해 write skew 이상까지 방지한다.
+
+---
+
+## DB별 동작 비교
+
+| 항목 | MySQL InnoDB (RR) | PostgreSQL (RR) |
+|------|-------------------|-----------------|
+| 스냅샷 시점 | 첫 SELECT 실행 시 | 트랜잭션 시작 시 |
+| Phantom Read (일반 SELECT) | 발생 안 함 | 발생 안 함 |
+| Phantom Read (FOR UPDATE) | Gap Lock으로 방지 | MVCC로 방지 |
+| Gap Lock 존재 | 있음 | 없음 |
+| Write Skew 방지 | Serializable에서만 | SSI로 RR에서도 가능 |
+
+### MySQL에서 Phantom이 여전히 가능한 상황
+
+MySQL InnoDB에서도 스냅샷 읽기와 현재 읽기를 혼용하면 일관성이 깨질 수 있다.
+
+```sql
+-- T1
+BEGIN;
+SELECT COUNT(*) FROM orders WHERE amount > 10000;
+-- 스냅샷 읽기: 3건
+
+-- T2: INSERT + COMMIT
+
+-- T1: FOR UPDATE로 현재 읽기
+SELECT COUNT(*) FROM orders WHERE amount > 10000 FOR UPDATE;
+-- 현재 읽기: 4건 (Phantom!)
+```
+
+같은 트랜잭션 안에서 스냅샷 읽기 후 현재 읽기로 전환하면 Phantom Read가 발생한다.
+
+---
+
+## 실무 선택 기준
+
+```
+상황                             권장 격리 수준
+────────────────────────────────────────────────
+일반 조회 위주, 성능 중요         Repeatable Read (기본값)
+재고 차감, 좌석 예약 등 경쟁     Serializable 또는 SELECT FOR UPDATE
+금융, 회계 등 정합성 최우선       Serializable
+읽기 전용 리포트                  Read Committed (스냅샷 비용 최소화)
+```
+
+잠금 범위와 격리 수준은 트레이드오프다. Gap Lock이 Phantom을 막는 대신 삽입 처리량이 낮아지고 데드락 가능성이 높아진다. DB의 MVCC 구현 방식을 이해하고 워크로드 특성에 맞는 격리 수준을 선택하는 것이 올바른 접근이다.
