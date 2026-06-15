@@ -1,0 +1,124 @@
+---
+title: 도메인 이벤트는 트랜잭션 커밋 전에 발행해야 할까, 후에 발행해야 할까?
+date: '2026-06-15'
+category: Backend
+tags:
+  - DDD
+  - Spring
+  - Event
+  - Transaction
+summary: >-
+  도메인 이벤트를 트랜잭션 커밋 전에 발행하면 롤백 시 이벤트 누수가 생기고, 후에 발행하면 유실 위험이 남는다. 두 시점의 트레이드오프와 Outbox Pattern을 통한 안전한 이벤트 발행 전략을 살펴본다.
+thumbnail: /thumbnails/domain-event-publish-timing.svg
+---
+
+도메인 이벤트를 트랜잭션 커밋 전과 커밋 후 중 언제 발행해야 하는지 어떻게 판단할까 — 이 물음은 단순한 구현 세부사항이 아니라 시스템의 신뢰성과 데이터 일관성을 결정하는 설계 선택이다.
+
+## 도메인 이벤트란?
+
+도메인 이벤트(Domain Event)는 비즈니스 도메인에서 발생한 의미 있는 사실을 표현한다. `OrderPlaced`, `PaymentProcessed`, `UserRegistered` 같은 과거형 이름을 가지며, 다른 컴포넌트나 서비스가 이 사실에 반응할 수 있도록 알린다.
+
+```java
+public record OrderPlacedEvent(Long orderId, Long userId, LocalDateTime occurredAt) {}
+```
+
+## 트랜잭션 커밋 전 발행의 문제
+
+가장 직관적인 방법은 비즈니스 로직 실행 직후 이벤트를 발행하는 것이다.
+
+```java
+@Transactional
+public void placeOrder(OrderCommand command) {
+    Order order = orderRepository.save(Order.from(command));
+    eventPublisher.publish(new OrderPlacedEvent(order.getId())); // 커밋 전 발행
+}
+```
+
+문제는 이벤트 리스너가 실행된 후 트랜잭션이 롤백되는 경우다.
+
+```
+1. save() 실행
+2. 이벤트 발행 → 리스너가 외부 API 호출, 이메일 발송
+3. 트랜잭션 롤백 (DB에는 주문 없음)
+4. 하지만 이메일은 이미 발송됨 → 불일치
+```
+
+이벤트를 받은 외부 시스템은 존재하지 않는 주문을 처리한 상태가 되고, 복구가 어려운 부정합이 발생한다.
+
+## 트랜잭션 커밋 후 발행
+
+Spring의 `@TransactionalEventListener`는 이 문제를 해결한다.
+
+```java
+@Transactional
+public void placeOrder(OrderCommand command) {
+    Order order = orderRepository.save(Order.from(command));
+    // applicationEventPublisher에 등록, 커밋 후 리스너가 실행됨
+    applicationEventPublisher.publishEvent(new OrderPlacedEvent(order.getId()));
+}
+
+@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+public void handleOrderPlaced(OrderPlacedEvent event) {
+    // 트랜잭션이 성공적으로 커밋된 후에만 실행됨
+    emailService.sendOrderConfirmation(event.orderId());
+}
+```
+
+`TransactionPhase.AFTER_COMMIT`을 사용하면 트랜잭션이 커밋된 후에만 리스너가 실행된다. 롤백 시에는 리스너가 호출되지 않는다.
+
+단, 이 방식에도 약점이 있다. 리스너 실행 도중 장애가 발생하면 이벤트가 유실된다. DB에 주문은 저장됐지만 이메일이 발송되지 않는 상황이 생길 수 있다.
+
+## Outbox Pattern: 이벤트 유실 없는 발행
+
+이벤트 발행의 신뢰성을 보장하는 패턴이 Outbox Pattern이다.
+
+```
+┌─────────────────────────────────────┐
+│  하나의 트랜잭션                      │
+│  ┌───────────┐  ┌─────────────────┐  │
+│  │  orders   │  │  outbox_events  │  │
+│  │ (주문 저장) │  │  (이벤트 저장)   │  │
+│  └───────────┘  └─────────────────┘  │
+└─────────────────────────────────────┘
+          ↓ 커밋 성공
+┌─────────────────────────────────────┐
+│  별도 프로세스 (폴러 또는 CDC)         │
+│  outbox 테이블 읽기 → 메시지 브로커 발행 │
+└─────────────────────────────────────┘
+```
+
+주문 저장과 이벤트 저장을 동일한 트랜잭션 안에서 처리한다. 커밋이 성공하면 두 데이터 모두 영구 저장된다. 이후 별도 폴러(poller) 또는 CDC(Change Data Capture)가 Outbox 테이블을 읽어 메시지 브로커나 외부 시스템에 이벤트를 발행한다.
+
+```java
+@Transactional
+public void placeOrder(OrderCommand command) {
+    Order order = orderRepository.save(Order.from(command));
+    outboxRepository.save(new OutboxEvent("OrderPlaced", order.getId()));
+    // 두 저장이 하나의 트랜잭션에 원자적으로 묶임
+}
+```
+
+## 발행 시점 선택 기준
+
+| 상황 | 권장 방식 |
+|------|-----------|
+| 같은 서비스 내부 동기 처리 | `@TransactionalEventListener(AFTER_COMMIT)` |
+| 외부 서비스 알림 (유실 허용 불가) | Outbox Pattern |
+| Kafka, RabbitMQ 등 메시지 브로커 발행 | Outbox Pattern + CDC |
+| 단순 알림 (재시도 가능) | `AFTER_COMMIT` + 리스너 재시도 |
+
+## AFTER_COMMIT의 추가 함정
+
+`@TransactionalEventListener(phase = AFTER_COMMIT)`으로 등록된 리스너 내부에서 새 트랜잭션을 시작하려면 `@Transactional(propagation = REQUIRES_NEW)`를 명시해야 한다. 기본 전파 옵션(`REQUIRED`)은 커밋된 트랜잭션에 참여하려 하지만, 이미 완료된 트랜잭션이므로 예외가 발생한다.
+
+```java
+@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+@Transactional(propagation = Propagation.REQUIRES_NEW)  // 반드시 명시
+public void handleOrderPlaced(OrderPlacedEvent event) {
+    notificationRepository.save(new Notification(event.orderId()));
+}
+```
+
+## 핵심 원칙
+
+트랜잭션 경계 안에서 확정된 사실만 외부에 알려야 하며, 커밋 전 발행은 롤백 시 부정합을 만들고 커밋 후 발행은 리스너 장애 시 유실 위험이 남는다. 신뢰성이 중요한 이벤트는 Outbox Pattern으로 DB 트랜잭션과 이벤트 저장을 원자적으로 묶는 것이 유일한 보장책이다.
