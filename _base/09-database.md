@@ -61,7 +61,7 @@
 197. backup이 있다고 해서 복구가 가능하다고 말할 수 없는 이유는 무엇이고, restore test는 왜 필요한가?
 198. migration 도중 컨럼 추가, backfill, 인덱스 생성은 무중단 배포에서 어떤 순서로 진행해야 할까?
 199. 대용량 테이블에 인덱스를 추가할 때 운영 중인 서비스에 어떤 부하가 생길 수 있을까?
-200. DB 장애 대응에서 RPO와 RTO는 각각 무엇을 의미하고, 시스템 설계에 어떤 제약을 줄까?
+~~200. DB 장애 대응에서 RPO와 RTO는 각각 무엇을 의미하고, 시스템 설계에 어떤 제약을 줄까?~~ `작성완료`
 ## Database / Storage
 
 366. LSM tree 기반 저장소와 B-Tree 기반 저장소는 write amplification과 read amplification에서 어떻게 다를까?

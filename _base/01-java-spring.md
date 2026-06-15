@@ -60,4 +60,4 @@
 ~~362. JPA flush mode를 바꾸면 SQL 실행 시점과 읽기 쿼리 결과에 어떤 영향이 생길까?~~ `작성완료`
 ~~363. Hibernate proxy와 bytecode enhancement는 lazy loading을 어떻게 구현하고, 직렬화에서 어떤 문제를 만들까?~~ `작성완료`
 ~~364. 트랜잭션 경계 밖에서 lazy association에 접근하면 왜 `LazyInitializationException`이 발생할까?~~ `작성완료`
-365. 도메인 이벤트를 트랜잭션 커밋 전과 커밋 후 중 언제 발행해야 하는지 어떻게 판단할까?
+~~365. 도메인 이벤트를 트랜잭션 커밋 전과 커밋 후 중 언제 발행해야 하는지 어떻게 판단할까?~~ `작성완료`
