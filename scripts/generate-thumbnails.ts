@@ -618,6 +618,9 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'domain-event-publish-timing':           { pattern: 'flow',    colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'rpo-rto-db-recovery':                   { pattern: 'chart',   colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
   'spring-aspectj-weaving':               { pattern: 'spring',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'docker-healthcheck-readiness':          { pattern: 'docker',  colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
+  'llm-function-tool-calling':             { pattern: 'neural',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'deserialization-vulnerability':         { pattern: 'shield',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
