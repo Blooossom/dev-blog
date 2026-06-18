@@ -42,7 +42,7 @@
 532. NoSQL injection은 SQL이 없어도 어떤 쿼리 객체 조작으로 발생할 수 있을까?
 533. command injection은 shell metacharacter escaping보다 왜 shell 실행 자체를 피하는 설계가 더 안전할까?
 534. path traversal은 파일 다운로드 API에서 어떤 정규화와 base path 검증 실패로 발생할까?
-535. deserialization 취약점은 객체 복원 과정에서 어떻게 원격 코드 실행으로 이어질 수 있을까?
+~~535. deserialization 취약점은 객체 복원 과정에서 어떻게 원격 코드 실행으로 이어질 수 있을까?~~ `작성완료`
 536. mass assignment는 클라이언트가 보내지 말아야 할 필드까지 바인딩될 때 어떤 권한 상승을 만들까?
 537. rate limiting은 DDoS 방어와 abuse 방어에서 목적과 기준이 어떻게 다를까?
 538. replay attack은 nonce, timestamp, signature를 통해 어떻게 완화할 수 있을까?

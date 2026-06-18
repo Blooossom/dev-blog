@@ -9,7 +9,7 @@
 ~~453. prompt engineering은 단순 문장 튜닝일까, 입력 계약과 출력 계약을 설계하는 작업일까?~~ `작성완료`
 ~~454. system prompt, developer prompt, user prompt는 각각 어떤 책임과 우선순위를 가져야 할까?~~ `작성완료`
 455. structured output을 강제하면 후처리 파싱 문제는 줄지만, 모델 실패는 어떤 형태로 남을까?
-456. function calling과 tool calling은 모델이 직접 일을 처리하는 구조와 비교해 어떤 제어권을 애플리케이션에 돌려줄까?
+~~456. function calling과 tool calling은 모델이 직접 일을 처리하는 구조와 비교해 어떤 제어권을 애플리케이션에 돌려줄까?~~ `작성완료`
 457. LLM 응답을 그대로 사용자에게 보여주는 방식과 검증 계층을 거치는 방식은 어떤 제품 리스크가 다를까?
 458. AI 기능의 latency budget은 모델 추론, tool call, retrieval, 후처리 중 어디에서 주로 소모될까?
 459. AI 기능의 비용 최적화는 모델을 작은 것으로 바꾸는 것 외에 어떤 cache, batching, routing 전략을 포함할 수 있을까?

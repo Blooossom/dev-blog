@@ -14,7 +14,7 @@
 ~~88. Docker 이미지에서 base image를 고르는 기준은 용량뿐일까, 보안과 디버깅 편의성도 포함될까?~~ `작성완료`
 ~~89. multi-stage build는 이미지 크기만 줄이는 기법일까, 빌드 산출물의 경계를 분리하는 기법일까?~~ `작성완료`
 90. 컨테이너를 root 사용자로 실행하면 어떤 보안 위험이 생길까?
-91. Docker healthcheck는 애플리케이션 내부의 readiness를 정확히 보장할 수 있을까?
+~~91. Docker healthcheck는 애플리케이션 내부의 readiness를 정확히 보장할 수 있을까?~~ `작성완료`
 92. 컨테이너 로그를 파일에 직접 쓰는 방식과 stdout/stderr로 보내는 방식은 운영에서 어떤 차이가 있을까?
 93. 컨테이너의 CPU, memory limit을 설정하지 않으면 호스트와 다른 컨테이너에 어떤 영향을 줄 수 있을까?
 ## Network / Infrastructure
