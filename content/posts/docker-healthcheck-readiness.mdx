@@ -1,0 +1,123 @@
+---
+title: Docker HEALTHCHECK는 애플리케이션 readiness를 정확히 보장할까
+date: '2026-06-18'
+category: DevOps
+tags:
+  - Docker
+  - HEALTHCHECK
+  - Kubernetes
+  - Readiness
+  - 운영
+summary: >-
+  Docker healthcheck는 애플리케이션 내부의 readiness를 정확히 보장할 수 있을까? 컨테이너 상태가 healthy로 표시되어도 트래픽을 받을 준비가 되지 않은 경우가 있다. HEALTHCHECK가 실제로 검증하는 범위와, 얕은 체크가 만드는 운영 사고를 정리한다.
+thumbnail: /thumbnails/docker-healthcheck-readiness.svg
+---
+
+Docker healthcheck는 애플리케이션 내부의 readiness를 정확히 보장할 수 있을까? 결론부터 말하면 **HEALTHCHECK는 "프로세스가 응답한다"는 것만 보장하고, "비즈니스 로직을 처리할 준비가 됐다"는 것은 별도로 설계해야 한다.** 둘을 구분하지 않으면 컨테이너는 `healthy`인데 요청이 계속 실패하는 상황이 생긴다.
+
+## HEALTHCHECK의 동작 범위
+
+```dockerfile
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+  CMD curl -f http://localhost:8080/actuator/health || exit 1
+```
+
+이 지시문이 보장하는 것은 딱 하나다. **지정한 명령이 0번 종료 코드를 반환하는가.** 컨테이너 상태는 다음 단계를 거친다.
+
+```
+starting ──(첫 체크 성공)──▶ healthy
+   │
+   └──(retries 횟수만큼 실패)──▶ unhealthy
+```
+
+`curl -f`가 200을 받으면 healthy다. 하지만 그 응답이 **무엇을 의미하는지는 엔드포인트 구현에 달려 있다.** 아래 두 엔드포인트는 결과만 보면 똑같이 200을 반환하지만 보장 범위가 다르다.
+
+```java
+// 얕은 체크: 프로세스가 살아있다는 것만 확인
+@GetMapping("/health/shallow")
+public ResponseEntity<String> shallow() {
+    return ResponseEntity.ok("OK");
+}
+
+// 깊은 체크: 실제로 트래픽을 처리할 수 있는지 확인
+@GetMapping("/health/deep")
+public ResponseEntity<Health> deep() {
+    boolean dbOk = checkDataSource();
+    boolean cacheOk = checkRedisConnection();
+    boolean diskOk = checkDiskSpace();
+
+    if (dbOk && cacheOk && diskOk) {
+        return ResponseEntity.ok(Health.up());
+    }
+    return ResponseEntity.status(503).body(Health.down());
+}
+```
+
+`/health/shallow`만 보고 healthy 판정을 내리면, DB 커넥션 풀이 고갈되어 모든 요청이 타임아웃 나는 상황에서도 컨테이너는 정상으로 보인다.
+
+## 얕은 체크가 만드는 사고 시나리오
+
+| 상황 | 얕은 체크 결과 | 실제 상태 |
+|------|----------------|-----------|
+| DB 커넥션 풀 고갈 | healthy | 모든 요청 타임아웃 |
+| 디스크 풀(disk full)로 로그 쓰기 실패 | healthy | 점진적 서비스 저하 |
+| 외부 캐시 서버 다운 | healthy | N+1 쿼리 폭증, latency 급증 |
+| GC pause 누적 (STW 빈발) | healthy (단순 응답은 옴) | 처리량 급감 |
+
+healthcheck 명령 자체가 가볍고 빠르게 응답하기 때문에, 애플리케이션이 사실상 마비 상태여도 healthy로 잡히는 역설이 발생한다.
+
+## Docker Compose에서의 의존성 제어
+
+`depends_on`에 `condition: service_healthy`를 걸면 healthcheck 결과가 시작 순서를 결정하는 신호로 쓰인다.
+
+```yaml
+services:
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+```
+
+여기서도 같은 함정이 있다. `pg_isready`는 PostgreSQL이 **연결을 받을 수 있는 상태**인지만 확인할 뿐, 마이그레이션이 끝났는지, 초기 데이터가 적재됐는지는 모른다. `app`은 DB가 "응답 가능"해진 시점에 시작하지만, 실제로 쓸 준비가 안 된 DB에 연결할 수도 있다.
+
+## Kubernetes의 readiness/liveness probe와 비교
+
+Kubernetes는 이 문제를 probe 종류를 나눠서 해결한다.
+
+| Probe | 질문 | 실패 시 동작 |
+|-------|------|--------------|
+| liveness | 프로세스가 살아있는가 | 컨테이너 재시작 |
+| readiness | 트래픽을 받을 준비가 됐는가 | Service에서 제외(재시작 없음) |
+| startup | 초기화가 끝났는가 | liveness/readiness 평가 보류 |
+
+Docker 단독 환경의 HEALTHCHECK는 이 세 가지 역할을 **하나의 결과값**으로 뭉뚱그린다. Kubernetes에서는 readiness probe에 깊은 체크를, liveness probe에는 얕은 체크를 두는 것이 일반적이다. liveness에 깊은 체크(DB 연결 등)를 넣으면 DB 장애가 컨테이너 재시작 폭주로 이어질 수 있기 때문이다.
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health/shallow
+    port: 8080
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health/deep
+    port: 8080
+  periodSeconds: 5
+```
+
+## 설계 원칙
+
+- **liveness는 가볍게.** "프로세스가 응답하는가"만 본다. 외부 의존성 체크를 넣으면 의존성 장애가 컨테이너 재시작 연쇄로 번진다.
+- **readiness는 무겁게.** 실제로 요청을 처리할 수 있는 핵심 의존성(DB, 캐시, 필수 외부 API)을 확인한다.
+- **타임아웃과 retries를 짧게 잡지 않는다.** 너무 민감하면 일시적 지연에도 unhealthy로 떨어져 불필요한 재시작이 발생한다.
+
+Docker healthcheck는 "응답했는가"를 확인하는 도구이고, readiness는 "일할 준비가 됐는가"를 확인하는 설계 문제다. 이 둘을 같은 엔드포인트에 떠넘기면, 컨테이너는 healthy 배지를 달고도 트래픽을 제대로 처리하지 못하는 상태로 운영될 수 있다.
