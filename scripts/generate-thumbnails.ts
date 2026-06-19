@@ -621,6 +621,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'docker-healthcheck-readiness':          { pattern: 'docker',  colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
   'llm-function-tool-calling':             { pattern: 'neural',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
   'deserialization-vulnerability':         { pattern: 'shield',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'csp':                                   { pattern: 'shield',  colors: { bg1: '#1a0f0a', bg2: '#4a2510', accent: '#fb923c', accent2: '#fed7aa' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
