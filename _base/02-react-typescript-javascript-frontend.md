@@ -77,6 +77,6 @@
 420. frontend에서 schema validation을 런타임에 수행하면 타입 시스템이 놓치는 어떤 장애를 막을 수 있을까?
 421. browser security model에서 same-origin policy와 CORS는 서버 간 통신이 아니라 어떤 클라이언트 보호 모델일까?
 422. CSRF와 XSS는 인증 쿠키 기반 서비스에서 어떻게 서로 다른 방어 전략을 요구할까?
-423. CSP는 XSS 피해를 줄일 수 있지만, nonce, hash, third-party script 운영에서 어떤 부담을 만들까?
+~~423. CSP는 XSS 피해를 줄일 수 있지만, nonce, hash, third-party script 운영에서 어떤 부담을 만들까?~~ `작성완료`
 424. accessibility tree는 DOM과 어떻게 다르고, custom component가 스크린 리더에서 깨지는 이유는 무엇일까?
 425. design token이 CSS 변수, build-time token, platform token으로 나눠 때 어떤 배포와 일관성 문제가 생길까?
