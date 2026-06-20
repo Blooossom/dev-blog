@@ -15,7 +15,7 @@
 509. clickjacking은 어떤 UI 조작 공격이고, `X-Frame-Options`와 CSP `frame-ancestors`는 어떻게 방어할까?
 510. open redirect 취약점은 단순 리다이렉트 버그처럼 보이지만 피싱과 OAuth 흐름에서 왜 위험할까?
 511. file upload 기능에서 확장자 검사만으로 충분하지 않은 이유는 무엇이고, MIME sniffing과 실행 권한은 어떻게 봐야 할까?
-512. SSRF는 서버가 내부망에 접근할 수 있다는 점을 어떻게 악용하고, metadata endpoint 보호는 왜 중요할까?
+~~512. SSRF는 서버가 내부망에 접근할 수 있다는 점을 어떻게 악용하고, metadata endpoint 보호는 왜 중요할까?~~ `작성완료`
 513. request smuggling은 프록시와 백엔드가 HTTP 메시지 경계를 다르게 해석할 때 어떻게 발생할까?
 514. HTTP header injection이나 response splitting은 어떤 입력 검증 실패에서 시작될 수 있을까?
 515. browser storage에 민감 정보를 저장할 때 localStorage, sessionStorage, cookie는 공격 표면이 어떻게 다를까?

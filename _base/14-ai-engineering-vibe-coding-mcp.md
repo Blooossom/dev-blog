@@ -37,7 +37,7 @@
 477. vector search 결과가 의미적으로 비슷해도 task에 부적합할 수 있는 이유는 무엇일까?
 478. retrieval 결과를 모델이 인용하거나 근거로 사용할 때 citation과 source grounding은 어떻게 검증해야 할까?
 479. tool result가 stale하거나 partial failure일 때 모델이 확신 있게 잘못된 답을 내지 않게 하려면 어떻게 해야 할까?
-480. agent memory는 사용자 경험을 개선하지만 privacy, retention, correction 측면에서 어떤 설계가 필요할까?
+~~480. agent memory는 사용자 경험을 개선하지만 privacy, retention, correction 측면에서 어떤 설계가 필요할까?~~ `작성완료`
 ## Evaluation / Safety / Operations
 
 481. LLM 평가에서 정답률 하나만 보면 안 되는 이유는 무엇이고, helpfulness, faithfulness, safety는 어떻게 분리해 볼 수 있을까?
