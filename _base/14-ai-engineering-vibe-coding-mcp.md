@@ -56,7 +56,7 @@
 492. 모델 실험을 재현 가능하게 만들려면 prompt, model version, temperature, tool version, dataset snapshot을 어떻게 기록해야 할까?
 493. offline evaluation과 online evaluation은 각각 어떤 실패를 잘 잡고, 어떤 한계를 가질까?
 494. AI workflow에서 human-in-the-loop를 넣을 때 승인 지점과 책임 소재는 어떻게 정해야 할까?
-495. multi-agent 구조는 역할 분리에 유리하지만, agent 간 메시지 비용과 오류 전파는 어떻게 통제해야 할까?
+~~495. multi-agent 구조는 역할 분리에 유리하지만, agent 간 메시지 비용과 오류 전파는 어떻게 통제해야 할까?~~ `작성완료`
 496. planner-executor 패턴은 복잡한 작업을 나누는 데 유용하지만, 잘못된 계획을 계속 밀고 가는 문제를 어떻게 막을까?
 497. AI agent가 shell, browser, database 같은 강한 도구를 사용할 때 sandbox와 least privilege는 어떻게 적용해야 할까?
 498. model routing은 비용과 품질을 최적화할 수 있지만, 요청 분류 오류가 사용자 경험에 어떤 영향을 줄까?

@@ -72,7 +72,7 @@
 371. secondary index가 clustered index를 다시 참조하는 구조는 조회 비용에 어떤 의미를 가질까?
 372. phantom read를 막기 위한 predicate lock과 next-key lock은 구현 관점에서 어떻게 다를까?
 373. serializable isolation은 완전한 직렬 실행과 같은 결과를 보장하지만 처리량에는 어떤 비용을 만들까?
-374. distributed transaction의 2PC는 어떤 장애 지점에서 participant를 blocking 상태로 만들 수 있을까?
+~~374. distributed transaction의 2PC는 어떤 장애 지점에서 participant를 blocking 상태로 만들 수 있을까?~~ `작성완료`
 375. CDC는 DB 변경 이벤트를 안정적으로 전달하지만, schema evolution과 재처리에서는 어떤 문제가 생길까?
 376. materialized view는 조회를 빠르게 하지만 freshness와 refresh cost를 어떻게 관리해야 할까?
 ~~377. time-series 데이터는 일반 OLTP 테이블과 partitioning, retention, aggregation 전략이 어떻게 달라질까?~~ `작성완료`
