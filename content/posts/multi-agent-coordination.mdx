@@ -1,0 +1,151 @@
+---
+title: Multi-Agent 구조의 메시지 비용과 오류 전파를 통제하는 법
+date: '2026-06-21'
+category: AI
+tags:
+  - Multi-Agent
+  - LLM
+  - 오류 전파
+  - Orchestration
+  - 비용 최적화
+summary: >-
+  여러 에이전트로 역할을 나누면 책임은 명확해지지만, 에이전트 사이를 오가는 메시지마다 토큰 비용이 쌓이고 한 에이전트의 잘못된 출력이
+  다음 단계의 입력 컨텍스트에 그대로 섞여 들어간다. 비용과 오류 전파를 어떻게 통제할 수 있는지 정리한다.
+thumbnail: /thumbnails/multi-agent-coordination.svg
+---
+
+multi-agent 구조는 역할 분리에 유리하지만, agent 간 메시지 비용과 오류 전파는 어떻게 통제해야 할까. 하나의 거대한 프롬프트로 "계획하고, 실행하고, 검증하라"고 시키는 대신 Planner, Executor, Critic처럼 역할을 나누면 각 에이전트는 더 짧고 명확한 지시만 받는다. 문제는 이 분리가 공짜가 아니라는 점이다. 에이전트 수가 늘어날수록 그들 사이를 오가는 메시지 수와 토큰 비용도 함께 늘어난다.
+
+## 역할을 나누는 이유
+
+```
+단일 에이전트: "계획 세우고, 코드 짜고, 테스트하고, 디버깅까지 한 번에 해."
+              → 컨텍스트가 길어질수록 지시를 일부 놓치거나 단계를 섞어서 수행
+
+멀티 에이전트:
+  Planner  → 작업을 단계로 분해
+  Executor → 각 단계를 실행
+  Critic   → 결과를 검증, 실패 시 재시도 지시
+```
+
+각 에이전트는 자신의 역할에만 집중하므로 프롬프트가 짧고 책임이 명확하다. 하지만 Planner의 출력이 Executor의 입력이 되고, Executor의 출력이 Critic의 입력이 되는 **체인 구조**이기 때문에, 단계가 늘어날수록 누적되는 컨텍스트와 호출 횟수도 함께 증가한다.
+
+## 메시지 비용이 누적되는 구조
+
+```
+[Planner]  입력 500 토큰  → 출력 800 토큰
+              │ (전체 출력을 다음 에이전트 입력으로 전달)
+[Executor] 입력 1300 토큰 → 출력 1200 토큰
+              │
+[Critic]   입력 2500 토큰 → 출력 400 토큰
+              │ (재시도 발생 시 Executor로 회귀)
+[Executor] 입력 2900 토큰 → ...
+```
+
+체인이 길어질수록 각 단계는 이전 단계의 출력을 컨텍스트로 그대로 들고 가는 경향이 있다. 재시도 루프가 한 번 더 생기면 비용은 선형이 아니라 단계 수에 비례해 누적된다. 에이전트 3개로 작업을 나눴다고 비용이 1/3로 줄지는 않는다.
+
+## 오류 전파 시나리오
+
+```
+Planner가 잘못된 전제로 계획을 세움
+   → "이 함수는 동기 방식으로 동작한다" (사실은 비동기)
+        │
+Executor는 그 전제를 의심 없이 받아 코드를 작성
+   → 비동기 처리 누락
+        │
+Critic은 Executor의 출력만 보고 검증
+   → Planner의 잘못된 전제 자체는 검증 범위 밖
+        │
+결과: 잘못된 전제가 그대로 결과물에 반영, 아무도 잡지 못함
+```
+
+각 에이전트가 이전 단계의 출력을 "이미 검증된 사실"처럼 받아들이면, 초기 단계의 오류가 뒤로 갈수록 더 확신 있는 형태로 굳어진다. 이건 휴먼 파이프라인에서도 흔한 문제지만, LLM은 자기 확신을 줄이는 신호(망설임, "확실하지 않다")를 명시적으로 요구하지 않으면 잘 드러내지 않는다.
+
+## 통제 전략 1 — 메시지 스키마를 고정한다
+
+자유 형식 텍스트로 결과를 주고받으면 다음 에이전트가 무엇을 신뢰해야 할지 알 수 없다. 구조화된 출력으로 "사실"과 "추론"을 분리한다.
+
+```ts
+interface PlanStep {
+  action: string
+  assumptions: string[]   // 검증되지 않은 전제를 명시적으로 분리
+  confidence: 'high' | 'medium' | 'low'
+}
+```
+
+```ts
+// Executor는 Planner의 assumptions를 그대로 신뢰하지 않고 별도로 검증
+async function executeStep(step: PlanStep) {
+  if (step.confidence !== 'high') {
+    await verifyAssumptions(step.assumptions)
+  }
+  return runAction(step.action)
+}
+```
+
+## 통제 전략 2 — 단계마다 검증 게이트를 둔다
+
+모든 단계를 끝까지 실행한 뒤 마지막에 검증하면, 오류는 이미 여러 단계에 누적된 뒤다. 단계 사이에 게이트를 둬서 일찍 끊는다.
+
+```ts
+async function runPipeline(task: Task) {
+  const plan = await planner.run(task)
+  for (const step of plan.steps) {
+    const result = await executor.run(step)
+    const verdict = await critic.verify(step, result)
+
+    if (!verdict.ok) {
+      if (verdict.retryable) {
+        await executor.retry(step, verdict.feedback)
+      } else {
+        throw new PipelineHalted(step, verdict.reason)  // 더 진행하지 않고 즉시 중단
+      }
+    }
+  }
+}
+```
+
+무조건 재시도하지 않고 `retryable` 여부를 구분하는 게 핵심이다. 전제 자체가 잘못됐다면 같은 단계를 반복 실행해도 같은 결과가 나온다.
+
+## 통제 전략 3 — 토큰 예산과 회로 차단기
+
+```ts
+class AgentBudget {
+  private spent = 0
+  constructor(private readonly limit: number) {}
+
+  consume(tokens: number) {
+    this.spent += tokens
+    if (this.spent > this.limit) {
+      throw new BudgetExceeded(this.spent, this.limit)  // 무한 재시도 루프 차단
+    }
+  }
+}
+```
+
+재시도가 반복되면서 비용이 통제 불가능하게 늘어나는 상황을 막으려면, 단계별이 아니라 **파이프라인 전체에 토큰 예산**을 두고 초과 시 즉시 중단하거나 더 단순한 단일 에이전트 흐름으로 전환(fallback)한다.
+
+## 통제 전략 4 — 도구 권한을 에이전트별로 분리한다
+
+오류 전파는 출력 데이터에만 있는 게 아니라, 잘못된 도구 호출로도 이어질 수 있다. Executor가 Planner의 실수를 그대로 받아 파일을 삭제하거나 외부 API를 잘못 호출하면 되돌리기 어렵다.
+
+```
+Planner: 도구 권한 없음 (계획만 출력)
+Executor: 읽기/쓰기 권한, 단 destructive 작업은 사람 승인 필요
+Critic: 읽기 전용 권한만 (검증 목적 외 변경 금지)
+```
+
+각 에이전트에게 필요한 최소 권한만 주면, 한 에이전트의 판단 오류가 시스템 전체에 미치는 피해 범위(blast radius)를 줄일 수 있다.
+
+## 체크리스트
+
+| 항목 | 확인 |
+|------|------|
+| 에이전트 간 메시지를 구조화된 스키마로 고정했다 | ✅ |
+| "사실"과 "추론/전제"를 출력에서 분리했다 | ✅ |
+| 단계마다 검증 게이트를 두고 무조건 끝까지 진행하지 않는다 | ✅ |
+| 재시도 가능 여부를 구분해 무한 루프를 막는다 | ✅ |
+| 파이프라인 전체에 토큰/비용 예산을 두었다 | ✅ |
+| 에이전트별로 도구 권한을 최소화했다 | ✅ |
+
+멀티 에이전트는 책임을 나누는 만큼 비용과 오류 전파의 경로도 함께 늘린다. 역할을 나누는 이점을 누리려면, 단계 사이의 메시지를 구조화하고 예산과 권한을 명시적으로 제한하는 설계가 함께 가야 한다.
