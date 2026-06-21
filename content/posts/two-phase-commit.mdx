@@ -1,0 +1,111 @@
+---
+title: 2PC(Two-Phase Commit)가 분산 트랜잭션을 블로킹시키는 지점
+date: '2026-06-21'
+category: DB
+tags:
+  - 2PC
+  - 분산 트랜잭션
+  - Saga
+  - 분산 시스템
+  - XA
+summary: >-
+  2PC는 여러 DB에 걸친 트랜잭션에 원자성을 보장하지만, 코디네이터가 commit 결정을 내리기 전에 죽으면 참여자는 락을 쥔 채
+  영원히 대기할 수 있다. 2PC의 동작 단계와 장애 지점, 그리고 실무에서 Saga·Outbox로 우회하는 이유를 정리한다.
+thumbnail: /thumbnails/two-phase-commit.svg
+---
+
+distributed transaction의 2PC는 어떤 장애 지점에서 participant를 blocking 상태로 만들 수 있을까. 주문 DB와 결제 DB가 분리된 시스템에서 "주문 저장과 결제 차감을 하나의 트랜잭션처럼 묶고 싶다"는 요구는 자주 등장한다. 2PC는 이런 요구에 답하기 위해 만들어진 프로토콜이지만, 그 대가로 참여자들을 코디네이터에게 인질로 잡혀 있게 만든다.
+
+## 2PC의 두 단계
+
+코디네이터(Transaction Manager)가 여러 참여자(Resource Manager)에게 같은 결정을 강제한다.
+
+```
+[Phase 1: Prepare]
+Coordinator → Participant A: "커밋할 수 있어?"
+Coordinator → Participant B: "커밋할 수 있어?"
+
+Participant A: 락 획득, 변경사항 기록, undo/redo log 작성 → "Yes (준비됨)"
+Participant B: 락 획득, 변경사항 기록, undo/redo log 작성 → "Yes (준비됨)"
+
+[Phase 2: Commit]
+Coordinator: 모두 Yes → "커밋해" 전송
+Participant A: 커밋, 락 해제
+Participant B: 커밋, 락 해제
+```
+
+하나라도 "No"를 응답하면 코디네이터는 전체에 abort를 지시한다. 핵심은 Phase 1에서 모든 참여자가 **이미 락을 쥔 채 코디네이터의 다음 명령을 기다린다**는 점이다.
+
+## 블로킹이 발생하는 지점
+
+```java
+// 코디네이터 관점의 상태 머신
+enum TxState { INIT, PREPARING, PREPARED, COMMITTING, COMMITTED, ABORTED }
+```
+
+| 시점 | 코디네이터 장애 시 참여자의 상태 |
+|------|----------------------------------|
+| Prepare 요청 전 | 참여자는 아직 락이 없음 → 영향 없음 |
+| **Prepare 응답(Yes) 후, Commit 지시 전** | 참여자는 락을 쥔 채 "커밋인지 abort인지" 알 수 없음 |
+| Commit 지시 후 | 참여자가 커밋 진행, 일부만 받았어도 재전송으로 복구 가능 |
+
+문제는 굵게 표시된 구간이다. Participant A가 "Yes"를 보낸 순간 자신의 로컬 락(예: 행 락)을 풀 수 없다. 코디네이터가 죽어서 응답이 오지 않으면, A는 "내가 커밋해야 하는지 롤백해야 하는지"를 **다른 참여자와 통신하지 않고는 알 수 없다.** 이 상태를 **uncertain period**라고 부른다.
+
+```
+Coordinator 다운 ──X
+                    │
+Participant A: PREPARED 상태로 영원히 대기
+                    → 해당 락을 잡고 있는 모든 트랜잭션이 같이 멈춤
+                    → 코디네이터가 복구될 때까지 무한 대기 가능
+```
+
+이 동안 A가 쥐고 있는 행은 다른 트랜잭션도 접근할 수 없다. 코디네이터 하나의 장애가 여러 DB의 동시성 전체를 막을 수 있다는 게 2PC의 근본적인 약점이다.
+
+## 3PC는 무엇을 보완했나
+
+3PC(Three-Phase Commit)는 Prepare와 Commit 사이에 "Pre-Commit" 단계를 추가해, 참여자가 코디네이터 없이도 일정 시간 후 자체적으로 진행 방향을 추론할 수 있게 했다.
+
+```
+Phase 1: CanCommit?
+Phase 2: PreCommit (참여자는 이 시점부터 "다수가 동의했다"는 사실을 안다)
+Phase 3: DoCommit
+```
+
+하지만 네트워크 파티션 상황에서는 3PC도 완전히 블로킹을 없애지 못하고, 메시지 라운드가 늘어 지연이 커진다. 실무에서 3PC가 널리 쓰이지 않는 이유다.
+
+## 실무에서는 왜 2PC를 피하는가
+
+```
+2PC: 강한 일관성, 동기 블로킹, 코디네이터 단일 장애점
+Saga: 최종 일관성, 비동기 보상 트랜잭션, 코디네이터 장애에 강함
+```
+
+MSA 환경에서는 보통 2PC 대신 **Saga 패턴**이나 **Outbox 패턴**으로 우회한다. 각 서비스가 자신의 로컬 트랜잭션만 책임지고, 실패하면 보상 트랜잭션(compensating transaction)으로 되돌린다.
+
+```java
+// Saga: 보상 트랜잭션 방식
+@Transactional
+public void placeOrder(OrderRequest request) {
+    Order order = orderRepository.save(Order.from(request));
+    outboxRepository.save(OutboxEvent.of("OrderPlaced", order));
+    // 별도 트랜잭션, 별도 시스템(결제)은 비동기로 이벤트 처리
+}
+
+// 결제 실패 시 보상 이벤트 처리
+@KafkaListener(topics = "payment-failed")
+public void onPaymentFailed(PaymentFailedEvent event) {
+    orderService.cancelOrder(event.orderId());  // 보상 트랜잭션
+}
+```
+
+Saga는 락을 오래 쥐지 않기 때문에 코디네이터 장애가 동시성 전체를 막지 않는다. 대신 "주문은 됐는데 결제가 취소된" 중간 상태를 애플리케이션 코드가 명시적으로 처리해야 한다.
+
+## 그래도 2PC가 쓰이는 곳
+
+| 상황 | 이유 |
+|------|------|
+| 단일 DB 벤더의 분산 트랜잭션(XA) | DB 드라이버 차원에서 짧은 시간 안에 처리, 블로킹 구간이 매우 짧음 |
+| 메시지 브로커와 DB 동시 처리(JMS XA) | 강한 일관성이 비즈니스 요구사항인 경우 |
+| 참여자 수가 적고, 모두 같은 네트워크/가용 영역 | 코디네이터 장애 가능성과 블로킹 비용이 상대적으로 낮음 |
+
+2PC는 "원자성"이라는 강력한 보장을 주지만 그 보장은 코디네이터가 살아있다는 가정에 의존한다. 참여자가 많아지고 네트워크가 불안정해질수록 블로킹 구간의 비용은 커진다. 분산 트랜잭션을 설계할 때는 강한 일관성이 정말 필요한지, 아니면 최종 일관성과 보상 트랜잭션으로도 충분한지를 먼저 따져야 한다.
