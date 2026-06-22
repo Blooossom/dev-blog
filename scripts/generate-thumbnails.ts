@@ -627,6 +627,8 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'two-phase-commit':                      { pattern: 'network', colors: { bg1: '#0e1a2e', bg2: '#1a3a5c', accent: '#38bdf8', accent2: '#7dd3fc' } },
   'mass-assignment':                       { pattern: 'shield',  colors: { bg1: '#1a0a0a', bg2: '#4a1010', accent: '#f87171', accent2: '#fecaca' } },
   'multi-agent-coordination':              { pattern: 'neural',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'netty-event-loop-blocking':             { pattern: 'threads', colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
+  'singleton-pattern-risks':               { pattern: 'layers',  colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
