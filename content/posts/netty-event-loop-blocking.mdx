@@ -1,0 +1,113 @@
+---
+title: Netty 이벤트 루프에서 Blocking Call 하나가 전체 처리량을 무너뜨리는 이유
+date: '2026-06-22'
+category: Backend
+tags:
+  - Netty
+  - Event Loop
+  - 비동기
+  - 동시성
+  - Reactive
+summary: >-
+  Netty 같은 이벤트 기반 서버는 적은 수의 스레드로 수만 개의 연결을 처리하지만, 그 전제는 핸들러 안에 blocking 코드가 없다는 것이다.
+  이벤트 루프 스레드 하나가 막히면 왜 전체 처리량이 무너지는지, 그리고 blocking 작업을 어떻게 분리해야 하는지 정리한다.
+thumbnail: /thumbnails/netty-event-loop-blocking.svg
+---
+
+Netty 같은 event-driven 서버에서 blocking call 하나가 전체 처리량에 어떤 영향을 줄 수 있을까. 전통적인 thread-per-connection 모델은 연결 하나에 스레드 하나를 할당하므로, 어느 스레드가 blocking I/O로 잠시 멈춰도 다른 연결은 자신의 스레드에서 영향 없이 동작한다. 반면 Netty는 적은 수의 이벤트 루프 스레드가 수천 개의 연결을 나눠 처리하기 때문에, 이 전제가 완전히 달라진다.
+
+## Thread-per-connection vs Event Loop
+
+```
+[Thread-per-connection]
+Connection A → Thread A (blocking 발생해도 A만 멈춤)
+Connection B → Thread B
+Connection C → Thread C
+스레드 수 = 연결 수에 비례 → 컨텍스트 스위칭, 메모리 비용 증가
+
+[Netty Event Loop]
+Connection A ─┐
+Connection B ─┼─→ EventLoop-1 (단일 스레드가 여러 연결을 순회하며 처리)
+Connection C ─┘
+적은 스레드로 많은 연결 처리 → 단, 핸들러는 절대 막히면 안 됨
+```
+
+Netty는 보통 CPU 코어 수에 맞춘 소수의 `EventLoop` 스레드만 두고, 각 스레드가 여러 연결의 read/write 이벤트를 논블로킹으로 순회하며 처리한다. 이 구조는 컨텍스트 스위칭 비용을 줄이고 적은 자원으로 높은 동시성을 낸다는 장점이 있지만, 핸들러 코드 한 줄이라도 blocking 되면 그 스레드가 담당하는 **다른 모든 연결**이 같이 멈춘다.
+
+## Blocking Call 하나가 퍼지는 경로
+
+```
+EventLoop-1이 connection 1~500을 담당하는 상황
+
+handler.channelRead() 안에서 동기 JDBC 쿼리 실행
+        │
+   쿼리가 200ms 걸림
+        │
+EventLoop-1 스레드가 200ms 동안 다른 이벤트를 처리하지 못함
+        │
+connection 1~500의 read/write 이벤트가 200ms 동안 대기열에 쌓임
+        │
+500개 연결 모두에 200ms의 추가 지연 발생
+```
+
+문제는 이 blocking이 "그 요청"에만 영향을 주는 게 아니라, 같은 이벤트 루프에 묶인 **다른 모든 연결**에 지연을 전파한다는 점이다. 연결 수가 많을수록, 그리고 이벤트 루프 스레드 수가 적을수록 영향 범위는 커진다.
+
+## 실제로 막히는 코드의 예
+
+```java
+public class OrderHandler extends SimpleChannelInboundHandler<Request> {
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, Request req) {
+        // 이벤트 루프 스레드에서 직접 실행되는 동기 호출 — 위험
+        Order order = orderRepository.findById(req.getOrderId()); // JDBC, blocking
+        ctx.writeAndFlush(toResponse(order));
+    }
+}
+```
+
+`findById`가 DB 응답을 기다리는 동안 이벤트 루프 스레드는 다른 채널의 이벤트를 처리할 수 없다. 요청량이 적을 때는 체감되지 않지만, 동시 연결 수가 늘어나는 순간 지연이 누적되며 처리량이 급격히 떨어진다.
+
+## 해결 — Blocking 작업을 별도 스레드 풀로 분리
+
+```java
+public class OrderHandler extends SimpleChannelInboundHandler<Request> {
+
+    private final ExecutorService blockingPool =
+        Executors.newFixedThreadPool(32); // 이벤트 루프와 분리된 전용 풀
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, Request req) {
+        blockingPool.submit(() -> {
+            Order order = orderRepository.findById(req.getOrderId()); // 여기서 막혀도 무관
+            ctx.executor().execute(() ->
+                ctx.writeAndFlush(toResponse(order)) // 응답 쓰기는 다시 이벤트 루프로
+            );
+        });
+    }
+}
+```
+
+핵심은 blocking 작업을 이벤트 루프 스레드가 아니라 별도의 스레드 풀에서 실행하고, 그 결과를 다시 `ctx.executor()`를 통해 원래 이벤트 루프로 돌려보내는 것이다. 이렇게 하면 이벤트 루프는 계속 다른 연결의 이벤트를 처리할 수 있고, blocking은 별도 풀 안에서만 영향을 미친다.
+
+## 더 나은 방향 — 논블로킹 드라이버로 전환
+
+```
+동기 JDBC          →  R2DBC, 비동기 드라이버
+동기 HTTP 클라이언트 →  Netty 기반 비동기 클라이언트 (AsyncHttpClient 등)
+파일 I/O           →  AIO 또는 별도 워커 스레드
+```
+
+가장 근본적인 해결은 blocking 호출 자체를 논블로킹 API로 대체하는 것이다. 별도 스레드 풀로 분리하는 방식은 임시 완화책이고, 스레드 풀 자체가 포화되면 동일한 문제가 다시 발생한다. Spring WebFlux 같은 리액티브 스택을 Netty 위에 올릴 때도 이 원칙은 동일하게 적용된다 — 리액티브 체인 안에 동기 blocking 코드가 섞이면 리액티브 스택을 쓰는 의미가 사라진다.
+
+## 체크리스트
+
+| 항목 | 확인 |
+|------|------|
+| 핸들러 안에서 동기 DB/HTTP 호출을 직접 실행하지 않는다 | ✅ |
+| Blocking이 불가피하면 전용 스레드 풀로 분리한다 | ✅ |
+| 분리된 작업의 결과를 다시 이벤트 루프로 안전하게 전달한다 | ✅ |
+| 가능하면 논블로킹 드라이버/클라이언트로 교체한다 | ✅ |
+| 이벤트 루프 스레드 수와 연결 수의 비율을 모니터링한다 | ✅ |
+
+이벤트 루프 모델은 적은 스레드로 높은 동시성을 내는 대신, 핸들러 코드가 절대 막히지 않아야 한다는 책임을 개발자에게 넘긴다. blocking 호출 하나의 비용이 그 요청이 아니라 같은 이벤트 루프를 공유하는 모든 연결에 전파된다는 사실을 이해하는 것이 Netty 기반 서버를 다루는 첫 번째 원칙이다.
