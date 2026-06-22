@@ -1,0 +1,153 @@
+---
+title: 싱글톤 패턴이 전역 접근을 쉽게 만드는 대신 감추는 위험들
+date: '2026-06-22'
+category: Architecture
+tags:
+  - 디자인 패턴
+  - Singleton Pattern
+  - 테스트
+  - 상태 공유
+  - OOP
+summary: >-
+  싱글톤 패턴은 인스턴스를 하나로 제한해 전역에서 쉽게 접근하게 만들지만, 그 편리함은 테스트 격리와 상태 공유 측면에서 대가를 치른다.
+  싱글톤이 실제로 어떤 문제를 만드는지, 그리고 같은 목적을 더 안전하게 달성하는 방법을 정리한다.
+thumbnail: /thumbnails/singleton-pattern-risks.svg
+---
+
+싱글톤 패턴은 전역 접근을 쉽게 만들지만, 테스트와 상태 공유 측면에서 어떤 위험을 만들까. 싱글톤은 "이 클래스의 인스턴스는 애플리케이션 전체에서 단 하나만 존재해야 한다"는 제약을 강제하고, 어디서든 `getInstance()` 한 번으로 그 인스턴스에 접근할 수 있게 한다. 설정 객체나 로거처럼 정말로 하나만 필요한 경우에는 자연스러워 보이지만, 이 패턴이 코드베이스 전체에 퍼지면 눈에 보이지 않는 결합이 함께 퍼진다.
+
+## 싱글톤의 전형적인 구현
+
+```java
+public class ConfigManager {
+    private static ConfigManager instance;
+    private final Map<String, String> settings = new HashMap<>();
+
+    private ConfigManager() {} // 외부 생성 차단
+
+    public static synchronized ConfigManager getInstance() {
+        if (instance == null) {
+            instance = new ConfigManager();
+        }
+        return instance;
+    }
+
+    public String get(String key) {
+        return settings.get(key);
+    }
+
+    public void set(String key, String value) {
+        settings.put(key, value);
+    }
+}
+```
+
+어디서든 `ConfigManager.getInstance().get("key")`로 접근할 수 있다는 점이 매력적으로 보인다. 의존성을 생성자로 받지 않아도 되니 코드가 짧아진다. 문제는 바로 이 지점에서 시작된다.
+
+## 위험 1 — 의존성이 숨겨진다
+
+```java
+public class OrderService {
+    public void placeOrder(Order order) {
+        // 생성자 시그니처만 보면 이 클래스가 ConfigManager에 의존하는지 알 수 없다
+        String taxRate = ConfigManager.getInstance().get("tax.rate");
+        // ...
+    }
+}
+```
+
+```
+[명시적 의존성 — 생성자 주입]          [숨겨진 의존성 — 싱글톤]
+OrderService(ConfigManager config)     OrderService()
+  → 시그니처만 봐도 의존 관계 파악         → 내부 코드를 다 읽어야 의존 관계 파악
+  → 테스트에서 가짜 객체로 교체 쉬움        → 전역 인스턴스를 바꿔치기해야 함
+```
+
+생성자나 메서드 시그니처에 의존성이 드러나지 않으면, 이 클래스가 무엇에 의존하는지 알기 위해 메서드 본문을 전부 읽어야 한다. 클래스가 커질수록 이 비용은 누적된다.
+
+## 위험 2 — 테스트 격리가 깨진다
+
+```java
+class OrderServiceTest {
+
+    @Test
+    void 세율이_10퍼센트일때_주문금액_계산() {
+        ConfigManager.getInstance().set("tax.rate", "0.1");
+        // 검증...
+    }
+
+    @Test
+    void 세율이_20퍼센트일때_주문금액_계산() {
+        ConfigManager.getInstance().set("tax.rate", "0.2");
+        // 이전 테스트가 먼저 실행되지 않았다는 보장이 없다
+        // 테스트 실행 순서에 따라 결과가 달라질 수 있음
+    }
+}
+```
+
+싱글톤은 JVM 안에서 단 하나의 상태를 모든 테스트가 공유한다. 한 테스트가 설정한 상태가 다음 테스트에 그대로 남아 있을 수 있고, 테스트를 병렬로 돌리면 서로 다른 스레드가 같은 인스턴스의 상태를 동시에 바꾸면서 예측 불가능한 결과가 나온다. 매 테스트 전 상태를 초기화하는 코드를 추가해야 하지만, 이는 싱글톤을 쓰지 않았다면 필요 없었을 비용이다.
+
+## 위험 3 — 멀티스레드 환경에서 상태 공유 충돌
+
+```
+Thread A: ConfigManager.getInstance().set("tax.rate", "0.1")
+Thread B: ConfigManager.getInstance().get("tax.rate")  // A의 작업 중간 값을 읽을 수 있음
+Thread C: ConfigManager.getInstance().set("tax.rate", "0.2")
+```
+
+싱글톤이 가변 상태(mutable state)를 가지고 있다면, 여러 스레드가 동시에 같은 인스턴스에 접근해 읽고 쓰는 경쟁 상태(race condition)가 발생할 수 있다. 위 `ConfigManager`처럼 `Map`이 스레드 안전하지 않다면 동시 수정 시 `ConcurrentModificationException`이나 데이터 손상이 일어날 수 있다.
+
+## 위험 4 — 전역 상태가 암묵적인 결합을 만든다
+
+```
+ServiceA → ConfigManager.getInstance()
+ServiceB → ConfigManager.getInstance()
+ServiceC → ConfigManager.getInstance()
+
+ServiceA가 설정값을 변경하면
+  → ServiceB, ServiceC도 같은 인스턴스를 보고 있으므로 영향을 받음
+  → 이 영향 관계는 코드 어디에도 명시적으로 드러나지 않음
+```
+
+서로 직접 호출하지 않는 클래스들이 같은 싱글톤을 통해 간접적으로 연결된다. 한 곳에서 상태를 바꾸면 전혀 관련 없어 보이는 다른 곳의 동작이 바뀔 수 있고, 이 인과관계를 추적하기 어렵다.
+
+## 대안 — DI 컨테이너가 관리하는 단일 빈
+
+```java
+@Component
+public class ConfigService {
+    private final Map<String, String> settings;
+
+    public ConfigService(ConfigSource source) { // 의존성이 명시적으로 드러남
+        this.settings = source.load();
+    }
+
+    public String get(String key) {
+        return settings.get(key);
+    }
+}
+```
+
+```java
+@Service
+public class OrderService {
+    private final ConfigService configService;
+
+    public OrderService(ConfigService configService) { // 생성자로 주입 — 테스트에서 교체 쉬움
+        this.configService = configService;
+    }
+}
+```
+
+Spring 같은 DI 컨테이너의 기본 스코프(singleton scope)를 쓰면, "인스턴스가 하나만 존재한다"는 목적은 그대로 유지하면서도 의존성이 생성자 시그니처에 명시적으로 드러난다. 테스트에서는 `ConfigService`를 가짜 객체로 쉽게 교체할 수 있고, 전역 정적 상태(static state)에 의존하지 않으므로 테스트 간 격리도 컨테이너가 매 테스트마다 새 컨텍스트를 구성하는 방식으로 보장할 수 있다.
+
+## 싱글톤 직접 구현 vs DI 컨테이너 위임
+
+| 항목 | 직접 구현한 싱글톤 | DI 컨테이너가 관리하는 빈 |
+|------|---------------------|---------------------------|
+| 의존성 가시성 | 메서드 본문을 읽어야 파악 | 생성자 시그니처에 명시 |
+| 테스트 교체 | 정적 인스턴스를 바꿔치기해야 함 | 생성자 주입으로 가짜 객체 전달 |
+| 생명주기 관리 | 직접 구현 (lazy init, thread safety) | 컨테이너가 관리 |
+| 테스트 격리 | 수동 초기화 필요 | 컨테이너가 매번 새 컨텍스트 구성 |
+
+핵심 원칙은 "인스턴스를 하나로 제한한다"는 목적과 "전역에서 아무 데서나 직접 접근한다"는 구현 방식을 분리하는 것이다. 전자는 DI 컨테이너의 싱글톤 스코프로 충분히 달성되고, 후자(`getInstance()` 같은 정적 전역 접근)는 테스트 격리와 의존성 가시성을 희생시킨다. 싱글톤이 필요하다고 느껴질 때, 먼저 "이걸 정말 직접 구현해야 하는가, DI 컨테이너에 위임할 수 있는가"를 물어보는 것이 합리적인 출발점이다.
