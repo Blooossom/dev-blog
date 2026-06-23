@@ -29,7 +29,7 @@
 ~~321. decorator pattern은 프록시, AOP, middleware 구조와 어떤 공통점을 가질까?~~ `작성완료`
 ~~322. adapter pattern은 외부 API 변경이 내부 도메인으로 전파되는 것을 어떻게 막을까?~~ `작성완료`
 ~~323. facade pattern은 복잡한 하위 시스템을 숨기지만, 언제 god object로 변질될 수 있을까?~~ `작성완료`
-324. observer pattern은 이벤트 기반 시스템과 비슷해 보이지만 동기/비동기 결합에서 무엇이 다를까?
+~~324. observer pattern은 이벤트 기반 시스템과 비슷해 보이지만 동기/비동기 결합에서 무엇이 다를까?~~ `작성완료`
 ~~325. chain of responsibility는 인증 필터, 검증 파이프라인, 결제 승인 단계에서 어떻게 적용될 수 있을까?~~ `작성완료`
 ~~326. singleton pattern은 전역 접근을 쉽게 만들지만, 테스트와 상태 공유 측면에서 어떤 위험을 만들까?~~ `작성완료`
 327. specification pattern은 복잡한 비즈니스 조건을 어떻게 조합 가능하게 만들 수 있을까?
