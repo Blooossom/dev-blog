@@ -629,6 +629,9 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'multi-agent-coordination':              { pattern: 'neural',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
   'netty-event-loop-blocking':             { pattern: 'threads', colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'singleton-pattern-risks':               { pattern: 'layers',  colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'nginx-static-file-serving':              { pattern: 'flow',    colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
+  'observer-pattern':                       { pattern: 'layers',  colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
+  'binary-search-search-space':             { pattern: 'code',    colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
