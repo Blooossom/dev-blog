@@ -1,0 +1,130 @@
+---
+title: Observer 패턴이 이벤트 기반 시스템과 다른 결합 지점
+date: '2026-06-23'
+category: Architecture
+tags:
+  - 디자인 패턴
+  - Observer Pattern
+  - 이벤트 기반 아키텍처
+  - OOP
+  - 동기 비동기
+summary: >-
+  Observer 패턴은 이벤트 기반 시스템과 비슷해 보이지만, 동기/비동기 결합 방식에서 분명한 차이가 있다.
+  Subject가 Observer를 직접 호출하는 구조와 메시지 브로커를 거치는 구조가 장애 전파와 결합도에서 어떻게 달라지는지 정리한다.
+thumbnail: /thumbnails/observer-pattern.svg
+---
+
+Observer 패턴은 이벤트 기반 시스템과 비슷해 보이지만 동기/비동기 결합에서 무엇이 다를까. 둘 다 "어떤 일이 일어나면 관심 있는 쪽에게 알린다"는 발상을 공유하지만, Observer 패턴은 통상 같은 프로세스 안에서 Subject가 Observer 목록을 직접 들고 호출하는 동기적 구조이고, 이벤트 기반 아키텍처는 메시지 브로커나 이벤트 버스를 거쳐 발행자와 구독자가 시간적으로도 분리되는 비동기 구조다. 이 차이는 장애 전파 방식과 결합도에 직접적인 영향을 준다.
+
+## 고전적인 Observer 패턴 구현
+
+```java
+public interface OrderObserver {
+    void onOrderPlaced(Order order);
+}
+
+public class OrderSubject {
+    private final List<OrderObserver> observers = new ArrayList<>();
+
+    public void subscribe(OrderObserver observer) {
+        observers.add(observer);
+    }
+
+    public void placeOrder(Order order) {
+        // 주문 처리 로직...
+        notifyObservers(order); // 같은 스레드, 같은 호출 스택 안에서 동기 호출
+    }
+
+    private void notifyObservers(Order order) {
+        for (OrderObserver observer : observers) {
+            observer.onOrderPlaced(order); // 하나가 실패하면 전체 흐름에 영향
+        }
+    }
+}
+```
+
+```java
+public class EmailNotifier implements OrderObserver {
+    public void onOrderPlaced(Order order) {
+        emailClient.send(order.getEmail(), "주문이 접수되었습니다"); // 여기서 예외 발생 시?
+    }
+}
+```
+
+## 동기 결합이 만드는 문제
+
+```
+[Observer 패턴 — 동기 호출 체인]
+placeOrder() 호출
+  └─ notifyObservers()
+       ├─ EmailNotifier.onOrderPlaced()   ← 느리거나 예외 발생 시
+       ├─ InventoryUpdater.onOrderPlaced()  ← 이후 Observer까지 영향
+       └─ AnalyticsLogger.onOrderPlaced()
+
+EmailNotifier에서 예외가 발생하면
+  → placeOrder() 호출 스택 전체가 그 예외를 받는다
+  → InventoryUpdater, AnalyticsLogger는 아예 호출되지 않을 수 있다
+```
+
+Subject가 Observer를 직접 호출 목록으로 들고 있다는 것은, Observer의 실행 시간과 예외가 Subject의 호출 스택 안으로 그대로 전파된다는 뜻이다. 이메일 발송이 느려지면 주문 처리 자체가 느려지고, 이메일 발송 중 예외가 던져지면 재고 업데이트나 로깅처럼 무관한 Observer도 실행되지 못할 수 있다. Observer가 늘어날수록 Subject는 더 많은 실패 지점을 직접 짊어지게 된다.
+
+## 이벤트 기반 아키텍처의 비동기 결합
+
+```
+[이벤트 기반 아키텍처 — 메시지 브로커 경유]
+OrderService → publish(OrderPlacedEvent) → Message Broker
+                                                  │
+                  ┌───────────────────────────────┼───────────────────────────────┐
+                  ▼                               ▼                               ▼
+           EmailConsumer                 InventoryConsumer               AnalyticsConsumer
+        (별도 프로세스/스레드)            (별도 프로세스/스레드)            (별도 프로세스/스레드)
+```
+
+```java
+@Service
+public class OrderService {
+    private final ApplicationEventPublisher publisher;
+
+    public void placeOrder(Order order) {
+        // 주문 처리 로직...
+        publisher.publishEvent(new OrderPlacedEvent(order)); // 발행 후 곧바로 리턴
+    }
+}
+```
+
+```java
+@Component
+public class EmailEventListener {
+    @Async
+    @EventListener
+    public void handle(OrderPlacedEvent event) {
+        emailClient.send(event.getOrder().getEmail(), "주문이 접수되었습니다");
+        // 여기서 예외가 나도 OrderService의 흐름에는 영향이 없다
+    }
+}
+```
+
+발행자는 이벤트를 브로커(또는 비동기 이벤트 버스)에 넘기는 즉시 자신의 일을 끝낸다. 구독자가 몇 명인지, 얼마나 걸리는지, 실패하는지는 발행자의 호출 스택과 분리되어 있다. 이 분리 덕분에 한 구독자의 장애가 발행자나 다른 구독자에게 즉시 전파되지 않는다.
+
+## 두 구조의 결합도 비교
+
+| 항목 | Observer 패턴 | 이벤트 기반 아키텍처 |
+|------|----------------|----------------------|
+| 호출 방식 | Subject가 Observer를 직접 호출 | 발행자는 브로커에만 의존 |
+| 실행 시점 | 같은 스레드, 같은 호출 스택 | 별도 스레드/프로세스, 시간차 존재 |
+| 장애 전파 | Observer 예외가 Subject로 전파 | 격리됨(브로커/큐가 경계 역할) |
+| 순서 보장 | 등록 순서대로 동기 보장 | 브로커 설정에 따라 보장 수준이 다름 |
+| 재시도/재처리 | 직접 구현해야 함 | 브로커가 기본 제공하는 경우가 많음(Kafka, RabbitMQ 등) |
+| 적합한 상황 | 같은 모듈 내 가벼운 후처리(UI 갱신 등) | 서비스 간 통신, 무거운 후속 작업 |
+
+## 어떤 구조를 선택할 것인가
+
+```
+가벼운 후처리, 같은 프로세스 안에서 끝나도 되는 작업
+  → Observer 패턴 (단, 예외 격리를 위해 각 Observer 호출을 try-catch로 감싸는 것이 안전)
+
+서비스 경계를 넘거나, 실패해도 핵심 흐름에 영향을 주면 안 되는 작업
+  → 이벤트 기반 아키텍처 (Spring이라면 @Async + @EventListener, 또는 외부 메시지 브로커)
+```
+
+같은 프로세스 안의 Observer 패턴이라도 `@Async`나 별도 스레드로 Observer를 호출하면 비동기에 가까워지지만, 이는 결국 가벼운 이벤트 기반 구조를 직접 구현하는 셈이다. 핵심은 패턴의 이름이 아니라 "발행자와 구독자가 시간적으로, 실패 측면에서 얼마나 분리되어 있는가"를 먼저 따져보고 결합 방식을 선택하는 것이다.
