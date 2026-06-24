@@ -2634,6 +2634,21 @@
     "date": "2026-03-26"
   },
   {
+    "slug": "optimistic-pessimistic-lock",
+    "title": "낙관적 락과 비관적 락 — 어떤 충돌 상황에 더 적합할까",
+    "category": "Backend",
+    "tags": [
+      "Lock",
+      "JPA",
+      "Concurrency",
+      "동시성",
+      "Transaction"
+    ],
+    "summary": "optimistic lock과 pessimistic lock은 각각 어떤 충돌 상황에서 더 적합할까. 충돌 빈도와 재시도 가능성을 기준으로 두 락 전략을 비교하고, JPA의 @Version과 SELECT FOR UPDATE로 어떻게 구현하는지 정리한다.",
+    "body": "optimistic lock과 pessimistic lock은 각각 어떤 충돌 상황에서 더 적합할까. 동시에 같은 데이터를 수정하려는 트랜잭션이 있을 때, 둘 중 하나를 선택하는 기준은 \"충돌이 얼마나 자주 일어나는가\"다. 이 기준을 잘못 적용하면 불필요한 대기로 처리량이 떨어지거나, 반대로 충돌을 감지하지 못해 데이터가 깨질 수 있다.\n\n   두 락의 기본 동작 방식\n\n    비관적 락  Pessimistic Lock \n\n충돌이 발생할 것이라고 \"비관적으로\" 가정하고, 데이터를 읽는 시점에 즉시 락을 건다. 다른 트랜잭션은 락이 풀릴 때까지 대기한다.\n\n   sql\nBEGIN;\nSELECT   FROM products WHERE id = 1 FOR UPDATE;\n-- 이 시점부터 다른 트랜잭션은 id=1 행을 수정할 수 없고 대기한다\nUPDATE products SET stock = stock - 1 WHERE id = 1;\nCOMMIT;\n   \n\n   \n트랜잭션 A: SELECT ... FOR UPDATE  락 획득  → UPDATE → COMMIT  락 해제 \n트랜잭션 B:                       대기  ─────────────────────→ 락 획득 후 진행\n   \n\n    낙관적 락  Optimistic Lock \n\n충돌이 자주 일어나지 않을 것이라고 \"낙관적으로\" 가정하고, 락 없이 데이터를 읽는다. 수정을 커밋하는 시점에 버전 version  값을 비교해 그 사이에 다른 트랜잭션이 끼어들었는지 검증한다.\n\n   sql\nSELECT id, stock, version FROM products WHERE id = 1;\n-- version = 5 읽음, 락 없음\n\nUPDATE products SET stock = stock - 1, version = version + 1\nWHERE id = 1 AND version = 5;\n-- 영향받은 row가 0건이면 다른 트랜잭션이 먼저 커밋했다는 뜻 → 충돌 감지\n   \n\n   JPA에서의 구현\n\n    낙관적 락 — @Version\n\n   java\n@Entity\npublic class Product {\n\n    @Id\n    private Long id;\n\n    private int stock;\n\n    @Version\n    private Long version;\n}\n   \n\n   java\n@Transactional\npublic void decreaseStock Long productId  {\n    Product product = productRepository.findById productId \n        .orElseThrow  ;\n\n    product.decreaseStock  ; // stock--\n\n    // flush 시점에 UPDATE ... WHERE id = ? AND version = ? 실행\n    // 영향받은 row가 0건이면 OptimisticLockException 발생\n}\n   \n\n충돌이 감지되면  OptimisticLockException 이 던져진다. 호출 측에서 재시도 로직을 직접 구성해야 한다.\n\n   java\n@Retryable \n    retryFor = OptimisticLockException.class,\n    maxAttempts = 3,\n    backoff = @Backoff delay = 100 \n \n@Transactional\npublic void decreaseStockWithRetry Long productId  {\n    decreaseStock productId ;\n}\n   \n\n    비관적 락 — @Lock\n\n   java\npublic interface ProductRepository extends JpaRepository<Product, Long  {\n\n    @Lock LockModeType.PESSIMISTIC WRITE \n    @Query \"SELECT p FROM Product p WHERE p.id = :id\" \n    Optional<Product  findByIdForUpdate @Param \"id\"  Long id ;\n}\n   \n\n   java\n@Transactional\npublic void decreaseStock Long productId  {\n    Product product = productRepository.findByIdForUpdate productId \n        .orElseThrow  ;\n\n    product.decreaseStock  ;\n    // 트랜잭션 커밋 시점까지 다른 트랜잭션은 이 row에 접근 불가\n}\n   \n\n PESSIMISTIC WRITE 는  SELECT ... FOR UPDATE 로 변환되어 즉시 배타 락을 건다.\n\n   어떤 충돌 상황에 적합한가\n\n| 기준 | 비관적 락 | 낙관적 락 |\n|------|-----------|-----------|\n| 충돌 빈도 | 높음  동시 수정이 자주 발생  | 낮음  대부분 충돌 없음  |\n| 락 보유 시간 | 트랜잭션 끝까지 | 없음  커밋 시점만 검증  |\n| 처리량 | 충돌 적을 때 손해  불필요한 대기  | 충돌 적을 때 유리 |\n| 충돌 시 동작 | 대기 후 순차 처리 | 예외 발생, 재시도 필요 |\n| 데드락 가능성 | 있음  여러 행을 다른 순서로 락  | 없음  락을 걸지 않음  |\n\n    비관적 락이 맞는 경우\n\n재고 차감처럼 동시 요청이 몰리고, 충돌이 발생하면 반드시 순서대로 처리해야 하는 경우다. 락 대기가 길어지더라도 정합성이 우선이다.\n\n   \n선착순 한정 수량 이벤트\n→ 동시에 100명이 같은 상품에 접근\n→ 충돌 빈도가 매우 높음 → 비관적 락으로 순차 처리\n   \n\n    낙관적 락이 맞는 경우\n\n게시글 조회수 증가처럼 동시 수정이 드물고, 충돌이 나더라도 재시도 비용이 낮은 경우다. 락을 걸지 않으므로 평소 처리량이 높다.\n\n   \n회원 프로필 수정\n→ 같은 사용자가 동시에 두 기기에서 수정하는 경우는 드묾\n→ 충돌 빈도가 낮음 → 낙관적 락으로 평소 처리량 확보\n   \n\n   주의할 점\n\n    비관적 락의 데드락\n\n여러 행을 락을 걸 때 트랜잭션 간 순서가 다르면 데드락이 발생한다.\n\n   java\n// 트랜잭션 A: 상품 1 → 상품 2 순서로 락\n// 트랜잭션 B: 상품 2 → 상품 1 순서로 락\n// → 서로 상대방이 가진 락을 기다리며 데드락\n   \n\n항목을 락 걸기 전에 항상 동일한 순서 예: ID 오름차순 로 정렬해서 접근하면 막을 수 있다.\n\n    낙관적 락의 무한 재시도\n\n재시도 횟수에 상한을 두지 않으면, 충돌이 계속 발생하는 상황에서 요청이 끝없이 반복될 수 있다. 최대 재시도 횟수와 백오프를 반드시 설정해야 한다.\n\n   정리\n\n낙관적 락과 비관적 락의 선택 기준은 결국 \"충돌이 얼마나 자주 일어나는가\"다. 충돌이 잦고 정합성이 최우선이면 비관적 락으로 순서를 강제하고, 충돌이 드물고 평소 처리량이 중요하면 낙관적 락으로 락 비용 자체를 없애는 편이 낫다.",
+    "date": "2026-06-24"
+  },
+  {
     "slug": "optimistic-pessimistic-update",
     "title": "낙관적 업데이트 vs 비관적 업데이트",
     "category": "Frontend",
