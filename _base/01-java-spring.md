@@ -39,7 +39,7 @@
 ~~63. Spring에서 `REQUIRES_NEW` 전파 옵션은 언제 유용하고, 언제 위험할까?~~ `작성완료`
 ~~64. JPA dirty checking은 어떤 시점에 변경을 감지하고 SQL을 날릴까?~~ `작성완료`
 ~~65. JPA batch insert/update가 기대만큼 빠르지 않을 때 확인해야 할 설정은 무엇일까?~~ `작성완료`
-66. optimistic lock과 pessimistic lock은 각각 어떤 충돌 상황에서 더 적합할까?
+~~66. optimistic lock과 pessimistic lock은 각각 어떤 충돌 상황에서 더 적합할까?~~ `작성완료`
 67. DB 커넥션 풀 크기는 단순히 크게 잊을수록 처리량이 좋아질까?
 ~~68. API 서버에서 timeout, retry, circuit breaker를 각각 어디에 두어야 장애 전파를 줄일 수 있을까?~~ `작성완료`
 ~~69. 대용량 트래픽에서 rate limiting은 애플리케이션, API Gateway, Nginx 중 어디에서 처리하는 것이 좋을까?~~ `작성완료`
