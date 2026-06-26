@@ -1,0 +1,139 @@
+---
+title: 클릭재킹 — 투명한 iframe이 만드는 UI 조작 공격과 방어
+date: '2026-06-26'
+category: Security
+tags:
+  - Clickjacking
+  - X-Frame-Options
+  - CSP
+  - frame-ancestors
+  - 웹 보안
+summary: >-
+  clickjacking은 어떤 UI 조작 공격이고, X-Frame-Options와 CSP frame-ancestors는 어떻게 방어할까? 투명 iframe으로 클릭을 가로채는 공격 원리와 두 방어 헤더의 차이, 함께 적용해야 하는 이유를 정리한다.
+thumbnail: /thumbnails/clickjacking-defense.svg
+---
+
+clickjacking은 어떤 UI 조작 공격이고, X-Frame-Options와 CSP frame-ancestors는 어떻게 방어할까? 사용자는 분명히 "쿠폰 받기" 버튼을 눌렀다고 생각하지만, 실제로는 투명하게 겹쳐진 다른 페이지의 "계정 삭제" 버튼을 클릭한 것이었다 — 이것이 클릭재킹(Clickjacking)이다. XSS처럼 코드를 주입하지 않고, 화면을 속이는 것만으로 사용자의 클릭을 가로채는 공격이다.
+
+## 공격 원리 — 투명 iframe 겹치기
+
+공격자는 피해 사이트를 iframe으로 띄우고, 그 위에 자신이 원하는 텍스트나 버튼을 겹쳐서 보여준다.
+
+```
+공격자 페이지 (attacker.com)
+┌─────────────────────────────┐
+│  [쿠폰 받기] ← 사용자가 보는 버튼  │
+│      ↑ z-index로 위에 배치       │
+│  ┌─────────────────────────┐ │
+│  │ iframe (opacity: 0)       │ │
+│  │ victim.com/account/delete │ │
+│  │   [계정 삭제] 버튼이         │ │
+│  │   정확히 같은 좌표에 위치     │ │
+│  └─────────────────────────┘ │
+└─────────────────────────────┘
+```
+
+```html
+<style>
+  iframe {
+    position: absolute;
+    top: 0; left: 0;
+    width: 300px; height: 100px;
+    opacity: 0.0001;
+    z-index: 2;
+  }
+  .fake-button {
+    position: absolute;
+    top: 0; left: 0;
+    z-index: 1;
+  }
+</style>
+
+<div class="fake-button">쿠폰 받기</div>
+<iframe src="https://victim.com/account/delete"></iframe>
+```
+
+사용자는 정상적으로 로그인된 상태로 victim.com을 보고 있다고 착각하지만, 실제 클릭 이벤트는 좌표가 일치하는 iframe 내부의 실제 버튼에 전달된다. 인증 쿠키는 브라우저가 자동으로 함께 보내므로, 공격자는 별도의 인증 정보 없이도 사용자 권한으로 동작을 실행시킬 수 있다.
+
+## 방어 1 — X-Frame-Options
+
+가장 먼저 등장한 방어 헤더는 응답 헤더 한 줄로 "이 페이지는 다른 페이지에 frame으로 삽입될 수 없다"를 선언한다.
+
+```
+X-Frame-Options: DENY
+X-Frame-Options: SAMEORIGIN
+X-Frame-Options: ALLOW-FROM https://partner.example.com
+```
+
+| 값 | 동작 |
+|----|------|
+| `DENY` | 어떤 origin에서도 frame 삽입 금지 |
+| `SAMEORIGIN` | 같은 origin에서만 frame 삽입 허용 |
+| `ALLOW-FROM` | 지정한 origin만 허용 (대부분의 최신 브라우저에서 미지원) |
+
+문제는 `ALLOW-FROM`이 표준화 과정에서 탈락해 크롬, 사파리 등 주요 브라우저가 지원하지 않는다는 점이다. 즉 "특정 파트너 사이트에만 frame 삽입을 허용"하는 세밀한 제어가 이 헤더 하나로는 불가능하다.
+
+## 방어 2 — CSP frame-ancestors
+
+CSP의 `frame-ancestors` 지시어는 X-Frame-Options의 한계를 보완한다.
+
+```
+Content-Security-Policy: frame-ancestors 'self' https://partner.example.com
+```
+
+```
+Content-Security-Policy: frame-ancestors 'none';
+```
+
+| 값 | 동작 |
+|----|------|
+| `'none'` | X-Frame-Options DENY와 동일 |
+| `'self'` | X-Frame-Options SAMEORIGIN과 동일 |
+| 특정 origin 목록 | 여러 origin을 동시에 화이트리스트로 지정 가능 |
+
+`frame-ancestors`는 여러 origin을 나열할 수 있어 `ALLOW-FROM`의 빈자리를 메운다. 또한 CSP는 위반 시 `report-uri`로 리포트를 받을 수 있어, 어떤 출처가 자신의 페이지를 frame에 삽입하려 시도했는지 모니터링할 수 있다는 점도 X-Frame-Options에는 없는 장점이다.
+
+## 두 헤더를 함께 써야 하는 이유
+
+```
+응답 헤더
+  X-Frame-Options: SAMEORIGIN
+  Content-Security-Policy: frame-ancestors 'self'
+```
+
+CSP `frame-ancestors`가 더 강력하고 유연하지만, X-Frame-Options를 제거하지 않는 것이 안전하다. 이유는 두 가지다.
+
+1. CSP를 지원하지 않거나 `frame-ancestors`를 무시하는 구형 브라우저, 일부 사내망 레거시 브라우저가 여전히 존재한다.
+2. CSP는 `script-src`, `style-src` 등 다른 지시어 설정 실수로 정책 전체가 의도와 다르게 동작할 위험이 있다. X-Frame-Options는 단일 목적 헤더라 그런 충돌 위험이 작다.
+
+즉 `frame-ancestors`가 모던 브라우저에서 우선 적용되고, X-Frame-Options는 구형 브라우저를 위한 fallback 역할을 한다. 두 헤더가 상충하는 값을 가지면 더 엄격한 정책 쪽으로 동작하는 브라우저가 대부분이므로, 보수적으로 둘 다 같은 의도(SAMEORIGIN/'self' 또는 DENY/'none')로 맞춰두는 것이 혼란을 줄인다.
+
+## Spring Security에서 설정하기
+
+```java
+@Configuration
+public class SecurityConfig {
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http.headers(headers -> headers
+            .frameOptions(frame -> frame.sameOrigin())
+            .contentSecurityPolicy(csp -> csp
+                .policyDirectives("frame-ancestors 'self'"))
+        );
+        return http.build();
+    }
+}
+```
+
+기본값이 `DENY`에 가까운 Spring Security조차, 결제 위젯이나 외부 임베드를 허용해야 하는 화면에서는 명시적으로 `frame-ancestors`에 필요한 origin만 추가해야 한다. 전역 설정을 느슨하게 풀지 않고, 임베드가 필요한 라우트에만 별도 정책을 적용하는 것이 공격 표면을 최소화하는 방법이다.
+
+## 클릭재킹과 다른 UI 공격의 경계
+
+| 공격 | 핵심 메커니즘 |
+|------|---------------|
+| Clickjacking | 투명 iframe으로 클릭 좌표를 가로챔 |
+| Tabnabbing | 백그라운드 탭의 콘텐츠를 피싱 페이지로 교체 |
+| UI Redressing | 버튼 텍스트나 레이아웃을 속여 의도와 다른 동작 유도 (클릭재킹의 상위 범주) |
+
+클릭재킹은 코드 주입이 아니라 화면 배치를 속이는 공격이므로, 입력 검증이나 출력 인코딩으로는 막을 수 없다. frame 삽입 자체를 차단하는 헤더가 유일한 직접적 방어선이며, X-Frame-Options와 CSP frame-ancestors를 함께 설정해 신구 브라우저 모두를 포괄하는 것이 안전한 기본값이다.
