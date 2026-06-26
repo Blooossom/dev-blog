@@ -12,7 +12,7 @@
 506. SameSite=Lax, Strict, None 설정은 로그인 세션과 외부 연동 UX에 어떤 영향을 줄까?
 507. CORS preflight는 보안 기능이라기보다 브라우저의 어떤 정책 협상 절차라고 볼 수 있을까?
 508. CORS에서 `Access-Control-Allow-Origin: *`와 credentials 허용을 함께 쓸 수 없는 이유는 무엇일까?
-509. clickjacking은 어떤 UI 조작 공격이고, `X-Frame-Options`와 CSP `frame-ancestors`는 어떻게 방어할까?
+~~509. clickjacking은 어떤 UI 조작 공격이고, `X-Frame-Options`와 CSP `frame-ancestors`는 어떻게 방어할까?~~ `작성완료`
 510. open redirect 취약점은 단순 리다이렉트 버그처럼 보이지만 피싱과 OAuth 흐름에서 왜 위험할까?
 511. file upload 기능에서 확장자 검사만으로 충분하지 않은 이유는 무엇이고, MIME sniffing과 실행 권한은 어떻게 봐야 할까?
 ~~512. SSRF는 서버가 내부망에 접근할 수 있다는 점을 어떻게 악용하고, metadata endpoint 보호는 왜 중요할까?~~ `작성완료`
