@@ -1,0 +1,144 @@
+---
+title: Specification 패턴 — 비즈니스 조건을 조합 가능한 객체로
+date: '2026-06-26'
+category: Architecture
+tags:
+  - 디자인 패턴
+  - Specification Pattern
+  - DDD
+  - 도메인 모델
+summary: >-
+  specification pattern은 복잡한 비즈니스 조건을 어떻게 조합 가능하게 만들 수 있을까? 조건을 하드코딩된 if문이 아니라 and, or, not으로 합성 가능한 객체로 분리하는 방법과, 이를 영속성 레이어의 쿼리 조건으로 재사용하는 전략을 정리한다.
+thumbnail: /thumbnails/specification-pattern.svg
+---
+
+specification pattern은 복잡한 비즈니스 조건을 어떻게 조합 가능하게 만들 수 있을까? "VIP 등급이고, 최근 30일 내 주문이 있고, 환불 이력이 3건 미만인 고객"처럼 조건이 늘어날 때마다 if문을 덧붙이면, 그 메서드는 곧 어떤 조건이 어떤 화면에서 쓰이는지 추적할 수 없는 덩어리가 된다. Specification 패턴은 각 조건을 독립된 객체로 분리하고, 이 객체들을 and/or/not으로 합성해 새로운 조건을 만들 수 있게 한다.
+
+## 문제: 조건이 늘어날 때 생기는 일
+
+할인 대상 고객을 판별하는 메서드를 예로 들어보자.
+
+```java
+public boolean isEligibleForDiscount(Customer customer) {
+    if (customer.getGrade() == Grade.VIP) {
+        if (customer.getRecentOrderCount() > 0) {
+            if (customer.getRefundCount() < 3) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+```
+
+이 메서드는 두 가지 방식으로만 재사용된다. 통째로 호출하거나, 통째로 복붙해서 일부를 바꾸거나. "VIP가 아니어도 신규 가입자라면 할인" 같은 변형 규칙이 추가되면, 비슷한 메서드가 하나씩 늘어나고 어디서 어떤 조건이 적용되는지는 코드를 직접 읽어야만 알 수 있다.
+
+## 조건을 객체로 분리하기
+
+핵심 인터페이스는 하나의 메서드만 가진다.
+
+```java
+public interface Specification<T> {
+    boolean isSatisfiedBy(T candidate);
+
+    default Specification<T> and(Specification<T> other) {
+        return candidate -> this.isSatisfiedBy(candidate) && other.isSatisfiedBy(candidate);
+    }
+
+    default Specification<T> or(Specification<T> other) {
+        return candidate -> this.isSatisfiedBy(candidate) || other.isSatisfiedBy(candidate);
+    }
+
+    default Specification<T> not() {
+        return candidate -> !this.isSatisfiedBy(candidate);
+    }
+}
+```
+
+각 조건을 별도 클래스로 구현한다.
+
+```java
+public class VipGradeSpec implements Specification<Customer> {
+    public boolean isSatisfiedBy(Customer customer) {
+        return customer.getGrade() == Grade.VIP;
+    }
+}
+
+public class RecentOrderSpec implements Specification<Customer> {
+    public boolean isSatisfiedBy(Customer customer) {
+        return customer.getRecentOrderCount() > 0;
+    }
+}
+
+public class LowRefundRateSpec implements Specification<Customer> {
+    private final int threshold;
+
+    public LowRefundRateSpec(int threshold) {
+        this.threshold = threshold;
+    }
+
+    public boolean isSatisfiedBy(Customer customer) {
+        return customer.getRefundCount() < threshold;
+    }
+}
+```
+
+조합은 호출부에서 일어난다.
+
+```java
+Specification<Customer> discountTarget = new VipGradeSpec()
+    .and(new RecentOrderSpec())
+    .and(new LowRefundRateSpec(3));
+
+boolean eligible = discountTarget.isSatisfiedBy(customer);
+```
+
+"신규 가입자도 포함"이라는 변형 규칙은 기존 클래스를 건드리지 않고 새 조합을 만드는 것으로 해결된다.
+
+```java
+Specification<Customer> newRuleTarget = discountTarget.or(new NewSignupSpec());
+```
+
+조건 하나하나가 이름을 가진 클래스이므로, 코드 리뷰나 디버깅에서 "어떤 규칙들이 합쳐졌는지"를 조합식만 보고 파악할 수 있다.
+
+## 메모리 필터링과 쿼리 조건의 차이
+
+여기서 흔한 함정이 있다. 위 `isSatisfiedBy`는 이미 메모리에 로드된 객체를 검사하는 용도다. 대상이 수만 건의 DB 레코드라면 전부 로드해서 필터링하는 건 말이 되지 않는다. 그래서 실무에서는 Specification이 두 가지 역할로 분리된다.
+
+| 역할 | 용도 | 예시 |
+|------|------|------|
+| In-memory predicate | 이미 로드된 객체 검증, 도메인 로직 | 주문 생성 시 정책 검증 |
+| Query specification | 영속성 레이어 조건 변환 | JPA `Specification`, QueryDSL `BooleanExpression` |
+
+Spring Data JPA는 이 두 번째 역할을 `org.springframework.data.jpa.domain.Specification`으로 직접 지원한다.
+
+```java
+public class CustomerSpecs {
+    public static Specification<Customer> isVip() {
+        return (root, query, cb) -> cb.equal(root.get("grade"), Grade.VIP);
+    }
+
+    public static Specification<Customer> hasRefundCountLessThan(int threshold) {
+        return (root, query, cb) -> cb.lessThan(root.get("refundCount"), threshold);
+    }
+}
+
+// 조합
+Specification<Customer> spec = CustomerSpecs.isVip()
+    .and(CustomerSpecs.hasRefundCountLessThan(3));
+
+customerRepository.findAll(spec);
+```
+
+이 경우 `isSatisfiedBy`로 객체를 검사하는 게 아니라, 조합된 조건이 SQL `WHERE` 절로 변환되어 DB에서 직접 필터링된다. 두 형태는 인터페이스 모양은 비슷해 보여도 실행 위치(애플리케이션 메모리 vs DB 쿼리 플래너)가 다르므로 섞어 쓰면 안 된다. "도메인 정책 검증용 Specification"과 "조회 조건용 Specification"은 의도적으로 분리해 패키지를 나누는 것이 안전하다.
+
+## 언제 도입할 가치가 있나
+
+| 신호 | 판단 |
+|------|------|
+| 조건이 1~2개이고 변경 빈도가 낮음 | if문으로 충분, 과도한 추상화 |
+| 같은 조건 조합이 여러 곳(쿼리, 검증, 알림 트리거)에서 반복됨 | Specification으로 추출할 가치 있음 |
+| 비즈니스 규칙이 자주 바뀌고 기획 측에서 "조건 A and B or C" 식으로 요구함 | 적극 도입 권장 |
+| 조건 자체보다 조건의 적용 순서나 부수효과가 중요함 | Specification보다 Chain of Responsibility 검토 |
+
+Specification 패턴은 if문을 줄이는 것이 목적이 아니라, 비즈니스 규칙을 이름이 있는 단위로 쪼개고 and/or/not으로 다시 조립할 수 있게 만드는 것이 목적이다. 조건이 코드 한 곳에 박혀 있지 않고 독립된 단위로 존재할 때, 규칙 변경은 새 클래스를 추가하는 일이 되고 기존 코드는 그대로 남는다.
