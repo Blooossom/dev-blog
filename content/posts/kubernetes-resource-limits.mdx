@@ -1,0 +1,170 @@
+---
+title: Kubernetes request와 limit, 잘못 설정하면 생기는 CPU throttling과 OOMKill
+date: '2026-06-27'
+category: Infra
+subcategory: Kubernetes
+tags:
+  - Kubernetes
+  - resource limit
+  - CPU throttling
+  - OOMKill
+summary: >-
+  Kubernetes에서 request와 limit을 잘못 설정하면 CPU throttling이나 OOMKill이 발생한다. 두 값이 스케줄링과 런타임 제약에 각각 어떻게 작동하는지, 흔한 실수와 올바른 설정 기준을 정리한다.
+thumbnail: /thumbnails/kubernetes-resource-limits.svg
+---
+
+Kubernetes에서 request와 limit을 잘못 설정하면 CPU throttling과 OOMKill이 어떤 형태로 나타날까? 같은 컨테이너인데 어떤 환경에서는 멀쩡히 돌고 어떤 환경에서는 응답이 느려지거나 갑자기 재시작된다면, 대부분 이 두 값을 제대로 이해하지 못한 채 설정한 결과다.
+
+## request와 limit은 다른 역할을 한다
+
+```
+request: 스케줄링 기준 (이 Pod가 어느 노드에 들어갈 수 있는가)
+limit:   런타임 제약 (실행 중 얼마나 쓸 수 있는가)
+```
+
+| | request | limit |
+|---|---|---|
+| 사용 시점 | 스케줄링 결정 | 컨테이너 실행 중 |
+| CPU 초과 시 | - | throttling (CFS quota) |
+| Memory 초과 시 | - | OOMKill (SIGKILL) |
+| 노드 선택 | 노드의 가용 자원과 비교 | 영향 없음 |
+
+스케줄러는 노드에 Pod를 배치할 때 **request** 값만 본다. 노드의 전체 CPU/메모리에서 이미 배치된 Pod들의 request 합을 빼고, 새 Pod의 request가 들어갈 자리가 있는지 확인한다. limit은 스케줄링에 전혀 영향을 주지 않는다.
+
+```yaml
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+```
+
+## CPU throttling: 리눅스 CFS와 limit
+
+CPU limit은 Linux CFS(Completely Fair Scheduler)의 quota 메커니즘으로 구현된다. 100ms 주기마다 컨테이너가 쓸 수 있는 CPU 시간을 미리 정해두고, 그 시간을 다 쓰면 다음 주기까지 강제로 멈춘다.
+
+```
+limit: cpu: 500m
+→ 100ms 주기마다 50ms만 실행 가능
+→ 50ms를 다 쓰면 나머지 50ms는 throttled 상태로 대기
+```
+
+문제는 멀티스레드 애플리케이션에서 두드러진다. JVM처럼 스레드 풀을 쓰는 앱은 짧은 순간에 여러 코어를 동시에 쓰려는 경향이 있는데, limit이 낮으면 CPU 사용률 자체는 낮아 보여도 throttling이 빈번하게 발생한다.
+
+```
+# kubectl top으로 보면 CPU 사용률 30%인데
+# 실제로는 throttling 때문에 응답 지연이 발생하는 경우
+
+kubectl exec <pod> -- cat /sys/fs/cgroup/cpu/cpu.stat
+nr_throttled 1523        # throttling 발생 횟수
+throttled_time 48291032  # throttled된 총 시간(ns)
+```
+
+`nr_throttled`가 계속 증가한다면 limit이 실제 워크로드보다 낮게 잡혀 있다는 신호다. CPU 사용률 그래프만 보고 "여유 있다"고 판단하면 이 문제를 놓친다.
+
+## OOMKill: cgroup 메모리 한계와 SIGKILL
+
+메모리는 CPU와 다르게 동작한다. CPU는 시간을 나눠 쓰는 자원이라 초과해도 "느려질 뿐"이지만, 메모리는 한계를 넘으면 회수할 방법이 없다. 컨테이너가 limit을 초과하면 커널이 즉시 `SIGKILL`을 보낸다.
+
+```
+Pod가 memory limit 초과
+  → cgroup OOM killer 동작
+  → 컨테이너 프로세스에 SIGKILL
+  → Pod 상태: OOMKilled
+  → restartPolicy에 따라 재시작
+```
+
+```bash
+kubectl describe pod <pod-name>
+# Last State:  Terminated
+#   Reason:    OOMKilled
+#   Exit Code: 137
+```
+
+Exit Code 137은 `128 + 9(SIGKILL)`이다. 애플리케이션 로그에는 아무 흔적도 남지 않는 경우가 많다. GC가 메모리를 정리할 틈도 없이 프로세스가 강제 종료되기 때문이다.
+
+### Java 애플리케이션에서 흔한 실수
+
+```yaml
+# 잘못된 설정: JVM heap이 컨테이너 limit을 모른다
+resources:
+  limits:
+    memory: 512Mi
+```
+
+```java
+// JVM 기본 heap 크기는 호스트 전체 메모리를 기준으로 계산될 수 있음
+// (Java 8u131 이전, 또는 -XX:+UseContainerSupport 비활성화 시)
+```
+
+Java 10+ (또는 8u191+)부터는 `UseContainerSupport`가 기본 활성화되어 cgroup limit을 인식하지만, heap만 신경 쓰고 metaspace, thread stack, direct buffer 같은 non-heap 영역을 고려하지 않으면 여전히 OOMKill이 발생한다.
+
+```yaml
+env:
+  - name: JAVA_OPTS
+    value: "-XX:MaxRAMPercentage=70.0"  # heap을 limit의 70%로 제한, 나머지는 non-heap 여유분
+```
+
+## request와 limit의 격차(gap)가 클 때
+
+```
+request: 250m / limit: 1000m  → 4배 격차
+```
+
+격차가 클수록 "버스트"는 가능하지만, 노드에 여러 Pod가 동시에 버스트하면 노드 전체 CPU가 부족해지면서 모든 Pod가 throttling된다. 스케줄러는 request 기준으로만 자리를 배정했기 때문에, 실제 limit 합이 노드 용량을 초과하는 **overcommit** 상태가 흔하게 발생한다.
+
+```
+노드 CPU: 4 core
+
+Pod A: request 250m, limit 2000m
+Pod B: request 250m, limit 2000m
+Pod C: request 250m, limit 2000m
+
+→ request 합 750m로 스케줄링은 통과
+→ limit 합은 6000m, 노드 용량(4000m) 초과
+→ 세 Pod가 동시에 부하 받으면 전부 throttling
+```
+
+## QoS Class: request와 limit의 관계가 결정한다
+
+| QoS Class | 조건 | OOM 시 우선순위 |
+|---|---|---|
+| Guaranteed | request == limit (모든 자원) | 가장 늦게 kill |
+| Burstable | request 〈 limit | 중간 |
+| BestEffort | request, limit 미설정 | 가장 먼저 kill |
+
+노드 전체 메모리가 부족해지면 BestEffort Pod가 가장 먼저 희생되고, 그다음 Burstable 중 request 대비 실제 사용량 초과 비율이 높은 Pod가 kill된다. 중요한 워크로드라면 request와 limit을 동일하게 맞춰 Guaranteed로 만드는 것이 안전하다.
+
+```yaml
+# Guaranteed QoS — 중요 서비스에 권장
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+```
+
+## 설정 기준
+
+```
+1. 실측 기반으로 시작한다
+   - 부하 테스트 또는 모니터링 데이터로 p95 사용량 확인
+   - request는 p95보다 약간 낮게, limit은 spike를 흡수할 만큼
+
+2. memory request == limit을 기본으로 한다
+   - 메모리는 압축이나 throttling이 없으므로 격차를 두는 의미가 적음
+   - OOMKill 리스크를 줄이려면 동일하게 맞추는 것이 안전
+
+3. CPU는 약간의 격차를 허용한다
+   - throttling은 OOMKill보다 회복 가능한 장애
+   - 단, 노드 전체 overcommit 비율을 모니터링해야 함
+
+4. 중요 워크로드는 Guaranteed QoS로
+   - request == limit, 노드 자원 압박 시 가장 늦게 희생됨
+```
+
+request는 "이 Pod가 어디에 배치될 수 있는가"를 결정하고, limit은 "실행 중 얼마나 쓸 수 있는가"를 결정한다. 이 둘을 같은 의미로 다루면 CPU는 모르게 느려지고(throttling), 메모리는 갑자기 죽는다(OOMKill). 실측 데이터로 두 값을 분리해서 설정하고, 중요한 워크로드일수록 그 격차를 줄이는 것이 핵심이다.
