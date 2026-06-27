@@ -11,7 +11,7 @@
 ~~100. HPA가 CPU 사용률만 보고 스케일링하면 I/O bound 서비스나 queue 기반 서비스에서 어떤 한계가 있을까?~~ `작성완료`
 ## Network / Infrastructure
 
-401. Kubernetes에서 request와 limit을 잘못 설정하면 CPU throttling과 OOMKill이 어떤 형태로 나타날까?
+~~401. Kubernetes에서 request와 limit을 잘못 설정하면 CPU throttling과 OOMKill이 어떤 형태로 나타날까?~~ `작성완료`
 402. Kubernetes scheduler는 node affinity, taint, resource request를 바탕으로 어떤 결정을 내릴까?
 403. Pod disruption budget은 노드 교체나 배포 중 가용성을 어떻게 보호할까?
 404. rolling update 중 readiness probe가 늦거나 빠르면 트래픽 손실과 배포 지연이 어떻게 발생할까?
