@@ -637,6 +637,7 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'specification-pattern':                   { pattern: 'hexagons', colors: { bg1: '#100e1e', bg2: '#2d2060', accent: '#fb923c', accent2: '#fed7aa' } },
   'clickjacking-defense':                    { pattern: 'shield',  colors: { bg1: '#1a0a0a', bg2: '#4a1010', accent: '#f87171', accent2: '#fecaca' } },
   'kubernetes-resource-limits':               { pattern: 'gauge',   colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
+  'nginx-location-matching-order':            { pattern: 'flow',    colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
