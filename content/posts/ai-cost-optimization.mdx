@@ -1,0 +1,144 @@
+---
+title: AI 기능 비용 최적화 — 모델 교체를 넘어서
+date: '2026-06-29'
+category: AI
+tags:
+  - LLM
+  - 비용최적화
+  - 캐싱
+  - 배치처리
+summary: >-
+  AI 기능의 비용 최적화는 모델을 작은 것으로 바꾸는 것 외에 어떤 cache, batching, routing 전략을 포함할 수 있을까.
+  모델 다운그레이드만으로는 한계가 있는 이유와, 캐싱·배치·라우팅을 조합해 비용을 구조적으로 줄이는 방법을 정리한다.
+thumbnail: /thumbnails/ai-cost-optimization.svg
+---
+
+AI 기능의 비용 최적화는 모델을 작은 것으로 바꾸는 것 외에 어떤 cache, batching, routing 전략을 포함할 수 있을까. 많은 팀이 비용이 늘어나면 가장 먼저 "더 작은 모델로 바꾸자"는 결정을 내리지만, 이는 품질 저하라는 대가를 즉시 지불하는 선택이다. 모델 교체 전에 호출 구조 자체를 바꾸는 전략이 먼저 검토되어야 한다.
+
+## 비용이 새는 지점부터 파악하기
+
+비용 최적화는 측정 없이는 불가능하다. AI 기능의 비용은 보통 다음 세 지점에서 새어 나간다.
+
+```
+요청 1건의 비용 구성
+┌─────────────────────────────────────┐
+│ 1. 중복 요청        — 같은 질문 반복 호출   │
+│ 2. 과대 컨텍스트     — 불필요한 토큰 포함    │
+│ 3. 과잉 스펙 모델    — 쉬운 작업에 큰 모델   │
+└─────────────────────────────────────┘
+```
+
+모델 다운그레이드는 3번만 건드린다. 1번과 2번은 캐싱과 라우팅으로 해결해야 한다.
+
+## 캐싱 — 같은 질문에 두 번 돈을 쓰지 않기
+
+### Prompt Caching
+
+시스템 프롬프트, 긴 문서, few-shot 예시처럼 매 요청마다 반복되는 부분은 프롬프트 캐싱으로 입력 토큰 비용을 크게 줄일 수 있다.
+
+```typescript
+const response = await anthropic.messages.create({
+  model: 'claude-sonnet-4-6',
+  system: [
+    {
+      type: 'text',
+      text: longSystemPrompt, // 변하지 않는 긴 지침
+      cache_control: { type: 'ephemeral' },
+    },
+  ],
+  messages: [{ role: 'user', content: userQuery }],
+})
+```
+
+### 응답 캐싱 (Semantic Cache)
+
+완전히 동일하지 않아도 의미적으로 같은 질문이면 이전 응답을 재사용할 수 있다.
+
+```typescript
+async function getCachedOrCall(query: string) {
+  const embedding = await embed(query)
+  const cached = await vectorStore.findSimilar(embedding, { threshold: 0.95 })
+
+  if (cached) return cached.response
+
+  const response = await callLLM(query)
+  await vectorStore.save(embedding, response)
+  return response
+}
+```
+
+| 캐싱 종류 | 절약 대상 | 적합한 상황 |
+|-----------|-----------|--------------|
+| Prompt Caching | 반복되는 입력 토큰 | 시스템 프롬프트, RAG 문서 |
+| Semantic Cache | 전체 추론 비용 | FAQ, 자주 묻는 패턴 |
+| Exact Match Cache | 전체 추론 비용 | 동일 입력 반복 (배치 작업) |
+
+## 배치 처리 — 실시간이 필요 없는 작업 분리
+
+사용자가 즉시 응답을 기다리지 않는 작업(분류, 요약, 태깅, 리포트 생성)은 Batch API로 옮기면 비용이 절반 가까이 줄어든다.
+
+```
+실시간 처리 vs 배치 처리
+
+실시간 (동기)              배치 (비동기)
+┌─────────┐               ┌─────────┐
+│ 즉시 응답 │  비용 100%    │ 24시간 내 │  비용 50%
+│ 필요     │               │ 처리 가능 │
+└─────────┘               └─────────┘
+   채팅, 검색                  분류, 요약, ETL
+```
+
+배치로 옮길 수 있는 작업의 기준은 "사용자가 화면 앞에서 결과를 기다리는가"이다. 야간 배치로 처리해도 되는 작업을 실시간 API로 호출하고 있다면 그 자체가 비용 누수다.
+
+## 라우팅 — 작업 난이도에 맞는 모델 선택
+
+모든 요청에 같은 모델을 쓰는 것이 가장 흔한 비용 낭비다. 작업을 난이도로 분류해 모델을 라우팅하면 품질 저하 없이 평균 비용을 낮출 수 있다.
+
+```typescript
+function routeModel(task: TaskType): string {
+  switch (task) {
+    case 'classification':
+    case 'simple-extraction':
+      return 'claude-haiku-4-5' // 단순 분류, 추출
+    case 'summarization':
+    case 'code-review':
+      return 'claude-sonnet-4-6' // 일반적인 추론
+    case 'complex-reasoning':
+    case 'architecture-design':
+      return 'claude-opus-4-8' // 깊은 추론이 필요한 작업
+    default:
+      return 'claude-sonnet-4-6'
+  }
+}
+```
+
+라우팅의 핵심은 "쉬운 작업과 어려운 작업을 같은 모델로 처리하지 않는다"는 원칙이다. 분류기를 따로 두고 작업을 1차로 걸러낸 뒤, 난이도에 맞는 모델로 보내는 구조가 비용 곡선을 가장 크게 꺾는다.
+
+## 세 전략을 함께 적용했을 때
+
+```
+최적화 전: 모든 요청 → 최고 모델 → 100% 비용
+
+1단계, 캐싱 적용
+  반복 입력 토큰 캐시 적중 시 → 90% 절감 (해당 요청)
+
+2단계, 배치 분리
+  비동기 가능 작업 이동       → 50% 절감 (해당 요청)
+
+3단계, 라우팅 적용
+  난이도별 모델 분산          → 평균 60~80% 절감
+
+세 가지를 조합하면 전체 비용이 원래의 10~20% 수준까지 줄어들 수 있다.
+```
+
+## 정리
+
+| 전략 | 줄이는 것 | 트레이드오프 |
+|------|-----------|--------------|
+| 모델 다운그레이드 | 모델 단가 | 품질 저하 위험 |
+| Prompt Caching | 반복 입력 토큰 | 캐시 TTL 관리 필요 |
+| Semantic Cache | 전체 추론 호출 | 캐시 오염, 신선도 문제 |
+| Batch API | 실시간 처리 비용 | 지연 시간 증가 |
+| 모델 라우팅 | 평균 호출 단가 | 분류기 자체의 정확도 의존 |
+
+AI 비용 최적화는 모델 선택 하나의 결정이 아니라, 요청이 들어오는 순간부터 캐시·라우터·배치 큐를 거치는 파이프라인 설계의 결과다. 모델을 바꾸기 전에 같은 요청을 두 번 보내고 있는지, 쉬운 작업에 비싼 모델을 쓰고 있는지를 먼저 확인하는 것이 더 큰 절감을 만든다.
