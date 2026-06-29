@@ -1,0 +1,137 @@
+---
+title: 서비스 워커 캐시 전략 — Cache-First부터 SWR까지
+date: '2026-06-29'
+category: Frontend
+tags:
+  - ServiceWorker
+  - PWA
+  - 캐싱
+  - 오프라인
+summary: >-
+  서비스 워커의 캐시 전략에서 cache-first, network-first, stale-while-revalidate는 어떤 제품 요구에 맞을까.
+  각 전략의 동작 방식과 적합한 리소스 유형을 비교하고, 실제 서비스 워커 구현 코드로 정리한다.
+thumbnail: /thumbnails/service-worker-cache-strategy.svg
+---
+
+서비스 워커 캐시 전략에서 cache-first, network-first, stale-while-revalidate는 어떤 제품 요구에 맞을까. 같은 PWA 안에서도 정적 리소스와 API 응답, 사용자 데이터는 신선도와 가용성에 대한 요구가 전혀 다르기 때문에, 리소스 유형마다 다른 전략을 선택해야 한다.
+
+## 서비스 워커가 네트워크 요청을 가로채는 흐름
+
+서비스 워커는 `fetch` 이벤트를 가로채 브라우저의 모든 네트워크 요청 사이에 끼어든다.
+
+```
+브라우저 요청
+     │
+     ▼
+┌─────────────────┐
+│  Service Worker   │  fetch 이벤트 가로채기
+│  (fetch 이벤트)    │
+└─────────────────┘
+     │
+     ├──→ 캐시에서 응답?  ──→ 캐시 응답 반환
+     │
+     └──→ 네트워크 요청   ──→ 응답 캐싱 후 반환
+```
+
+이 가로채기 지점에서 어떤 순서로 캐시와 네트워크를 조회할지가 곧 캐시 전략이다.
+
+## Cache-First — 속도를 우선하는 전략
+
+캐시에 있으면 무조건 캐시를 반환하고, 없을 때만 네트워크로 간다. 응답 속도가 가장 빠르지만 캐시된 내용이 오래될 수 있다.
+
+```javascript
+self.addEventListener('fetch', (event) => {
+  event.respondWith(
+    caches.match(event.request).then((cached) => {
+      if (cached) return cached
+
+      return fetch(event.request).then((response) => {
+        const clone = response.clone()
+        caches.open('static-v1').then((cache) => cache.put(event.request, clone))
+        return response
+      })
+    })
+  )
+})
+```
+
+정적 리소스(폰트, 아이콘, 빌드된 JS/CSS 번들)처럼 콘텐츠 해시가 파일명에 포함되어 변경 시 URL 자체가 바뀌는 리소스에 적합하다. URL이 바뀌지 않는데 내용이 자주 바뀌는 리소스에 쓰면 사용자가 옛 버전을 계속 보게 된다.
+
+## Network-First — 신선함을 우선하는 전략
+
+네트워크를 먼저 시도하고, 실패했을 때만 캐시로 폴백한다. 항상 최신 데이터를 받지만 네트워크가 느리면 응답도 느려진다.
+
+```javascript
+self.addEventListener('fetch', (event) => {
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        const clone = response.clone()
+        caches.open('dynamic-v1').then((cache) => cache.put(event.request, clone))
+        return response
+      })
+      .catch(() => caches.match(event.request))
+  )
+})
+```
+
+실시간성이 중요한 API 응답이나 가격, 재고처럼 즉시성이 가치인 데이터에 적합하다. 오프라인일 때만 캐시가 안전망 역할을 한다.
+
+## Stale-While-Revalidate — 절충 전략
+
+캐시를 즉시 반환하면서, 동시에 백그라운드로 네트워크 요청을 보내 캐시를 갱신한다. 사용자는 항상 빠른 응답을 받고, 다음 방문 때는 갱신된 데이터를 보게 된다.
+
+```javascript
+self.addEventListener('fetch', (event) => {
+  event.respondWith(
+    caches.open('swr-v1').then(async (cache) => {
+      const cached = await cache.match(event.request)
+
+      const networkFetch = fetch(event.request).then((response) => {
+        cache.put(event.request, response.clone())
+        return response
+      })
+
+      return cached || networkFetch
+    })
+  )
+})
+```
+
+뉴스 피드, 상품 목록처럼 "약간 오래된 데이터라도 즉시 보여주고, 곧 최신화되면 충분한" 리소스에 적합하다.
+
+## 전략 비교
+
+| 전략 | 응답 속도 | 데이터 신선도 | 오프라인 동작 | 적합한 리소스 |
+|------|-----------|----------------|----------------|----------------|
+| Cache-First | 빠름 | 낮음 | 완전 동작 | 정적 자산, 폰트, 빌드 번들 |
+| Network-First | 네트워크 의존 | 높음 | 캐시로 폴백 | 실시간 API, 가격/재고 |
+| Stale-While-Revalidate | 빠름 | 중간 (지연 갱신) | 캐시로 동작 | 피드, 목록, 검색 결과 |
+
+## 리소스 유형별 전략 선택
+
+```
+요청 분기 기준
+
+이 리소스는 자주 바뀌는가?
+  │
+  ├─ No  → URL이 콘텐츠 해시를 포함하는가?
+  │          ├─ Yes → Cache-First
+  │          └─ No  → Stale-While-Revalidate
+  │
+  └─ Yes → 최신성이 사용자에게 중요한가?
+             ├─ Yes (가격, 잔액, 재고) → Network-First
+             └─ No  (피드, 추천)        → Stale-While-Revalidate
+```
+
+하나의 서비스 워커 안에서도 라우트별로 전략을 다르게 등록할 수 있다.
+
+```javascript
+const STRATEGIES = [
+  { match: /\.(js|css|woff2?)$/, strategy: 'cache-first' },
+  { match: /\/api\/inventory/, strategy: 'network-first' },
+  { match: /\/api\/feed/, strategy: 'stale-while-revalidate' },
+]
+```
+
+서비스 워커 캐시 전략은 모든 리소스에 같은 규칙을 적용하는 단일 정책이 아니라, 리소스마다 "속도와 신선도 중 무엇이 더 중요한가"를 먼저 판단하고 그에 맞는 전략을 매핑하는 설계 작업이다.
