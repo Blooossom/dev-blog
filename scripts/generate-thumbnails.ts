@@ -638,6 +638,8 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'clickjacking-defense':                    { pattern: 'shield',  colors: { bg1: '#1a0a0a', bg2: '#4a1010', accent: '#f87171', accent2: '#fecaca' } },
   'kubernetes-resource-limits':               { pattern: 'gauge',   colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
   'nginx-location-matching-order':            { pattern: 'flow',    colors: { bg1: '#0d1b2e', bg2: '#1a3d6b', accent: '#60a5fa', accent2: '#93c5fd' } },
+  'ai-cost-optimization':                     { pattern: 'gauge',   colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'service-worker-cache-strategy':            { pattern: 'browser', colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
