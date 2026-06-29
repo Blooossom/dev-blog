@@ -12,7 +12,7 @@
 ~~456. function calling과 tool calling은 모델이 직접 일을 처리하는 구조와 비교해 어떤 제어권을 애플리케이션에 돌려줄까?~~ `작성완료`
 457. LLM 응답을 그대로 사용자에게 보여주는 방식과 검증 계층을 거치는 방식은 어떤 제품 리스크가 다를까?
 458. AI 기능의 latency budget은 모델 추론, tool call, retrieval, 후처리 중 어디에서 주로 소모될까?
-459. AI 기능의 비용 최적화는 모델을 작은 것으로 바꾸는 것 외에 어떤 cache, batching, routing 전략을 포함할 수 있을까?
+~~459. AI 기능의 비용 최적화는 모델을 작은 것으로 바꾸는 것 외에 어떤 cache, batching, routing 전략을 포함할 수 있을까?~~ `작성완료`
 460. fallback model이나 fallback flow를 설계할 때 품질 저하를 사용자에게 어떻게 드러내거나 숨길지 판단해야 할까?
 ## Vibe Coding / Agentic Coding
 

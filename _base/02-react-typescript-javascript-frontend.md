@@ -71,7 +71,7 @@
 ~~414. streaming SSR은 TTFB와 LCP를 개선할 수 있지만, hydration 순서와 fallback UI에서 어떤 복잡도를 만들까?~~ `작성완료`
 415. browser main thread가 막히면 input delay, animation, rendering pipeline이 어떤 순서로 영향을 받을까?
 ~~416. Web Worker는 CPU 작업을 분리할 수 있지만, DOM 접근과 데이터 복사 비용에서 어떤 제약이 있을까?~~ `작성완료`
-417. service worker cache strategy에서 cache-first, network-first, stale-while-revalidate는 어떤 제품 요구에 맞을까?
+~~417. service worker cache strategy에서 cache-first, network-first, stale-while-revalidate는 어떤 제품 요구에 맞을까?~~ `작성완료`
 ~~418. Core Web Vitals의 LCP, INP, CLS는 각각 어떤 사용자 경험 문제를 측정하려고 할까?~~ `작성완료`
 419. JavaScript hydration cost가 큰 앱에서 island architecture나 partial hydration은 어떤 문제를 줄일 수 있을까?
 420. frontend에서 schema validation을 런타임에 수행하면 타입 시스템이 놓치는 어떤 장애를 막을 수 있을까?
