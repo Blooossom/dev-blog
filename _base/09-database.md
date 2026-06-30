@@ -64,7 +64,7 @@
 ~~200. DB 장애 대응에서 RPO와 RTO는 각각 무엇을 의미하고, 시스템 설계에 어떤 제약을 줄까?~~ `작성완료`
 ## Database / Storage
 
-366. LSM tree 기반 저장소와 B-Tree 기반 저장소는 write amplification과 read amplification에서 어떻게 다를까?
+~~366. LSM tree 기반 저장소와 B-Tree 기반 저장소는 write amplification과 read amplification에서 어떻게 다를까?~~ `작성완료`
 367. WAL은 durability를 위해 어떤 순서 보장을 제공하고, fsync 정책에 따라 어떤 트레이드오프가 생길까?
 368. checkpoint는 DB 복구 시간을 줄이지만, 실행 중에는 어떤 I/O 부하를 만들 수 있을까?
 369. PostgreSQL의 vacuum은 MVCC와 어떤 관계가 있고, vacuum이 밀리면 어떤 증상이 생길까?
