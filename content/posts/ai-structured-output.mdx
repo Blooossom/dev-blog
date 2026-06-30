@@ -1,0 +1,253 @@
+---
+title: 'LLM 구조화 출력 강제의 이점과 한계'
+date: '2026-06-30'
+category: AI
+tags:
+  - LLM
+  - Structured Output
+  - AI Engineering
+  - JSON Schema
+  - Prompt Engineering
+summary: >-
+  structured output을 강제하면 후처리 파싱 문제는 줄지만, 모델 실패는 다른 형태로 남는다.
+  JSON Schema 강제 방식의 작동 원리와 그 한계, 그리고 검증 계층 설계 방법을 살펴본다.
+thumbnail: /thumbnails/ai-structured-output.svg
+---
+
+structured output을 강제하면 후처리 파싱 문제는 줄지만, 모델 실패는 어떤 형태로 남을까? 이 질문은 LLM을 제품에 통합할 때 반드시 마주치는 실전 설계 문제다.
+
+## 구조화 출력이란
+
+LLM은 기본적으로 자유 형식 텍스트를 생성한다. 애플리케이션이 그 출력을 프로그래밍 방식으로 처리하려면 파싱이 필요하다. 구조화 출력(structured output)은 모델이 특정 스키마를 따르는 형식(주로 JSON)으로만 응답하도록 강제하는 기법이다.
+
+```
+자유 형식 출력 (문제):
+  "고객 이름은 홍길동이고 나이는 30세입니다. 이메일은 hong@example.com입니다."
+  → 파싱 로직 필요, 형식 변동 취약
+
+구조화 출력 (개선):
+  { "name": "홍길동", "age": 30, "email": "hong@example.com" }
+  → 직접 역직렬화 가능
+```
+
+## 구현 방식
+
+### 1. JSON Schema 강제 (Function Calling / Tool Use)
+
+OpenAI, Anthropic 등 주요 API는 `tool_choice: required` 또는 `response_format` 옵션으로 스키마를 강제한다.
+
+```typescript
+const response = await anthropic.messages.create({
+  model: 'claude-sonnet-4-6',
+  tools: [
+    {
+      name: 'extract_customer',
+      description: '고객 정보를 추출한다',
+      input_schema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          age: { type: 'integer', minimum: 0 },
+          email: { type: 'string', format: 'email' },
+        },
+        required: ['name', 'age', 'email'],
+      },
+    },
+  ],
+  tool_choice: { type: 'tool', name: 'extract_customer' },
+  messages: [{ role: 'user', content: userText }],
+})
+
+const result = response.content[0].input  // 이미 파싱된 객체
+```
+
+모델은 JSON 구조를 벗어날 수 없다. **파싱 오류는 거의 발생하지 않는다.**
+
+### 2. Grammar-based 샘플링 (로컬 모델)
+
+llama.cpp, vLLM 등에서는 GBNF 문법 또는 JSON Schema를 토큰 샘플링 단계에 직접 주입한다. 문법에 위배되는 토큰은 아예 선택되지 않으므로 구조 위반이 원천 차단된다.
+
+### 3. Prompt 지시 + 후처리 파싱 (가장 취약)
+
+```
+"다음 형식의 JSON으로만 답하라: {\"name\": ..., \"age\": ...}"
+```
+
+모델이 지시를 무시하거나 마크다운 코드 블록 안에 JSON을 넣거나 추가 설명을 붙이는 일이 자주 발생한다. **파싱 오류가 빈번하다.**
+
+## 구조화 출력이 해결하는 것
+
+```
+해결됨 ✓
+  - JSON 파싱 오류 (SyntaxError, unexpected token)
+  - 필드 이름 오타 ("nam" vs "name")
+  - 타입 불일치 (문자열로 오는 숫자)
+  - 중첩 구조 누락 (optional 필드가 아예 빠짐)
+  - 여분 텍스트 ("여기 JSON입니다: ...")
+```
+
+API 레벨에서 스키마를 강제하면 이 문제들은 사실상 사라진다.
+
+## 구조화 출력이 해결하지 못하는 것
+
+여기서부터가 진짜 설계 문제다.
+
+### 1. 의미적 오류 (Semantic Error)
+
+스키마는 구조만 검사한다. 내용이 올바른지는 보장하지 않는다.
+
+```json
+// 스키마 통과 ✓, 의미 오류 ✗
+{
+  "sentiment": "positive",
+  "confidence": 0.95,
+  "reason": "제품이 마음에 들지 않는다고 했습니다."
+}
+```
+
+`sentiment`가 "positive"인데 `reason`은 부정적 내용이다. 스키마 레벨에서는 완전히 유효하다.
+
+### 2. 할루시네이션 (Hallucination)
+
+모델이 구조화 출력 형식은 완벽히 맞추면서 **없는 정보를 지어낸다.**
+
+```json
+// 문서에 없는 날짜를 생성한 경우
+{
+  "contract_date": "2024-03-15",   // 실제 계약서에 없던 날짜
+  "party_a": "ABC Corp",
+  "party_b": "XYZ Ltd"
+}
+```
+
+구조는 완벽하지만 `contract_date`는 모델이 만들어낸 값이다.
+
+### 3. 범위 초과 값 (Out-of-range)
+
+JSON Schema의 `minimum`, `maximum` 제약이 없으면 범위를 벗어난 값이 들어온다.
+
+```json
+{ "score": -5 }   // minimum: 0 제약이 없으면 통과
+{ "percentage": 150 }  // 0~100 범위 초과
+```
+
+### 4. 판단 오류 (Judgment Error)
+
+분류 태스크에서 모델의 판단 자체가 틀릴 수 있다.
+
+```json
+// 오류 로그를 "warning"으로 잘못 분류
+{
+  "log_level": "warning",
+  "category": "network"
+}
+// 실제로는 "error"이고 category는 "authentication"이어야 함
+```
+
+### 5. 부분 완성 (Partial Completion)
+
+배열 필드에서 일부 항목만 처리하고 나머지를 생략하는 경우가 있다.
+
+```json
+// 입력에 10개 항목이 있었는데 5개만 반환
+{
+  "items": [
+    { "id": 1, "label": "A" },
+    { "id": 2, "label": "B" }
+    // ... 나머지 누락
+  ]
+}
+```
+
+## 검증 계층 설계
+
+구조화 출력 강제 이후에도 애플리케이션 레벨 검증이 반드시 필요하다.
+
+### 레이어별 검증 책임
+
+```
+Layer 0: API Schema 강제
+  → 구조·타입 위반 차단 (파싱 오류 제거)
+
+Layer 1: 값 범위 검증 (Zod, Joi, class-validator)
+  → enum 값 유효성, 숫자 범위, 문자열 패턴
+
+Layer 2: 비즈니스 규칙 검증
+  → 날짜 논리(시작일이 종료일 이전), 합계 일치, 외래 키 존재 여부
+
+Layer 3: 의미 검증 (선택적)
+  → confidence score 임계값, 이중 확인 모델 호출
+```
+
+TypeScript 예시:
+
+```typescript
+import { z } from 'zod'
+
+const CustomerSchema = z.object({
+  name: z.string().min(1).max(100),
+  age: z.number().int().min(0).max(150),
+  email: z.string().email(),
+  tier: z.enum(['standard', 'premium', 'enterprise']),
+})
+
+async function extractCustomer(text: string) {
+  const rawOutput = await callLLMWithSchema(text)
+
+  // Layer 1: Zod 검증
+  const parsed = CustomerSchema.safeParse(rawOutput)
+  if (!parsed.success) {
+    // 스키마가 강제되어도 통과하는 오류 포착
+    throw new ValidationError(parsed.error)
+  }
+
+  // Layer 2: 비즈니스 규칙
+  if (parsed.data.tier === 'enterprise' && parsed.data.age < 18) {
+    throw new BusinessRuleError('enterprise 고객은 성인이어야 합니다')
+  }
+
+  return parsed.data
+}
+```
+
+### 신뢰도 기반 검증 흐름
+
+```
+모델 출력
+  ↓
+confidence 필드 존재?
+  ├─ 0.9 이상  → 자동 처리
+  ├─ 0.7~0.9  → 로그 기록 후 처리, 모니터링
+  └─ 0.7 미만  → 인간 검토 큐로 전달
+```
+
+### 재시도 전략
+
+구조화 출력 실패(드물지만 발생 가능)에 대한 재시도:
+
+```typescript
+async function withRetry(prompt: string, maxAttempts = 3) {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const result = await callLLMWithSchema(prompt)
+      return CustomerSchema.parse(result)
+    } catch (err) {
+      if (i === maxAttempts - 1) throw err
+      // 오류 내용을 다음 호출 context에 포함
+      prompt += `\n\n이전 시도 오류: ${err.message}\n다시 시도해주세요.`
+    }
+  }
+}
+```
+
+## 실전 설계 원칙
+
+```
+1. API 레벨 스키마 강제  → 구조 오류를 기술적으로 차단
+2. 스키마는 엄격하게     → required 필드, enum, 범위 제약 최대한 명시
+3. 의미 검증은 애플리케이션 → 구조 OK = 내용 OK가 아님
+4. confidence 필드 포함  → 불확실한 출력을 식별할 수 있게 설계
+5. 실패 로그 수집        → 어떤 입력에서 오류가 나는지 데이터 축적
+```
+
+구조화 출력은 LLM 통합의 **파싱 문제를 해결하는 기반 계층**이지, 모델 품질 문제까지 해결해 주지는 않는다. 구조가 완벽해도 의미가 틀릴 수 있다는 점을 전제로, 검증 계층을 스키마 다음에 반드시 설계해야 한다.
