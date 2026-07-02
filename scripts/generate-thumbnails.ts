@@ -642,6 +642,8 @@ const POST_CONFIGS: Record<string, PostConfig> = {
   'service-worker-cache-strategy':            { pattern: 'browser', colors: { bg1: '#1a1033', bg2: '#3b1f7a', accent: '#c4b5fd', accent2: '#e9d5ff' } },
   'lsm-tree-vs-btree':                        { pattern: 'layers',  colors: { bg1: '#042712', bg2: '#155235', accent: '#6ee7b7', accent2: '#bbf7d0' } },
   'ai-structured-output':                     { pattern: 'neural',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
+  'two-pointer-sliding-window':               { pattern: 'code',    colors: { bg1: '#1c1714', bg2: '#3d302a', accent: '#fbbf24', accent2: '#fde68a' } },
+  'llm-output-validation':                    { pattern: 'neural',  colors: { bg1: '#1a0730', bg2: '#4a1070', accent: '#f0abfc', accent2: '#fae8ff' } },
 }
 
 // ── Title wrapping ───────────────────────────────────────────────────────────
