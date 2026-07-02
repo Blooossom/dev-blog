@@ -1,0 +1,171 @@
+---
+title: 투 포인터와 슬라이딩 윈도우, 어떤 상황에서 어떤 기법을 선택할까
+date: '2026-07-02'
+category: General
+tags:
+  - Algorithm
+  - Two Pointer
+  - Sliding Window
+  - 자료구조
+summary: >-
+  투 포인터와 슬라이딩 윈도우는 배열·문자열 탐색을 선형 시간에 해결하는 대표 기법이지만, 문제 구조에 따라 자연스러운 선택이 달라진다.
+  두 기법의 차이를 명확히 이해하면 알고리즘 설계 실수를 줄이고 코드를 더 간결하게 작성할 수 있다.
+thumbnail: /thumbnails/two-pointer-sliding-window.svg
+---
+
+투 포인터와 슬라이딩 윈도우는 비슷해 보이지만 어떤 조건에서 각각 더 자연스럽게 쓰일까? 두 기법 모두 배열이나 문자열을 O(n)에 탐색하지만, 해결하려는 문제의 구조가 다르기 때문에 선택 기준을 명확히 이해해 두는 것이 중요하다.
+
+## 투 포인터(Two Pointer)
+
+투 포인터는 배열에 두 개의 인덱스 `left`, `right`를 두고, 조건에 따라 각각 독립적으로 움직이며 답을 찾는 기법이다.
+
+### 핵심 조건
+
+- 배열이 **정렬**되어 있거나, 양쪽 끝에서 중앙으로 좁혀가는 구조
+- **두 원소 사이의 관계**(합, 차, 거리 등)를 조건으로 삼을 때
+- left와 right가 서로를 향해 이동하거나, 같은 방향으로 각자 독립 이동
+
+```
+정렬된 배열에서 합이 target인 두 수 찾기:
+
+l                 r
+[1, 3, 5, 7, 9, 11]  target = 10
+
+arr[l] + arr[r] = 1 + 11 = 12  → r 감소
+arr[l] + arr[r] = 1 + 9  = 10  → 정답!
+```
+
+### 전형적인 문제 유형
+
+| 유형 | 예시 |
+|------|------|
+| 정렬 배열에서 합이 k인 쌍 | Two Sum (정렬 배열) |
+| 팰린드롬 확인 | "racecar" 좌우 비교 |
+| 중복 없는 배열에서 세 수의 합 | 3Sum |
+| 두 배열 병합 | Merge Sorted Array |
+
+### TypeScript 예시: 정렬 배열 Two Sum
+
+```typescript
+function twoSum(nums: number[], target: number): [number, number] | null {
+  let left = 0;
+  let right = nums.length - 1;
+
+  while (left < right) {
+    const sum = nums[left] + nums[right];
+    if (sum === target) return [left, right];
+    if (sum < target) left++;
+    else right--;
+  }
+  return null;
+}
+```
+
+## 슬라이딩 윈도우(Sliding Window)
+
+슬라이딩 윈도우는 연속된 구간 `[left, right]`를 하나의 "창"으로 유지하면서, 창을 오른쪽으로 밀어가며 조건을 검사하는 기법이다. `left`는 `right`를 쫓아가는 형태다.
+
+### 핵심 조건
+
+- **연속된 부분 배열(subarray)** 또는 **부분 문자열(substring)**을 탐색
+- 구간의 합, 최대/최소, 특정 원소 포함 여부 등 **구간 자체의 속성**이 조건
+- 창의 크기가 **고정**이거나 **가변**일 수 있음
+
+```
+크기 k=3인 부분 배열의 최대 합:
+
+[2, 1, 5, 1, 3, 2]   k = 3
+
+[2, 1, 5]  합 = 8
+   [1, 5, 1]  합 = 7
+      [5, 1, 3]  합 = 9  ← 최대
+         [1, 3, 2]  합 = 6
+```
+
+### 전형적인 문제 유형
+
+| 유형 | 예시 |
+|------|------|
+| 고정 크기 구간 최대/최소 합 | Maximum Sum Subarray of size k |
+| 조건 만족 최단/최장 구간 | Minimum Size Subarray Sum |
+| 중복 없는 최장 부분 문자열 | Longest Substring Without Repeating |
+| 애너그램 포함 여부 | Find All Anagrams in a String |
+
+### TypeScript 예시: 중복 없는 최장 부분 문자열
+
+```typescript
+function lengthOfLongestSubstring(s: string): number {
+  const seen = new Map<string, number>();
+  let left = 0;
+  let maxLen = 0;
+
+  for (let right = 0; right < s.length; right++) {
+    const ch = s[right];
+    if (seen.has(ch) && seen.get(ch)! >= left) {
+      left = seen.get(ch)! + 1;  // 창의 왼쪽을 중복 위치 다음으로 이동
+    }
+    seen.set(ch, right);
+    maxLen = Math.max(maxLen, right - left + 1);
+  }
+  return maxLen;
+}
+```
+
+## 두 기법의 차이 정리
+
+```
+투 포인터:
+  l →                ← r
+  [1,  3,  5,  7,  9, 11]
+  좌우가 서로를 향해 이동하거나, 각자 조건에 따라 독립 이동
+
+슬라이딩 윈도우:
+  l →  r
+  [a,  b,  c,  d,  e,  f]
+  창 [l, r]이 오른쪽으로 통째로 이동, left는 right를 쫓음
+```
+
+| 비교 항목 | 투 포인터 | 슬라이딩 윈도우 |
+|-----------|-----------|-----------------|
+| 구간 특성 | 두 원소 간의 관계 | 연속 구간의 속성 |
+| 배열 정렬 | 보통 정렬 필요 | 정렬 불필요 |
+| 포인터 이동 | 독립적 이동 | left가 right 추격 |
+| 대표 패턴 | 합/차가 target인 쌍 | 구간 합/길이 최적화 |
+| 창 크기 | 개념 없음 | 고정 또는 가변 |
+
+## 헷갈리는 경우: 가변 슬라이딩 윈도우
+
+가변 슬라이딩 윈도우에서 left를 조건에 따라 앞으로 밀어내는 코드는 투 포인터처럼 보이기도 한다. 핵심은 **두 포인터가 독립적으로 각자의 규칙으로 이동하는지**, 아니면 **left가 right 전진에 반응하여 추격하는지**로 구분한다.
+
+```typescript
+// 가변 슬라이딩 윈도우: left는 right이 이동한 뒤 조건에 따라 쫓아옴
+function minSubArrayLen(target: number, nums: number[]): number {
+  let left = 0, sum = 0, minLen = Infinity;
+
+  for (let right = 0; right < nums.length; right++) {
+    sum += nums[right];
+    while (sum >= target) {              // 조건 만족하면 창 줄이기
+      minLen = Math.min(minLen, right - left + 1);
+      sum -= nums[left++];
+    }
+  }
+  return minLen === Infinity ? 0 : minLen;
+}
+```
+
+## 선택 기준 요약
+
+```
+문제를 보고 다음 순서로 판단한다:
+
+1. "두 원소의 합/차/비교"가 조건인가?
+   → 투 포인터 (특히 정렬된 배열)
+
+2. "연속된 구간의 합/길이/포함 여부"가 조건인가?
+   → 슬라이딩 윈도우
+
+3. 구간을 유지하면서 왼쪽을 당겨야 하는가?
+   → 가변 슬라이딩 윈도우
+```
+
+두 기법은 어느 하나가 다른 하나를 포함하는 관계가 아니라, 문제의 질문 방식이 다를 때 자연스럽게 나뉜다. "두 원소 사이의 관계"를 찾으면 투 포인터, "구간 자체의 속성"을 최적화하면 슬라이딩 윈도우를 먼저 떠올리는 것이 올바른 출발점이다.
