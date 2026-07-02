@@ -1,0 +1,225 @@
+---
+title: LLM 응답을 검증 계층 없이 바로 쓰면 어떤 제품 리스크가 생길까
+date: '2026-07-02'
+category: AI
+tags:
+  - LLM
+  - AI
+  - Validation
+  - Reliability
+  - 프롬프트 엔지니어링
+summary: >-
+  LLM 응답을 검증 없이 사용자에게 바로 노출하면 환각, 포맷 불일치, 보안 이슈 등 다양한 제품 리스크가 발생한다.
+  어떤 검증 계층을 어느 단계에 두어야 하는지 구체적인 전략과 구현 패턴을 살펴본다.
+thumbnail: /thumbnails/llm-output-validation.svg
+---
+
+LLM 응답을 그대로 사용자에게 보여주는 방식과 검증 계층을 거치는 방식은 어떤 제품 리스크가 다를까? LLM은 문장을 자연스럽게 생성하지만, 그 내용이 항상 정확하거나 안전하거나 구조가 올바른 것은 아니다. 검증 없이 응답을 그대로 노출하는 방식은 프로토타입 단계에서는 빠르지만, 실제 서비스에서는 예상치 못한 장애와 신뢰 손상으로 이어진다.
+
+## LLM 응답의 본질적 특성
+
+LLM은 다음 토큰을 확률적으로 선택하는 모델이다. 같은 입력이라도 응답이 달라질 수 있고, 모델이 "알지 못하는 것을 모른다고 말하는 대신 그럴듯하게 지어내는" 현상, 즉 **환각(Hallucination)**이 발생한다.
+
+```
+LLM 응답의 불확실성 요인:
+
+1. 비결정론적 생성 (temperature > 0)
+2. 훈련 데이터 편향 및 지식 컷오프
+3. 포맷 지시 무시 (JSON 요청 → 마크다운으로 응답)
+4. 컨텍스트 길이 초과 시 내용 망각
+5. 프롬프트 인젝션 공격
+```
+
+## 무검증 방식의 제품 리스크
+
+### 1. 사실 오류 직접 노출
+
+의료, 법률, 금융 등 고위험 도메인에서 LLM이 잘못된 정보를 사실처럼 출력하면 사용자 피해로 이어진다. "○○ 약과 △△ 약은 함께 복용 가능합니다"라는 잘못된 응답이 검증 없이 표시되면 법적 책임 문제가 발생한다.
+
+### 2. 포맷 불일치로 인한 파싱 실패
+
+JSON 구조를 요청했지만 마크다운 코드 블록으로 감싸거나, 필드 이름이 다르거나, 숫자 대신 문자열을 반환하는 경우가 빈번하다.
+
+```typescript
+// 위험한 패턴: 검증 없이 바로 파싱
+const raw = await llm.complete(prompt);
+const data = JSON.parse(raw);  // SyntaxError 또는 예상 밖 구조 가능
+
+// 안전한 패턴
+const raw = await llm.complete(prompt);
+const parsed = safeParseJSON(raw);
+if (!parsed.success) {
+  // 재시도 or 폴백 처리
+}
+```
+
+### 3. 프롬프트 인젝션
+
+사용자 입력이 프롬프트에 포함될 때, 악의적 사용자가 "이전 지시를 무시하고 XXX를 하라"는 내용을 입력하면 모델이 의도치 않은 동작을 할 수 있다. 검증 없이 그 결과를 사용자에게 보여주면 정보 유출이나 악성 콘텐츠 출력으로 이어진다.
+
+### 4. 브랜드·법적 리스크
+
+경쟁사 비방, 혐오 표현, 저작권 침해 콘텐츠가 자동 생성되어 그대로 노출될 수 있다. 이는 서비스 신뢰도를 훼손하고 법적 분쟁의 원인이 된다.
+
+## 검증 계층 설계
+
+### 계층 구조
+
+```
+사용자 입력
+    │
+    ▼
+[입력 검증]  ← 프롬프트 인젝션, 유해 입력 차단
+    │
+    ▼
+LLM 호출
+    │
+    ▼
+[구조 검증]  ← JSON 파싱, 스키마 일치, 필드 타입
+    │
+    ▼
+[내용 검증]  ← 길이, 필수 필드, 비어있지 않음
+    │
+    ▼
+[안전성 검증] ← 유해 콘텐츠 모더레이션 (선택)
+    │
+    ▼
+사용자 노출
+```
+
+### 구조 검증: Zod를 활용한 스키마 검증
+
+```typescript
+import { z } from 'zod';
+
+const ProductSchema = z.object({
+  name: z.string().min(1),
+  price: z.number().positive(),
+  description: z.string().max(500),
+  tags: z.array(z.string()).optional(),
+});
+
+async function getProductInfo(query: string) {
+  const raw = await llm.complete(`
+    다음 상품 정보를 JSON으로 반환하세요: ${query}
+    형식: { name, price, description, tags }
+  `);
+
+  const json = extractJSON(raw);            // 마크다운 코드 블록 제거 등
+  const result = ProductSchema.safeParse(json);
+
+  if (!result.success) {
+    // 재시도: 오류 정보를 프롬프트에 포함
+    return retry(query, result.error.message);
+  }
+  return result.data;
+}
+```
+
+### 재시도 with 검증 오류 피드백
+
+```typescript
+async function llmWithValidation<T>(
+  prompt: string,
+  schema: z.ZodType<T>,
+  maxRetries = 3
+): Promise<T> {
+  let lastError = '';
+
+  for (let i = 0; i < maxRetries; i++) {
+    const raw = await llm.complete(
+      lastError
+        ? `${prompt}\n\n이전 시도 오류: ${lastError}\n위 오류를 수정하여 올바른 JSON을 반환하세요.`
+        : prompt
+    );
+
+    const parsed = schema.safeParse(extractJSON(raw));
+    if (parsed.success) return parsed.data;
+    lastError = parsed.error.message;
+  }
+
+  throw new Error(`LLM 검증 실패 (${maxRetries}회 시도): ${lastError}`);
+}
+```
+
+### 내용 검증: 신뢰도 기반 필터링
+
+구조가 맞더라도 내용이 부실할 수 있다. 최소 길이, 필수 키워드 포함 여부, 신뢰도 점수 등으로 2차 필터링한다.
+
+```typescript
+function validateContent(response: string, context: string): boolean {
+  if (response.length < 50) return false;                    // 너무 짧은 응답
+  if (response.includes('I cannot') || response.includes('I don\'t know')) {
+    return false;                                            // 거부 응답
+  }
+  // 컨텍스트 키워드와의 연관성 확인 (선택적)
+  const keywords = extractKeywords(context);
+  const overlap = keywords.filter(k => response.toLowerCase().includes(k));
+  return overlap.length / keywords.length > 0.3;
+}
+```
+
+### 안전성 검증: 모더레이션 API
+
+유해 콘텐츠 검사는 자체 구현보다 전용 API를 활용하는 것이 효과적이다.
+
+```typescript
+async function moderateContent(text: string): Promise<boolean> {
+  // OpenAI Moderation API 또는 자체 분류기 활용
+  const result = await moderationAPI.check(text);
+  return !result.flagged;  // flagged = true면 유해 콘텐츠
+}
+```
+
+## 스트리밍 환경에서의 검증
+
+스트리밍 응답에서는 전체 텍스트가 완성되기 전에 사용자에게 노출된다. 이때 검증은 두 단계로 나뉜다.
+
+```
+스트리밍 검증 전략:
+
+1. 인크리멘탈 검증 (실시간)
+   - 유해 단어나 패턴 실시간 감지
+   - 조기에 스트림 중단
+
+2. 완료 후 검증 (지연 표시)
+   - 완성된 응답을 검증한 뒤 한꺼번에 표시
+   - 더 안전하지만 UX 지연 발생
+```
+
+구조화 데이터(JSON)가 필요한 경우에는 스트리밍을 사용하지 않거나, 응답이 완전히 도착한 뒤 파싱하는 방식이 적합하다.
+
+## 폴백(Fallback) 전략
+
+검증 실패 시 서비스가 완전히 중단되는 것을 막기 위해 폴백을 준비한다.
+
+```typescript
+async function getAnswerWithFallback(query: string): Promise<string> {
+  try {
+    const answer = await llmWithValidation(query, AnswerSchema);
+    return formatAnswer(answer);
+  } catch (primaryError) {
+    try {
+      // 폴백 1: 더 단순한 프롬프트로 재시도
+      return await simpleLLMCall(query);
+    } catch {
+      // 폴백 2: 정적 응답 or 수동 처리 큐로 이전
+      await enqueueForManualReview(query);
+      return '현재 답변을 준비 중입니다. 잠시 후 다시 확인해 주세요.';
+    }
+  }
+}
+```
+
+## 검증 비용과 레이턴시 트레이드오프
+
+| 검증 단계 | 비용 | 레이턴시 | 권장 적용 |
+|-----------|------|----------|-----------|
+| 구조 검증 (Zod) | 거의 없음 | 1ms 미만 | 항상 |
+| 내용 검증 (규칙 기반) | 낮음 | 5~20ms | 항상 |
+| 안전성 검증 (모더레이션 API) | 중간 | 100~500ms | UGC 포함 시 |
+| 팩트 체크 (외부 소스 비교) | 높음 | 1~5초 | 고위험 도메인만 |
+
+레이턴시 예산이 제한된 환경이라면 구조·내용 검증은 인라인으로, 안전성 검증은 비동기로 분리하고 사후 모니터링을 병행하는 방식이 현실적이다.
+
+LLM 응답 검증은 선택이 아니라 제품 신뢰성의 기본 조건이다. 구조 검증부터 시작해 서비스 도메인의 위험도에 맞게 계층을 쌓아가는 것이 실용적인 접근법이다.
